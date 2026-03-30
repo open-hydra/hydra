@@ -53,37 +53,7 @@ if(EXE_NAME STREQUAL "MF")
     add_fortran_executable_from_dirs(
         hydra_MF
         SRCDIRS
-            ${CMAKE_SOURCE_DIR}/src/common
-            ${CMAKE_SOURCE_DIR}/src/MF
+            ${CMAKE_SOURCE_DIR}/src/app/common
+            ${CMAKE_SOURCE_DIR}/src/app/MF
         LIBS FUSSL MOSEL FiNeR)
-ENDIF()
-
-# hydra-MI2
-if(EXE_NAME STREQUAL "MI2")
-    add_fortran_executable_from_dirs(
-        hydra_MI2
-        SRCDIRS
-            ${CMAKE_SOURCE_DIR}/src/common
-            ${CMAKE_SOURCE_DIR}/src/MI2
-        LIBS MOSEL ICEL IGLOOL FiNeR)
-ENDIF()
-
-# hydra-MQ2D
-if(EXE_NAME STREQUAL "MQ2D")
-    add_fortran_executable_from_dirs(
-        hydra_MQ2D
-        SRCDIRS
-            ${CMAKE_SOURCE_DIR}/src/common
-            ${CMAKE_SOURCE_DIR}/src/MQ2D
-        LIBS MOSKAL Q2DL FiNeR)
-ENDIF()
-
-# hydra-MM
-if(EXE_NAME STREQUAL "MM")
-    add_fortran_executable_from_dirs(
-        hydra_MM
-        SRCDIRS
-            ${CMAKE_SOURCE_DIR}/src/common
-            ${CMAKE_SOURCE_DIR}/src/MM
-        LIBS MOSKAL MOSEL FiNeR)
 ENDIF()
