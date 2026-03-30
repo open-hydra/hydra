@@ -1,0 +1,15 @@
+[submodule "src/lib/MOSE"]
+	path = src/lib/MOSE
+	url = git@github.com:open-hydra/MOSE.git
+[submodule "src/lib/FUSS"]
+	path = src/lib/FUSS
+	url = git@github.com:open-hydra/FUSS.git
+[submodule "lib/ORION"]
+	path = lib/ORION
+	url = git@github.com:MarcoGrossi92/ORION.git
+[submodule "lib/FLINT"]
+	path = lib/FLINT
+	url = git@github.com:MarcoGrossi92/FLINT.git
+[submodule "lib/third_party/FiNeR"]
+	path = lib/third_party/FiNeR
+	url = git@github.com:szaghi/FiNeR.git
