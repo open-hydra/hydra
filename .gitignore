@@ -1,0 +1,15 @@
+# Building file
+CMakePresets.json
+.setvars.sh
+build
+
+# Fortran module files
+mod
+*.mod
+
+# Executables
+bin
+
+# Test output files
+error*
+OUTPUT

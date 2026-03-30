@@ -63,6 +63,10 @@ log_info "Build dir: $BUILD_DIR"
 
 rm -rf "$BUILD_DIR"
 
+git submodule update --init lib/ORION
+git submodule update --init lib/FLINT
+git submodule update --init --recursive lib/third_party/FiNeR
+
 # -------------------------
 # Configure + build
 # -------------------------
