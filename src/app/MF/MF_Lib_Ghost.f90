@@ -12,7 +12,6 @@ contains
 
 
   subroutine Fill_Coupled_Ghost_Cell ( FUSS_domain, MOSE_domain )
-
     implicit none
     type(FUSS_domain_type), intent(inout) :: FUSS_domain
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
@@ -111,7 +110,6 @@ contains
   subroutine Ghost_Coupling_FUSS ( Im, Jm, Km, Fm, blkm, Is, Js, Ks, Fs, blks, Tg )
     use FLINT_Lib_Thermodynamic
     use MOSE_Global_m, only: nsc, np
-
     implicit none
     integer, intent(in)               :: Im, Jm, Km, Fm, Is, Js, Ks, Fs
     type(FUSS_block_type), intent(in) :: blkm
@@ -139,8 +137,7 @@ contains
 
   subroutine Fill_BC_Ghost_Coupling_FUSS ( Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, blks, Tg )
     use FLINT_Lib_Thermodynamic
-    use MOSE_Global_m, only: nsc,np
-    
+    use MOSE_Global_m, only: nsc, np
     implicit none
     integer, intent(in)               :: Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
     type(MOSE_block_type), intent(in) :: blks
@@ -210,8 +207,7 @@ contains
 
   subroutine Ghost_Coupling_MOSE ( Im, Jm, Km, Fm, blkm, Is, Js, Ks, Fs, blks, Pg )
     use FLINT_Lib_Thermodynamic
-    use MOSE_Global_m, only: nsc,np
-
+    use MOSE_Global_m, only: nsc, np
     implicit none
     integer, intent(in)               :: Im, Jm, Km, Fm, Is, Js, Ks, Fs
     type(MOSE_block_type), intent(in) :: blkm
@@ -234,7 +230,6 @@ contains
 
 
   subroutine Fill_BC_Ghost_Coupling_MOSE ( Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, blks, Pg )
-
     implicit none
     integer, intent(in)               :: Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
     type(FUSS_block_type), intent(in) :: blks
@@ -291,5 +286,4 @@ contains
 
   end subroutine Fill_BC_Ghost_Coupling_MOSE
     
-
 end module hydraMF_Lib_Ghost

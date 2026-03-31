@@ -1,264 +1,21 @@
-module hydraMF_Mod_Coupling
+module hydraMF_Lib_BC_Coupled_Wall_Temperature
   use iso_fortran_env, only: I4 => int32, R8 => real64
-  use hydra_Parameters_m, only: guide_
-  use FUSS_Advanced_Types_m
-  use MOSE_Advanced_Types_m
-  use MOSE_Global_m
-
+  
   implicit none
   private
-  public :: Fix_Global_dt, BC_Coupled_Fluxes
+  public :: FUSS_Wall_Temperature, MOSE_Wall_Temperature
   
 contains
 
-  subroutine Fix_Global_dt ( FUSS_simulation, MOSE_simulation, hydra_time )
-    use FUSS_Mod_dt, only: FUSS_Compute_dt => Compute_dt
-    use MOSE_Mod_dt, only: MOSE_Compute_dt => Compute_dt
-
-    implicit none
-    type(FUSS_simulation_type), intent(inout) :: FUSS_simulation
-    type(MOSE_simulation_type), intent(inout) :: MOSE_simulation
-    real(R8), intent(inout)                   :: hydra_time
-    ! Local
-    real(R8) :: min_dt
-
-    ! Compute Global dt
-    FUSS_simulation % domain(1) % dtglobal = 1e5
-    MOSE_simulation % domain(1) % dtglobal = 1e5
-    call FUSS_Compute_dt( FUSS_simulation % domain(1), FUSS_simulation % config )
-    call MOSE_Compute_dt( MOSE_simulation % domain(1), MOSE_simulation % config )
-
-    ! Assign Global dt
-    min_dt = min(FUSS_simulation % domain(1) % dtglobal, MOSE_simulation % domain(1) % dtglobal)
-    FUSS_simulation % domain(1) % dtglobal = min_dt
-    MOSE_simulation % domain(1) % dtglobal = min_dt
-
-    hydra_time = hydra_time + min_dt
-
-  end subroutine Fix_Global_dt
-
-
-  subroutine BC_Coupled_Fluxes ( FUSS_domain, MOSE_domain )
-    use hydraMF_Lib_Ghost
-
-    implicit none
-    type(FUSS_domain_type), intent(inout) :: FUSS_domain
-    type(MOSE_domain_type), intent(inout) :: MOSE_domain
-
-    ! Fill Ghost Cells
-    call Fill_Coupled_Ghost_Cell ( FUSS_domain, MOSE_domain )
-
-    ! Initialize ext_flux variables
-    call Initialize_BC_Coupled_Fluxes ( FUSS_domain, MOSE_domain )
-
-    ! Compute FUSS Flux
-    call Compute_FUSS_Flux ( FUSS_domain, MOSE_domain)
-
-    ! Compute MOSE Flux
-    call Compute_MOSE_Flux ( FUSS_domain, MOSE_domain)
-
-  end subroutine BC_Coupled_Fluxes
-
-
-  subroutine Initialize_BC_Coupled_Fluxes ( FUSS_domain, MOSE_domain )
-
-    implicit none
-    type(FUSS_domain_type), intent(inout) :: FUSS_domain
-    type(MOSE_domain_type), intent(inout) :: MOSE_domain
-    ! Local
-    integer  :: b, f, lower, upper, i
-    
-    !$omp parallel
-    upper = 0
-    do b = 1, FUSS_domain%nb
-      do f = 1, 6
-        lower = upper + 1
-        upper = upper + FUSS_domain%n_bf(b,f)
-        !$omp do schedule ( dynamic ) private (i)
-        do i = lower, upper
-          select case ( FUSS_domain%bc(i)%type )
-            case (1000)
-              FUSS_domain % bc(i) % ext_flux = 0.0d0
-          end select
-        enddo
-      enddo
-    enddo
-    !$omp end parallel
-
-    !$omp parallel
-    upper = 0
-    do b = 1, MOSE_domain%nb
-      do f = 1, 6
-        lower = upper + 1
-        upper = upper + MOSE_domain%n_bf(b,f)
-        !$omp do schedule ( dynamic ) private (i)
-        do i = lower, upper
-          select case ( MOSE_domain%bc(i)%type )
-            case (1000)
-              MOSE_domain % bc(i) % ext_flux = 0.0d0
-          end select
-        enddo
-      enddo
-    enddo
-    !$omp end parallel
-
-  end subroutine Initialize_BC_Coupled_Fluxes
-
-
-  subroutine Compute_FUSS_Flux ( FUSS_domain, MOSE_domain )
-
-    implicit none
-    type(FUSS_domain_type), intent(inout) :: FUSS_domain
-    type(MOSE_domain_type), intent(inout) :: MOSE_domain
-    ! Local
-    integer  :: b, f, lower, upper, i
-    integer  :: Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs
-    integer  :: b_, f_, lower_, upper_, i_
-    integer  :: Bm_, Im_, Jm_, Km_, Fm_, Bs_, Is_, Js_, Ks_, Fs_
-    real(R8) :: FUSS_new_flux
-
-    !$omp parallel
-    upper = 0
-    do b = 1, FUSS_domain%nb
-      do f = 1, 6
-        lower = upper + 1
-        upper = upper + FUSS_domain%n_bf(b,f)
-        !$omp do schedule ( dynamic ) private (i,Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs) &
-        !$omp private (b_, f_, lower_, upper_, i_) &
-        !$omp private (Bm_, Im_, Jm_, Km_, Fm_, Bs_, Is_, Js_, Ks_, Fs_) &
-        !$omp private (FUSS_new_flux)
-        do i = lower, upper
-          select case ( FUSS_domain%bc(i)%type )
-            case (1000)
-              Bm  = FUSS_domain % bc(i) % b
-              Im  = FUSS_domain % bc(i) % i
-              Jm  = FUSS_domain % bc(i) % j 
-              Km  = FUSS_domain % bc(i) % k 
-              Fm  = FUSS_domain % bc(i) % f
-              Bs  = FUSS_domain % bc(i) % bs
-              Is  = FUSS_domain % bc(i) % is
-              Js  = FUSS_domain % bc(i) % js
-              Ks  = FUSS_domain % bc(i) % ks
-              Fs  = FUSS_domain % bc(i) % fs
-              call FUSS_Wall_Temperature( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
-                                          Is, Js, Ks, Fs, MOSE_domain % blk(Bs), &
-                                          FUSS_domain%bc(i)%Mg(1), FUSS_domain%bc(i)%Tg, FUSS_new_flux )
-              FUSS_domain % bc(i) % ext_flux = FUSS_domain % bc(i) % ext_flux + 0.5 * FUSS_new_flux
-              
-              upper_ = 0
-              do b_ = 1, MOSE_domain%nb
-                do f_ = 1, 6
-                  lower_ = upper_ + 1
-                  upper_ = upper_ + MOSE_domain%n_bf(b_,f_)
-                  do i_ = lower_, upper_
-                    select case ( MOSE_domain%bc(i_)%type )
-                      case (1000)
-                        Bm_  = MOSE_domain % bc(i_) % b
-                        Im_  = MOSE_domain % bc(i_) % i
-                        Jm_  = MOSE_domain % bc(i_) % j 
-                        Km_  = MOSE_domain % bc(i_) % k 
-                        Fm_  = MOSE_domain % bc(i_) % f
-                        Bs_  = MOSE_domain % bc(i_) % bs
-                        Is_  = MOSE_domain % bc(i_) % is
-                        Js_  = MOSE_domain % bc(i_) % js
-                        Ks_  = MOSE_domain % bc(i_) % ks
-                        Fs_  = MOSE_domain % bc(i_) % fs
-                        if (Bs == Bm_ .and. Is == Im_ .and. Js == Jm_ .and. Ks == Km_ .and. Fs == Fm_) then
-                          MOSE_domain % bc(i_) % ext_flux(np) = MOSE_domain % bc(i_) % ext_flux(np) - 0.5 * FUSS_new_flux
-                        endif
-                    end select
-                  enddo
-                enddo
-              enddo
-          end select
-        enddo
-      enddo
-    enddo
-    !$omp end parallel
-
-  end subroutine Compute_FUSS_Flux
-
-
-  subroutine Compute_MOSE_Flux ( FUSS_domain, MOSE_domain )
-
-    implicit none
-    type(FUSS_domain_type), intent(inout) :: FUSS_domain
-    type(MOSE_domain_type), intent(inout) :: MOSE_domain
-    ! Local
-    integer  :: b, f, lower, upper, i
-    integer  :: Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs
-    integer  :: b_, f_, lower_, upper_, i_
-    integer  :: Bm_, Im_, Jm_, Km_, Fm_, Bs_, Is_, Js_, Ks_, Fs_
-    real(R8) :: MOSE_new_flux(nprim)
-
-    !$omp parallel
-    upper = 0
-    do b = 1, MOSE_domain%nb
-      do f = 1, 6
-        lower = upper + 1
-        upper = upper + MOSE_domain%n_bf(b,f)
-        !$omp do schedule ( dynamic ) private (i,Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs) &
-        !$omp private (b_, f_, lower_, upper_, i_) &
-        !$omp private (Bm_, Im_, Jm_, Km_, Fm_, Bs_, Is_, Js_, Ks_, Fs_) &
-        !$omp private (MOSE_new_flux)
-        do i = lower, upper
-          select case ( MOSE_domain%bc(i)%type )
-            case (1000)
-              Bm  = MOSE_domain % bc(i) % b
-              Im  = MOSE_domain % bc(i) % i
-              Jm  = MOSE_domain % bc(i) % j 
-              Km  = MOSE_domain % bc(i) % k 
-              Fm  = MOSE_domain % bc(i) % f
-              Bs  = MOSE_domain % bc(i) % bs
-              Is  = MOSE_domain % bc(i) % is
-              Js  = MOSE_domain % bc(i) % js
-              Ks  = MOSE_domain % bc(i) % ks
-              Fs  = MOSE_domain % bc(i) % fs
-              call MOSE_Wall_Temperature( Im, Jm, Km, Fm, MOSE_domain % blk(Bm), &
-                                          Is, Js, Ks, Fs, FUSS_domain % blk(Bs), &
-                                          MOSE_domain%bc(i)%Mg(1), MOSE_domain%bc(i)%Pg, MOSE_new_flux )
-              MOSE_domain % bc(i) % ext_flux = MOSE_domain % bc(i) % ext_flux + 0.5 * MOSE_new_flux
-              
-              upper_ = 0
-              do b_ = 1, FUSS_domain%nb
-                do f_ = 1, 6
-                  lower_ = upper_ + 1
-                  upper_ = upper_ + FUSS_domain%n_bf(b_,f_)
-                  do i_ = lower_, upper_
-                    select case ( FUSS_domain%bc(i_)%type )
-                      case (1000)  ! Multi-Solver Connection
-                        Bm_  = FUSS_domain % bc(i_) % b
-                        Im_  = FUSS_domain % bc(i_) % i
-                        Jm_  = FUSS_domain % bc(i_) % j 
-                        Km_  = FUSS_domain % bc(i_) % k 
-                        Fm_  = FUSS_domain % bc(i_) % f
-                        Bs_  = FUSS_domain % bc(i_) % bs
-                        Is_  = FUSS_domain % bc(i_) % is
-                        Js_  = FUSS_domain % bc(i_) % js
-                        Ks_  = FUSS_domain % bc(i_) % ks
-                        Fs_  = FUSS_domain % bc(i_) % fs
-                        if (Bs == Bm_ .and. Is == Im_ .and. Js == Jm_ .and. Ks == Km_ .and. Fs == Fm_) then
-                          FUSS_domain % bc(i_) % ext_flux = FUSS_domain % bc(i_) % ext_flux - 0.5 * MOSE_new_flux(np)
-                        endif
-                    end select
-                  enddo
-                enddo
-              enddo
-          end select
-        enddo
-      enddo
-    enddo
-    !$omp end parallel
-
-  end subroutine Compute_MOSE_Flux
-
-
   subroutine FUSS_Wall_Temperature( Im, Jm, Km, Fm, Blk_FUSS, Is, Js, Ks, Fs, Blk_MOSE, Mg, Tg, new_flux, Ovar )
+    use hydra_Parameters_m, only: guide_
+    use FUSS_Advanced_Types_m
+    use FUSS_Base_Types_m
     use FUSS_Lib_Solid
+    use FUSS_Lib_BC, only: Compute_Wall_Properties
+    use MOSE_Advanced_Types_m
     use MOSE_Global_m
     use FLINT_Lib_Thermodynamic
-    use FUSS_Lib_BC, only: Compute_Wall_Properties
-
     implicit none
     integer,intent(in)                     :: Im, Jm, Km, Fm, Is, Js, Ks, Fs
     type(FUSS_block_type), intent(inout)   :: Blk_FUSS
@@ -276,8 +33,7 @@ contains
     real(R8) :: T_con, kappa_con
     real(R8) :: Num_loc, Num_con, Den_loc, Den_con
     real(R8) :: Tint, T_wall, q_wall, T, kappa, Gradient(3), Flux
-
-      
+  
     call Compute_Modfm ( fm, modfm, modfm1, modfm2, modfm3 )
     call Face_Index ( Fm, Dir, Im, Jm, Km, Face_im, Face_jm, Face_km )
 
@@ -369,13 +125,17 @@ contains
 
 
   subroutine MOSE_Wall_Temperature( Im, Jm, Km, Fm, Blk_MOSE, Is, Js, Ks, Fs, Blk_FUSS, Mg, Pg, new_flux, Ovar )
-    use FUSS_Lib_Solid
+    use hydra_Parameters_m, only: guide_
+    use MOSE_Advanced_Types_m
+    use MOSE_Base_Types_m
     use MOSE_Global_m
     use MOSE_Mod_Fluid
     use MOSE_Lib_RANS
-    use FLINT_Lib_Thermodynamic
     use MOSE_Lib_BC, only: Compute_Wall_Properties
-
+    use FLINT_Lib_Thermodynamic
+    use FUSS_Advanced_Types_m
+    use FUSS_Lib_Solid
+    use FUSS_Lib_BC, only: Compute_Wall_Properties
     implicit none
     integer,intent(in) :: Im, Jm, Km, Fm, Is, Js, Ks, Fs
     type(MOSE_block_type), intent(inout)   :: Blk_MOSE
@@ -393,7 +153,6 @@ contains
     real(R8) :: rho, Rgas, mil, kl, Prim(nprim), Prim_wall(nprim), dist, dl, T
     real(R8) :: Tint, T_wall, q_wall, rho_wall, Stress(3), Gradient(nprim,3), Flux(nprim)
 
-    
     call Compute_Modfm ( Fm, modfm, modfm1, modfm2, modfm3 )
     call Face_Index ( Fm, Dir, Im, Jm, Km, Face_im, Face_jm, Face_km )
 
@@ -567,4 +326,4 @@ contains
 
   end subroutine Face_Index
 
-end module hydraMF_Mod_Coupling
+end module hydraMF_Lib_BC_Coupled_Wall_Temperature
