@@ -6,7 +6,7 @@ module hydra_Backend_INI
 contains
 
   subroutine Load_Ini(fini)
-    use FUSS_Input_Registry, only: reg
+    use hydra_Input_Registry, only: reg
     use Finer, only: file_ini
     implicit none
     type(file_ini), intent(in) :: fini
@@ -46,7 +46,7 @@ contains
     integer :: error
     
 
-    ! Check for N-coupling, FUSS-iter, MOSE-iter in the input.ini and allocate arrays accordingll
+    ! Check for N-coupling, FUSS-iter, MOSE-iter in the input.ini and allocate arrays accordingly
     if (allocated(obj_hydra_sim_param%N_Coupling)) deallocate(obj_hydra_sim_param%N_Coupling)
     if (fini%has_option(option_name='N-coupling')) then
       allocate(obj_hydra_sim_param%N_Coupling(1:fini%count_values(section_name='HYDRA-parameters', option_name='N-coupling')))

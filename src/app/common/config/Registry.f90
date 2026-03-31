@@ -1,5 +1,4 @@
-module FUSS_Input_Registry
-
+module hydra_Input_Registry
   use iso_fortran_env, only: I4 => int32, R8 => real64
   implicit none
   private
@@ -510,5 +509,4 @@ contains
 
   end subroutine generate_markdown
 
-
-end module FUSS_Input_Registry
+end module hydra_Input_Registry
