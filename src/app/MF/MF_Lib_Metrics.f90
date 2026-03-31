@@ -1,16 +1,16 @@
 module hydraMF_Lib_Metrics
   use iso_fortran_env, only: I4 => int32, R8 => real64
   use hydra_Global_m
-  use FUSS_General_Types_m
-  use MOSE_General_Types_m
-  use FUSS_Types_m
-  use MOSE_Types_m
+  use MOSE_Base_Types_m
+  use MOSE_Advanced_Types_m
+  use FUSS_Base_Types_m
+  use FUSS_Advanced_Types_m
 
   implicit none
-  public
+  private
+  public :: Setup_Coupled_Metrics
 
 contains
-
 
   subroutine Setup_Coupled_Metrics ( FUSS_domain, MOSE_domain )
 

@@ -7,7 +7,7 @@ program hydra_program
   use hydra_Types_m
   use hydraMF_Mod_Import
   use hydraMF_Lib_Metrics
-  use hydraMF_Lib_Extrapolation
+  use hydraMF_Lib_Ghost
   use hydraMF_Mod_Coupling
   use hydraMF_IO_Wall
   use FUSS_Procedures_m

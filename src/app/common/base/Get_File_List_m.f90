@@ -1,5 +1,10 @@
-module hydra_Get_File_List
+module hydra_Get_File_List_m
+  use iso_fortran_env, only: I4 => int32, R8 => real64
+  
   implicit none
+  private
+  public :: Get_File_List
+
 contains
 
   subroutine Get_File_List(file_list, num_files)
@@ -34,5 +39,4 @@ contains
       
   end subroutine Get_File_List
 
-
-end module hydra_Get_File_List
+end module hydra_Get_File_List_m

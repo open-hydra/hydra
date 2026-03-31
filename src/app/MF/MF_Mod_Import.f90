@@ -1,17 +1,22 @@
 module hydraMF_Mod_Import
+  use iso_fortran_env, only: I4 => int32, R8 => real64
+
   implicit none
+  private
+  public :: Assign_Phases
 
 contains
 
   subroutine Assign_Phases()
-    use strings, only: parse
-    use hydra_Misc, only: Get_File_List
+    use hydra_Parameters_m
+    use hydra_Get_File_List_m, only: Get_File_List
     use FUSS_Global_m, only: FUSS_phase_prefix
     use MOSE_Global_m, only: MOSE_phase_prefix
+    use strings, only: parse
     implicit none
-    character(len=128)              :: filename, stringa(2), substringa(2), type
-    integer                         :: i, num_files, u, ios
-    character(len=128), allocatable :: file_list(:)
+    character(len=llen_)              :: filename, stringa(2), substringa(2), type
+    integer                           :: i, num_files, u, ios
+    character(len=llen_), allocatable :: file_list(:)
 
     ! Get the list of .txt files in the current directory
     call Get_File_List(file_list, num_files)

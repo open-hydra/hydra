@@ -1,11 +1,12 @@
-module hydraMF_Lib_Extrapolation
+module hydraMF_Lib_Ghost
   use iso_fortran_env, only: I4 => int32, R8 => real64
   use hydra_Global_m
-  use FUSS_Types_m
-  use MOSE_types_m
+  use MOSE_Advanced_Types_m
+  use FUSS_Advanced_Types_m
 
   implicit none
-  public
+  private
+  public :: Fill_Coupled_Ghost_Cell
 
 contains
 
@@ -109,7 +110,7 @@ contains
 
   subroutine Ghost_Coupling_FUSS ( Im, Jm, Km, Fm, blkm, Is, Js, Ks, Fs, blks, Tg )
     use FLINT_Lib_Thermodynamic
-    use MOSE_Global_m, only: nsc,np
+    use MOSE_Global_m, only: nsc, np
 
     implicit none
     integer, intent(in)               :: Im, Jm, Km, Fm, Is, Js, Ks, Fs
@@ -291,4 +292,4 @@ contains
   end subroutine Fill_BC_Ghost_Coupling_MOSE
     
 
-end module hydraMF_Lib_Extrapolation
+end module hydraMF_Lib_Ghost
