@@ -1,4 +1,4 @@
-module hydra_Misc
+module hydra_Get_File_List
   implicit none
 contains
 
@@ -35,4 +35,4 @@ contains
   end subroutine Get_File_List
 
 
-end module hydra_Misc
+end module hydra_Get_File_List
