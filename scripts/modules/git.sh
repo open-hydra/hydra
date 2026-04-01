@@ -27,6 +27,8 @@ if [ $# -eq 1 ]; then
 else
     if [[ "$2" == "ATLAS" || "$2" == "GRIB" ]]; then
         arg="utils/$2"
+    elif [[ "$2" == "MOSE" || "$2" == "FUSS" ]]; then
+        arg="src/lib/$2"
     else
         arg="lib/$2"
     fi
@@ -43,9 +45,17 @@ case "$1" in
 
     delete)
         if [ "$force" = true ]; then
-            git submodule deinit -f -all "$arg"
+            if [ "$arg" = "" ]; then
+                git submodule deinit -f --all
+            else
+                git submodule deinit -f "$arg"
+            fi
         else
-            git submodule deinit -all "$arg"
+            if [ "$arg" = "" ]; then
+                git submodule deinit --all
+            else
+                git submodule deinit "$arg"
+            fi
         fi
         ;;
 
