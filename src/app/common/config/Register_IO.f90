@@ -23,11 +23,11 @@ contains
     section = 'HYDRA-IO'
     
     ! IO options
-    call reg%add( section, 'coupling-format', hydra_obj_io%coupling_format, 'tecplot ascii', 'Solution (OUTPUT/field.*) format', 'tecplot ascii, tecplot binary, vtk ascii, vtk raw', .false. )
-    call reg%add( section, 'coupling-diter', hydra_obj_io%coupling_diter, '1000000000', 'Coupling solution output iter frequency', '> 0', .false. )
-    call reg%add( section, 'coupling-dtime', hydra_obj_io%coupling_dtime, '1e30', 'Coupling solution output time frequency', '> 0', .false. )
+    call reg%add( section, 'coupling-format',    hydra_obj_io%coupling_format, 'tecplot ascii', 'Solution (OUTPUT/field.*) format', 'tecplot ascii, tecplot binary, vtk ascii, vtk raw', .false. )
+    call reg%add( section, 'coupling-diter',     hydra_obj_io%coupling_diter, '1000000000', 'Coupling solution output iter frequency', '> 0', .false. )
+    call reg%add( section, 'coupling-dtime',     hydra_obj_io%coupling_dtime, '1e30', 'Coupling solution output time frequency', '> 0', .false. )
     call reg%add( section, 'coupling-overwrite', hydra_obj_io%coupling_overwrite, 'true', 'Overwrite coupling solution files', 'true, false', .false. )
-    call reg%add( section, 'coupling-wall', hydra_obj_io%coupling_wall, 'false', 'Use coupling wall boundary conditions', 'true, false', .false. )
+    call reg%add( section, 'coupling-wall',      hydra_obj_io%coupling_wall, 'false', 'Use coupling wall boundary conditions', 'true, false', .false. )
 
     ! Shell options
     call reg%add( section, 'ini-diter', hydra_obj_io%ini_diter, '1000', 'input.ini update iter frequency', '> 0', .false. )
