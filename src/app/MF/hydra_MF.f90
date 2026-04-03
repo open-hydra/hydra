@@ -55,17 +55,17 @@ program hydra_program
   ! Setup Time-Accurate
   hydra_time = 0.d0
   pp_time = 0.d0
-  if ( obj_hydra_sim_param%time_accurate ) then
+  if ( hydra_obj_sim_param%time_accurate ) then
     FUSS_obj_sim_param%HYDRA_time_accurate = .true.
     MOSE_obj_sim_param%HYDRA_time_accurate = .true.
   endif
 
   ! Setup Multigrid
-  if (obj_hydra_multigrid%MGL > 1) then
+  if (hydra_obj_multigrid%MGL > 1) then
     FUSS_obj_sim_param%HYDRA_MG = .true.
     MOSE_obj_sim_param%HYDRA_MG = .true.
-    FUSS_obj_multigrid%MGL = obj_hydra_multigrid%MGL
-    MOSE_obj_multigrid%MGL = obj_hydra_multigrid%MGL
+    FUSS_obj_multigrid%MGL = hydra_obj_multigrid%MGL
+    MOSE_obj_multigrid%MGL = hydra_obj_multigrid%MGL
   endif
 
   ! Setup Solvers
@@ -73,18 +73,18 @@ program hydra_program
   call FUSS%setup( FUSS_simulation )
   call MOSE%setup( MOSE_simulation )
 
-  if (obj_hydra_multigrid%MGL > 1) then
-    do m = 1, obj_hydra_multigrid%MGL
-      FUSS_simulation%domain(m)%iter_threshold = obj_hydra_multigrid%iter_threshold(m)*obj_hydra_sim_param%FUSS_iter(1)
-      MOSE_simulation%domain(m)%iter_threshold = obj_hydra_multigrid%iter_threshold(m)*obj_hydra_sim_param%MOSE_iter(1)
+  if (hydra_obj_multigrid%MGL > 1) then
+    do m = 1, hydra_obj_multigrid%MGL
+      FUSS_simulation%domain(m)%iter_threshold = hydra_obj_multigrid%iter_threshold(m)*hydra_obj_sim_param%FUSS_iter(1)
+      MOSE_simulation%domain(m)%iter_threshold = hydra_obj_multigrid%iter_threshold(m)*hydra_obj_sim_param%MOSE_iter(1)
     enddo
   endif
 
   ! Coupling Initializations
-  if (obj_hydra_io%coupling_wall) then
-    allocate(IOwall(1:obj_hydra_multigrid%MGL))
-    do m = 1, obj_hydra_multigrid%MGL
-      if (index(obj_hydra_io%coupling_format,'ascii')>0) then
+  if (hydra_obj_io%coupling_wall) then
+    allocate(IOwall(1:hydra_obj_multigrid%MGL))
+    do m = 1, hydra_obj_multigrid%MGL
+      if (index(hydra_obj_io%coupling_format,'ascii')>0) then
         extension = '.tec'
       else
         extension = '.szplt'
@@ -101,34 +101,34 @@ program hydra_program
   MOSE_obj_sim_param%TODO = TODO
   n_couple = 0
   n_wall = 0
-  mgl = obj_hydra_multigrid%MGL
+  mgl = hydra_obj_multigrid%MGL
 
   do while ( TODO <= 2 )
 
     ! Set iteration number for each solver
-    if ( obj_hydra_sim_param%time_accurate ) then
+    if ( hydra_obj_sim_param%time_accurate ) then
       FUSS_iter = 1
       MOSE_iter = 1
-    elseif (obj_hydra_multigrid%MGL > 1) then
+    elseif (hydra_obj_multigrid%MGL > 1) then
       FUSS_iter = FUSS_obj_sim_param%FUSS_iter(1)
       MOSE_iter = MOSE_obj_sim_param%MOSE_iter(1)
     else
       nmin = 0
-      nmax = obj_hydra_sim_param%N_Coupling(1)
-      do n = 1, size(obj_hydra_sim_param%N_Coupling)
+      nmax = hydra_obj_sim_param%N_Coupling(1)
+      do n = 1, size(hydra_obj_sim_param%N_Coupling)
         if (n_couple >= nmin .and. n_couple < nmax ) then
-          FUSS_iter = obj_hydra_sim_param%FUSS_iter(n)
-          MOSE_iter = obj_hydra_sim_param%MOSE_iter(n)
+          FUSS_iter = hydra_obj_sim_param%FUSS_iter(n)
+          MOSE_iter = hydra_obj_sim_param%MOSE_iter(n)
         endif
         nmin = nmax
-        nmax = obj_hydra_sim_param%N_Coupling(n+1)
+        nmax = hydra_obj_sim_param%N_Coupling(n+1)
       enddo
     endif
 
     ! Update HYDRA input.ini options
-    if ( mod(n_couple+1, obj_hydra_io%ini_diter) == 0d0 ) then
+    if ( mod(n_couple+1, hydra_obj_io%ini_diter) == 0d0 ) then
       call HYDRA%ini_setup()
-      if ( obj_hydra_sim_param%time_accurate ) then
+      if ( hydra_obj_sim_param%time_accurate ) then
         FUSS_obj_sim_param%HYDRA_time_accurate = .true.
         MOSE_obj_sim_param%HYDRA_time_accurate = .true.
       else
@@ -138,8 +138,8 @@ program hydra_program
     endif
 
     ! Set Global dt for time-accurate
-    if ( obj_hydra_sim_param%time_accurate ) then
-      if ( obj_hydra_multigrid%MGL > 1 ) then
+    if ( hydra_obj_sim_param%time_accurate ) then
+      if ( hydra_obj_multigrid%MGL > 1 ) then
         write(*,*) 'Multi-Grid can not be used for time-accurate simulations for now!'
         stop
       else
@@ -150,7 +150,7 @@ program hydra_program
     ! Solve FUSS
     do i_FUSS = 1, FUSS_iter
       if ( FUSS_obj_sim_param%TODO <= 2 ) then
-        if (obj_hydra_io%coupling_wall) call BC_Coupled_Fluxes ( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl) )
+        if (hydra_obj_io%coupling_wall) call BC_Coupled_Fluxes ( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl) )
         call FUSS%solve( FUSS_simulation )
         if ( FUSS_obj_sim_param%TODO <= 2 ) call FUSS%postprocess( FUSS_simulation )
       endif
@@ -159,7 +159,7 @@ program hydra_program
     ! Solve MOSE
     do i_MOSE = 1, MOSE_iter
       if ( MOSE_obj_sim_param%TODO <= 2 ) then
-        if (obj_hydra_io%coupling_wall) call BC_Coupled_Fluxes ( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl) )
+        if (hydra_obj_io%coupling_wall) call BC_Coupled_Fluxes ( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl) )
         call MOSE%solve( MOSE_simulation, Dummy_Function )
         if ( MOSE_obj_sim_param%TODO <= 2 ) call MOSE%postprocess( MOSE_simulation )
       endif
@@ -168,22 +168,22 @@ program hydra_program
     n_couple = n_couple + 1
     
     ! Intermediate Postprocess
-    if (obj_hydra_multigrid%MGL > 1 .and. n_couple == sum(obj_hydra_multigrid%iter_threshold(mgl:))) then
+    if (hydra_obj_multigrid%MGL > 1 .and. n_couple == sum(hydra_obj_multigrid%iter_threshold(mgl:))) then
       print*, 'COUPLING-STEP POSTPROCESS - MG'
-      if (obj_hydra_io%coupling_wall) then
+      if (hydra_obj_io%coupling_wall) then
         n_wall = n_wall+1
         if (mgl == 1) then
           hydrafile = 'hydra-wall'
-          if (.not.obj_hydra_io%coupling_overwrite) hydrafile = trim(hydrafile)//trim(str(.true.,n_wall))
+          if (.not.hydra_obj_io%coupling_overwrite) hydrafile = trim(hydrafile)//trim(str(.true.,n_wall))
         else
           hydrafile = 'hydra-wall-level'//trim(str(.true.,mgl))
         endif
-        call Write_Wall_Solution( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl), mgl, hydrafile, obj_hydra_io%coupling_format )
+        call Write_Wall_Solution( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl), mgl, hydrafile, hydra_obj_io%coupling_format )
       endif
 
       mgl = mgl - 1
 
-    elseif ( mod(n_couple, obj_hydra_io%coupling_diter) == 0d0 .or. hydra_time >= pp_time + obj_hydra_io%coupling_dtime ) then
+    elseif ( mod(n_couple, hydra_obj_io%coupling_diter) == 0d0 .or. hydra_time >= pp_time + hydra_obj_io%coupling_dtime ) then
       print*, 'COUPLING-STEP POSTPROCESS'
       FUSS_obj_sim_param%HYDRA_postprocess = .true.
       MOSE_obj_sim_param%HYDRA_postprocess = .true.
@@ -193,15 +193,15 @@ program hydra_program
       MOSE_obj_sim_param%TODO = 2
       call FUSS%postprocess( FUSS_simulation )
       call MOSE%postprocess( MOSE_simulation )
-      if (obj_hydra_io%coupling_wall) then
+      if (hydra_obj_io%coupling_wall) then
         n_wall = n_wall+1
         if (mgl == 1) then
           hydrafile = 'hydra-wall'
-          if (.not.obj_hydra_io%coupling_overwrite) hydrafile = trim(hydrafile)//trim(str(.true.,n_wall))
+          if (.not.hydra_obj_io%coupling_overwrite) hydrafile = trim(hydrafile)//trim(str(.true.,n_wall))
         else
           hydrafile = 'hydra-wall-level'//trim(str(.true.,mgl))
         endif
-        call Write_Wall_Solution( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl), mgl, hydrafile, obj_hydra_io%coupling_format )
+        call Write_Wall_Solution( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl), mgl, hydrafile, hydra_obj_io%coupling_format )
       endif
       FUSS_obj_sim_param%TODO = ex_FUSS_TODO
       MOSE_obj_sim_param%TODO = ex_MOSE_TODO
@@ -214,17 +214,17 @@ program hydra_program
     if ( FUSS_obj_sim_param%TODO == 3 .and. MOSE_obj_sim_param%TODO == 3 ) then
       TODO = 3
     endif
-    if ( n_couple == obj_hydra_sim_param%N_Coupling(size(obj_hydra_sim_param%N_Coupling)) ) then
+    if ( n_couple == hydra_obj_sim_param%N_Coupling(size(hydra_obj_sim_param%N_Coupling)) ) then
       TODO = 3
       FUSS_obj_sim_param%TODO = 3
       MOSE_obj_sim_param%TODO = 3
     endif
-    if ( obj_hydra_multigrid%MGL > 1 .and. mgl == 0 ) then
+    if ( hydra_obj_multigrid%MGL > 1 .and. mgl == 0 ) then
       TODO = 3
       FUSS_obj_sim_param%TODO = 3
       MOSE_obj_sim_param%TODO = 3
     endif
-    if ( obj_hydra_sim_param%time_accurate .and. hydra_time >= obj_hydra_sim_param%time_threshold) then
+    if ( hydra_obj_sim_param%time_accurate .and. hydra_time >= hydra_obj_sim_param%time_threshold) then
       TODO = 3
       FUSS_obj_sim_param%TODO = 3
       MOSE_obj_sim_param%TODO = 3
@@ -240,9 +240,9 @@ program hydra_program
   print*, 'FINAL POSTPROCESS'
   call FUSS%postprocess( FUSS_simulation )
   call MOSE%postprocess( MOSE_simulation )
-  if (obj_hydra_io%coupling_wall) then
+  if (hydra_obj_io%coupling_wall) then
     hydrafile='hydra-wall'
-    call Write_Wall_Solution( FUSS_simulation%domain(1), MOSE_simulation%domain(1), 1, hydrafile, obj_hydra_io%coupling_format )
+    call Write_Wall_Solution( FUSS_simulation%domain(1), MOSE_simulation%domain(1), 1, hydrafile, hydra_obj_io%coupling_format )
   endif
 
 

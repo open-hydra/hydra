@@ -62,9 +62,9 @@ module hydra_Config_Types_m
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
   !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!
-  type(hydra_simulation_parameters_t), public :: obj_hydra_sim_param
-  type(hydra_io_t), public                    :: obj_hydra_io
-  type(hydra_multigrid_t), public             :: obj_hydra_multigrid
+  type(hydra_simulation_parameters_t), public :: hydra_obj_sim_param
+  type(hydra_io_t), public                    :: hydra_obj_io
+  type(hydra_multigrid_t), public             :: hydra_obj_multigrid
   !! ------------------------------------------------------
   !! ------------------------------------------------------
   

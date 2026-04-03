@@ -11,26 +11,26 @@ contains
 
   subroutine Register_IO_Fields()
     use hydra_Input_Registry
-    use hydra_Config_Types_m, only: obj_hydra_io
+    use hydra_Config_Types_m, only: hydra_obj_io
     implicit none
     ! Local
     character(len=:), allocatable :: section
 
-    obj_hydra_io%warning_message = 'none'
-    obj_hydra_io%error_message   = 'none'
-    obj_hydra_io%description     = 'none'
+    hydra_obj_io%warning_message = 'none'
+    hydra_obj_io%error_message   = 'none'
+    hydra_obj_io%description     = 'none'
 
     section = 'HYDRA-IO'
     
     ! IO options
-    call reg%add( section, 'sol-format', obj_hydra_io%sol_format, 'tecplot ascii', 'Solution (OUTPUT/field.*) format', 'tecplot ascii, tecplot binary, vtk ascii, vtk raw', .false. )
-    call reg%add( section, 'coupling-diter', obj_hydra_io%coupling_diter, '1000000000', 'Coupling solution output iter frequency', '> 0', .false. )
-    call reg%add( section, 'coupling-dtime', obj_hydra_io%coupling_dtime, '1e30', 'Coupling solution output time frequency', '> 0', .false. )
-    call reg%add( section, 'coupling-overwrite', obj_hydra_io%coupling_overwrite, 'true', 'Overwrite coupling solution files', 'true, false', .false. )
-    call reg%add( section, 'coupling-wall', obj_hydra_io%coupling_wall, 'false', 'Use coupling wall boundary conditions', 'true, false', .false. )
+    call reg%add( section, 'sol-format', hydra_obj_io%sol_format, 'tecplot ascii', 'Solution (OUTPUT/field.*) format', 'tecplot ascii, tecplot binary, vtk ascii, vtk raw', .false. )
+    call reg%add( section, 'coupling-diter', hydra_obj_io%coupling_diter, '1000000000', 'Coupling solution output iter frequency', '> 0', .false. )
+    call reg%add( section, 'coupling-dtime', hydra_obj_io%coupling_dtime, '1e30', 'Coupling solution output time frequency', '> 0', .false. )
+    call reg%add( section, 'coupling-overwrite', hydra_obj_io%coupling_overwrite, 'true', 'Overwrite coupling solution files', 'true, false', .false. )
+    call reg%add( section, 'coupling-wall', hydra_obj_io%coupling_wall, 'false', 'Use coupling wall boundary conditions', 'true, false', .false. )
 
     ! Shell options
-    call reg%add( section, 'ini-diter', obj_hydra_io%ini_diter, '1000', 'input.ini update iter frequency', '> 0', .false. )
+    call reg%add( section, 'ini-diter', hydra_obj_io%ini_diter, '1000', 'input.ini update iter frequency', '> 0', .false. )
 
   end subroutine Register_IO_Fields
 

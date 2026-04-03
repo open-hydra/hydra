@@ -47,23 +47,23 @@ contains
     
 
     ! Check for N-coupling, FUSS-iter, MOSE-iter in the input.ini and allocate arrays accordingly
-    if (allocated(obj_hydra_sim_param%N_Coupling)) deallocate(obj_hydra_sim_param%N_Coupling)
+    if (allocated(hydra_obj_sim_param%N_Coupling)) deallocate(hydra_obj_sim_param%N_Coupling)
     if (fini%has_option(option_name='N-coupling')) then
-      allocate(obj_hydra_sim_param%N_Coupling(1:fini%count_values(section_name='HYDRA-parameters', option_name='N-coupling')))
+      allocate(hydra_obj_sim_param%N_Coupling(1:fini%count_values(section_name='HYDRA-parameters', option_name='N-coupling')))
     else
-      allocate(obj_hydra_sim_param%N_Coupling(1))
+      allocate(hydra_obj_sim_param%N_Coupling(1))
     endif
-    if (allocated(obj_hydra_sim_param%FUSS_iter)) deallocate(obj_hydra_sim_param%FUSS_iter)
+    if (allocated(hydra_obj_sim_param%FUSS_iter)) deallocate(hydra_obj_sim_param%FUSS_iter)
     if (fini%has_option(option_name='FUSS-iter')) then
-      allocate(obj_hydra_sim_param%FUSS_iter(1:fini%count_values(section_name='HYDRA-parameters', option_name='FUSS-iter')))
+      allocate(hydra_obj_sim_param%FUSS_iter(1:fini%count_values(section_name='HYDRA-parameters', option_name='FUSS-iter')))
     else
-      allocate(obj_hydra_sim_param%FUSS_iter(1))
+      allocate(hydra_obj_sim_param%FUSS_iter(1))
     endif
-    if (allocated(obj_hydra_sim_param%MOSE_iter)) deallocate(obj_hydra_sim_param%MOSE_iter)
+    if (allocated(hydra_obj_sim_param%MOSE_iter)) deallocate(hydra_obj_sim_param%MOSE_iter)
     if (fini%has_option(option_name='MOSE-iter')) then
-      allocate(obj_hydra_sim_param%MOSE_iter(1:fini%count_values(section_name='HYDRA-parameters', option_name='MOSE-iter')))
+      allocate(hydra_obj_sim_param%MOSE_iter(1:fini%count_values(section_name='HYDRA-parameters', option_name='MOSE-iter')))
     else
-      allocate(obj_hydra_sim_param%MOSE_iter(1))
+      allocate(hydra_obj_sim_param%MOSE_iter(1))
     endif
 
     ! Read the MGL

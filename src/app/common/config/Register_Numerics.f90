@@ -28,7 +28,7 @@ contains
 
   subroutine Register_Multigrid_Levels(nmgl)
     use hydra_Input_Registry
-    use hydra_Config_Types_m, only: obj_hydra_multigrid
+    use hydra_Config_Types_m, only: hydra_obj_multigrid
     use hydra_Parameters_m
     use IR_precision
     implicit none
@@ -36,19 +36,19 @@ contains
     character(len=llen_) :: option
     integer :: m
 
-    obj_hydra_multigrid%warning_message = 'none'
-    obj_hydra_multigrid%error_message   = 'none'
-    obj_hydra_multigrid%description     = 'none'
+    hydra_obj_multigrid%warning_message = 'none'
+    hydra_obj_multigrid%error_message   = 'none'
+    hydra_obj_multigrid%description     = 'none'
 
     ! Allocate iteration threshold array for each level
-    obj_hydra_multigrid%MGL = max(nmgl, 1)
-    allocate( obj_hydra_multigrid%iter_threshold(obj_hydra_multigrid%MGL) )
-    obj_hydra_multigrid%iter_threshold = 0
+    hydra_obj_multigrid%MGL = max(nmgl, 1)
+    allocate( hydra_obj_multigrid%iter_threshold(hydra_obj_multigrid%MGL) )
+    hydra_obj_multigrid%iter_threshold = 0
 
     ! Register per-level iteration parameters (level1-iter, level2-iter, level3-iter, ...)
-    do m = 1, obj_hydra_multigrid%MGL
+    do m = 1, hydra_obj_multigrid%MGL
       write(option,'(A5,I0,A5)') 'level', m, '-iter'
-      call reg%add( 'HYDRA-multigrid', trim(option), obj_hydra_multigrid%iter_threshold(m), '0', 'Iterations for multigrid level '//trim(str(.true.,m)), '>= 0', .true. )
+      call reg%add( 'HYDRA-multigrid', trim(option), hydra_obj_multigrid%iter_threshold(m), '0', 'Iterations for multigrid level '//trim(str(.true.,m)), '>= 0', .true. )
     enddo
 
   end subroutine Register_Multigrid_Levels  
