@@ -186,7 +186,7 @@ contains
     use MOSE_Global_m
     use FUSS_Advanced_Types_m
     use FUSS_Global_m
-    use hydraMF_Mod_Coupling, only: FUSS_Wall_Temperature, MOSE_Wall_Temperature
+    use hydraMF_Lib_BC_Coupled_Wall_Temperature, only: FUSS_BC_Coupled_Wall_Temperature, MOSE_BC_Coupled_Wall_Temperature
     implicit none
     type(FUSS_domain_type), intent(inout) :: FUSS_domain
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
@@ -229,7 +229,7 @@ contains
               Js  = FUSS_domain % bc(i) % js
               Ks  = FUSS_domain % bc(i) % ks
               Fs  = FUSS_domain % bc(i) % fs
-              call FUSS_Wall_Temperature( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
+              call FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
                                           Is, Js, Ks, Fs, MOSE_domain % blk(Bs), &
                                           FUSS_domain%bc(i)%Mg(1), FUSS_domain%bc(i)%Tg, &
                                           FUSS_new_flux, Ovar(6:7) )
@@ -279,7 +279,7 @@ contains
               Js  = MOSE_domain % bc(i) % js
               Ks  = MOSE_domain % bc(i) % ks
               Fs  = MOSE_domain % bc(i) % fs
-              call MOSE_Wall_Temperature( Im, Jm, Km, Fm, MOSE_domain % blk(Bm), &
+              call MOSE_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, MOSE_domain % blk(Bm), &
                                           Is, Js, Ks, Fs, FUSS_domain % blk(Bs), &
                                           MOSE_domain%bc(i)%Mg(1), MOSE_domain%bc(i)%Pg, &
                                           MOSE_new_flux, Ovar )

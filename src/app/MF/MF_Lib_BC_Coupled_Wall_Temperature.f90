@@ -3,11 +3,11 @@ module hydraMF_Lib_BC_Coupled_Wall_Temperature
   
   implicit none
   private
-  public :: FUSS_Wall_Temperature, MOSE_Wall_Temperature
+  public :: FUSS_BC_Coupled_Wall_Temperature, MOSE_BC_Coupled_Wall_Temperature
   
 contains
 
-  subroutine FUSS_Wall_Temperature( Im, Jm, Km, Fm, Blk_FUSS, Is, Js, Ks, Fs, Blk_MOSE, Mg, Tg, new_flux, Ovar )
+  subroutine FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, Blk_FUSS, Is, Js, Ks, Fs, Blk_MOSE, Mg, Tg, new_flux, Ovar )
     use hydra_Parameters_m, only: guide_
     use FUSS_Advanced_Types_m
     use FUSS_Base_Types_m
@@ -121,10 +121,10 @@ contains
     q_wall = kappa * dot_product( Gradient, Normal )
     if (present(Ovar)) call Compute_Wall_Properties(Tw=T_wall, qw=q_wall, exit_array=Ovar)
 
-  end subroutine FUSS_Wall_Temperature
+  end subroutine FUSS_BC_Coupled_Wall_Temperature
 
 
-  subroutine MOSE_Wall_Temperature( Im, Jm, Km, Fm, Blk_MOSE, Is, Js, Ks, Fs, Blk_FUSS, Mg, Pg, new_flux, Ovar )
+  subroutine MOSE_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, Blk_MOSE, Is, Js, Ks, Fs, Blk_FUSS, Mg, Pg, new_flux, Ovar )
     use hydra_Parameters_m, only: guide_
     use MOSE_Advanced_Types_m
     use MOSE_Base_Types_m
@@ -285,7 +285,7 @@ contains
                                                     qw=q_wall, &
                                                     exit_array=Ovar)
 
-  end subroutine MOSE_Wall_Temperature
+  end subroutine MOSE_BC_Coupled_Wall_Temperature
 
 
   subroutine Compute_Modfm ( Fm, modfm, modfm1, modfm2, modfm3 )

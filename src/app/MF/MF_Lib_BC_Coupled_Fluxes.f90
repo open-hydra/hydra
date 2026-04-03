@@ -8,7 +8,7 @@ module hydraMF_Lib_BC_Coupled_Fluxes
 contains
 
   subroutine Compute_FUSS_Flux ( FUSS_domain, MOSE_domain )
-    use hydraMF_Lib_BC_Coupled_Wall_Temperature, only: FUSS_Wall_Temperature
+    use hydraMF_Lib_BC_Coupled_Wall_Temperature, only: FUSS_BC_Coupled_Wall_Temperature
     use FUSS_Advanced_Types_m
     use MOSE_Advanced_Types_m
     use MOSE_Global_m, only: np
@@ -45,7 +45,7 @@ contains
               Js  = FUSS_domain % bc(i) % js
               Ks  = FUSS_domain % bc(i) % ks
               Fs  = FUSS_domain % bc(i) % fs
-              call FUSS_Wall_Temperature( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
+              call FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
                                           Is, Js, Ks, Fs, MOSE_domain % blk(Bs), &
                                           FUSS_domain%bc(i)%Mg(1), FUSS_domain%bc(i)%Tg, FUSS_new_flux )
               FUSS_domain % bc(i) % ext_flux = FUSS_domain % bc(i) % ext_flux + 0.5 * FUSS_new_flux
@@ -85,7 +85,7 @@ contains
 
 
   subroutine Compute_MOSE_Flux ( FUSS_domain, MOSE_domain )
-    use hydraMF_Lib_BC_Coupled_Wall_Temperature, only: MOSE_Wall_Temperature
+    use hydraMF_Lib_BC_Coupled_Wall_Temperature, only: MOSE_BC_Coupled_Wall_Temperature
     use FUSS_Advanced_Types_m
     use MOSE_Advanced_Types_m
     use MOSE_Global_m, only: nprim, np
@@ -122,7 +122,7 @@ contains
               Js  = MOSE_domain % bc(i) % js
               Ks  = MOSE_domain % bc(i) % ks
               Fs  = MOSE_domain % bc(i) % fs
-              call MOSE_Wall_Temperature( Im, Jm, Km, Fm, MOSE_domain % blk(Bm), &
+              call MOSE_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, MOSE_domain % blk(Bm), &
                                           Is, Js, Ks, Fs, FUSS_domain % blk(Bs), &
                                           MOSE_domain%bc(i)%Mg(1), MOSE_domain%bc(i)%Pg, MOSE_new_flux )
               MOSE_domain % bc(i) % ext_flux = MOSE_domain % bc(i) % ext_flux + 0.5 * MOSE_new_flux
