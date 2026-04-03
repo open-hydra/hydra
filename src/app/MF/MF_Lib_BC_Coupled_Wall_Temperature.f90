@@ -12,7 +12,7 @@ contains
     use FUSS_Advanced_Types_m
     use FUSS_Base_Types_m
     use FUSS_Lib_Solid
-    use FUSS_Lib_BC, only: Compute_Wall_Properties
+    use FUSS_Lib_BC_Fluxes, only: Compute_Wall_Properties
     use MOSE_Advanced_Types_m
     use MOSE_Global_m
     use FLINT_Lib_Thermodynamic
@@ -129,13 +129,12 @@ contains
     use MOSE_Advanced_Types_m
     use MOSE_Base_Types_m
     use MOSE_Global_m
-    use MOSE_Mod_Fluid
+    use MOSE_Lib_Fluid
     use MOSE_Lib_RANS
-    use MOSE_Lib_BC, only: Compute_Wall_Properties
+    use MOSE_Lib_BC_Fluxes, only: Compute_Wall_Properties
     use FLINT_Lib_Thermodynamic
     use FUSS_Advanced_Types_m
     use FUSS_Lib_Solid
-    use FUSS_Lib_BC, only: Compute_Wall_Properties
     implicit none
     integer,intent(in) :: Im, Jm, Km, Fm, Is, Js, Ks, Fs
     type(MOSE_block_type), intent(inout)   :: Blk_MOSE
@@ -168,24 +167,24 @@ contains
     
     ! Stencil building               
     call co_rotot_Rtot ( Blk_MOSE%P(1:nsc,Im,Jm,Km), rho, Rgas )
-    T_loc = EOS( p=Blk_MOSE%P(np,Im,Jm,Km), ro=rho, R=Rgas )
+    T_loc = EOS( p=Blk_MOSE%P(np,Im,Jm,Km), rho=rho, R=Rgas )
     call co_k_mi_lam_Wilke ( Blk_MOSE%P(1:nsc,Im,Jm,Km), rho, T_loc, mil, kappa_loc )
     call co_rotot_Rtot ( Blk_MOSE%P(1:nsc,Im+1,Jm,Km), rho, Rgas )
-    T_ip_loc = EOS( p=Blk_MOSE%P(np,Im+1,Jm,Km), ro=rho, R=Rgas )
+    T_ip_loc = EOS( p=Blk_MOSE%P(np,Im+1,Jm,Km), rho=rho, R=Rgas )
     call co_rotot_Rtot ( Blk_MOSE%P(1:nsc,Im-1,Jm,Km), rho, Rgas )
-    T_im_loc = EOS( p=Blk_MOSE%P(np,Im-1,Jm,Km), ro=rho, R=Rgas )
+    T_im_loc = EOS( p=Blk_MOSE%P(np,Im-1,Jm,Km), rho=rho, R=Rgas )
     call co_rotot_Rtot ( Blk_MOSE%P(1:nsc,Im,Jm+1,Km), rho, Rgas )
-    T_jp_loc = EOS( p=Blk_MOSE%P(np,Im,Jm+1,Km), ro=rho, R=Rgas )
+    T_jp_loc = EOS( p=Blk_MOSE%P(np,Im,Jm+1,Km), rho=rho, R=Rgas )
     call co_rotot_Rtot ( Blk_MOSE%P(1:nsc,Im,Jm-1,Km), rho, Rgas )
-    T_jm_loc = EOS( p=Blk_MOSE%P(np,Im,Jm-1,Km), ro=rho, R=Rgas )
+    T_jm_loc = EOS( p=Blk_MOSE%P(np,Im,Jm-1,Km), rho=rho, R=Rgas )
     if (ndir == 2) then
       T_kp_loc = huge(0.0)
       T_km_loc = huge(0.0)
     else
       call co_rotot_Rtot ( Blk_MOSE%P(1:nsc,Im,Jm,Km+1), rho, Rgas )
-      T_kp_loc = EOS( p=Blk_MOSE%P(np,Im,Jm,Km+1), ro=rho, R=Rgas )
+      T_kp_loc = EOS( p=Blk_MOSE%P(np,Im,Jm,Km+1), rho=rho, R=Rgas )
       call co_rotot_Rtot ( Blk_MOSE%P(1:nsc,Im,Jm,Km-1), rho, Rgas )
-      T_km_loc = EOS( p=Blk_MOSE%P(np,Im,Jm,Km-1), ro=rho, R=Rgas )
+      T_km_loc = EOS( p=Blk_MOSE%P(np,Im,Jm,Km-1), rho=rho, R=Rgas )
     endif
 
     T_con    = Pg(1,1)
@@ -230,7 +229,10 @@ contains
     Prim = Blk_MOSE % P (:,Im,Jm,Km)
     call co_rotot_Rtot ( Prim(1:nsc), rho, Rgas )
     T = Prim(np) / ( rho * Rgas )
-    
+
+    ! Initialization
+    Gradient = 0d0
+
     ! Boundary layer: p(wall) = p(cell). Also, non catalytic wall, so R(wall) = R(cell) and ci(wall) = ci(cell), but not roi
     rho_wall = Prim(np) / ( Rgas * T_wall )
     Prim_wall(1:nsc) = Prim(1:nsc) * rho_wall / rho
@@ -239,12 +241,11 @@ contains
     call co_k_mi_lam_Wilke ( Prim_wall(1:nsc), rho_wall, T_wall, mil, kl )
 
     ! Difference in Across-face direction: symmetry; tangential direction: null
-    Gradient = 0d0
     Gradient(nu:nw,Dir) = Prim(nu:nw) * modfm3                  ! Velocity
     Gradient(np,Dir) = ( T - T_wall ) * modfm3                  ! Temperature
-    
-    if (RANS)  then
-      dl = Blk_MOSE % dl(Im,Jm,Km) % c(Dir)
+
+    if (model==2)  then
+      dl = Blk_MOSE % yn(im,jm,km)
       call RANS_Set_Wall_Values( mil, Prim_Wall(nt:nprim), dl )
       Gradient(nt:nprim,Dir) = ( Prim(nt:nprim)/rho - Prim_Wall(nt:nprim)/rho_wall ) * modfm3 
     end if
@@ -261,17 +262,16 @@ contains
     Flux(nu:nw) = Stress * Area
     Flux(np) = 0.5 * Area * kl * dot_product ( Gradient(np,:), Normal )
 
-    if (RANS) then
-      Dist = 1d-20 ! since the flux is computed at the wall
+    if (model==2) then
       call RANS_Diffusive_Flux ( flux=Flux(nt:nprim), &
-                                  rans_variables=Prim_Wall(nt:nprim), &
-                                  vel_gradient=Gradient(nu:nw,:), &
-                                  rans_gradient=Gradient(nt:nprim,:), &
-                                  mul=mil, rho=rho_wall, &
-                                  area=area, normal=normal, dist=dist )
+                                 rans_variables=Prim_Wall(nt:nprim), &
+                                 vel_gradient=Gradient(nu:nw,:), &
+                                 rans_gradient=Gradient(nt:nprim,:), &
+                                 mul=mil, rho=rho_wall, &
+                                 area=area, normal=normal, dist=dist )
       ! Ghost-cell extrapolation of RANS variables
       call RANS_Extrapolate_Wall ( Prim(nt:nprim), Prim_Wall(nt:nprim), &
-                                    rho, rho_wall, Blk_MOSE % PO (nt:nprim,Ig,Jg,Kg) )
+                                    rho, rho_wall, Blk_MOSE % P(nt:nprim,Ig,Jg,Kg) )
     endif
 
     ! Residual update
