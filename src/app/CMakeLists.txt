@@ -53,7 +53,8 @@ if(EXE_NAME STREQUAL "MF")
     add_fortran_executable_from_dirs(
         hydra_MF
         SRCDIRS
-            ${CMAKE_SOURCE_DIR}/src/app/common
+            ${CMAKE_SOURCE_DIR}/src/app/common/base
+            ${CMAKE_SOURCE_DIR}/src/app/common/config
             ${CMAKE_SOURCE_DIR}/src/app/MF
         LIBS FUSSL MOSEL FiNeR)
 ENDIF()

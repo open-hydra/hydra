@@ -36,7 +36,8 @@ contains
   end subroutine
 
 
-  subroutine Scan_Ini(fini, nnmgl)
+  subroutine Scan_Ini(fini, nmgl)
+    use hydra_Config_Types_m, only: hydra_obj_sim_param
     use Finer, only: file_ini
     use IR_precision
     implicit none
