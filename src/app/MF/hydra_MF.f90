@@ -180,7 +180,7 @@ program hydra_program
         else
           hydrafile = 'hydra-wall-level'//trim(str(.true.,mgl))
         endif
-        call Write_Wall_Solution( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl), mgl, hydrafile )
+        call Write_Wall_Solution( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl), hydrafile, mgl )
       endif
 
       mgl = mgl - 1
@@ -203,7 +203,7 @@ program hydra_program
         else
           hydrafile = 'hydra-wall-level'//trim(str(.true.,mgl))
         endif
-        call Write_Wall_Solution( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl), mgl, hydrafile )
+        call Write_Wall_Solution( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl), hydrafile, mgl )
       endif
       FUSS_obj_sim_param%TODO = ex_FUSS_TODO
       MOSE_obj_sim_param%TODO = ex_MOSE_TODO
@@ -244,7 +244,7 @@ program hydra_program
   call MOSE%postprocess( MOSE_simulation )
   if (hydra_obj_io%coupling_wall) then
     hydrafile='hydra-wall'
-    call Write_Wall_Solution( FUSS_simulation%domain(1), MOSE_simulation%domain(1), 1, hydrafile, hydra_obj_io%coupling_format )
+    call Write_Wall_Solution( FUSS_simulation%domain(1), MOSE_simulation%domain(1), hydrafile, 1 )
   endif
 
 
