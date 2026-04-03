@@ -4,7 +4,7 @@ program hydra_program
   use omp_lib
 #endif
   use hydra_Parameters_m
-  use hydra_Read_Ini,                only: Read_Inifile
+  use hydra_Read_Ini,                only: Read_Inifile, Read_Inifile_Runtime
   use hydra_Config_Types_m
   use hydraMF_Mod_Import,            only: Assign_Phases
   use hydraMF_IO_Wall

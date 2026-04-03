@@ -145,6 +145,7 @@ contains
     use hydra_Parameters_m
     use MOSE_Advanced_Types_m
     use FUSS_Advanced_Types_m
+    use strings, only: parse
     implicit none
     type(FUSS_domain_type), intent(inout)  :: FUSS_domain
     type(MOSE_domain_type), intent(inout)  :: MOSE_domain
