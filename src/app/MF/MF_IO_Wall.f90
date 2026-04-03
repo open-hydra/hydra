@@ -174,7 +174,7 @@ contains
                                                                  vtmpath=trim(path)//trim(file),varnames=hydra_obj_io%Owallnames)
     case('tecplot')
       IOwall(level)%tec%format = trim(format(2))
-      E_IO = tec_write_structured_multiblock(orion=IOwall(level),varnames=hydra_obj_io%Owallnames,filename=trim(path)//trim(file)//trim(IOwall%tec%extension))
+      E_IO = tec_write_structured_multiblock(orion=IOwall(level),varnames=hydra_obj_io%Owallnames,filename=trim(path)//trim(file)//trim(IOwall(level)%tec%extension))
     end select
 
   end subroutine Write_Wall_Solution

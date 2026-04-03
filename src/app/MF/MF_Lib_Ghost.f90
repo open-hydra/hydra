@@ -1,6 +1,7 @@
 module hydraMF_Lib_Ghost
   use iso_fortran_env, only: I4 => int32, R8 => real64
   use hydra_Global_m
+  use hydra_Parameters_m
   use MOSE_Advanced_Types_m
   use FUSS_Advanced_Types_m
 
@@ -126,7 +127,7 @@ contains
       Ks_ = Ks + guide_(Fs,3)*(g-1)
       
       call co_rotot_Rtot ( blks % P (1:nsc,Is_,Js_,Ks_), rho, Rgas )
-      Ts = EOS( p=blks%P(np,Is_,Js_,Ks_), ro=rho, R=Rgas )
+      Ts = EOS( p=blks%P(np,Is_,Js_,Ks_), rho=rho, R=Rgas )
       
       Tg(g) = Ts
 
@@ -189,13 +190,13 @@ contains
     end select
 
     call co_rotot_Rtot ( blks % P (1:nsc,i1,j1,k1), rho, Rgas )
-    Ts1 = EOS( p=blks%P(np,i1,j1,k1), ro=rho, R=Rgas )
+    Ts1 = EOS( p=blks%P(np,i1,j1,k1), rho=rho, R=Rgas )
     call co_rotot_Rtot ( blks % P (1:nsc,i2,j2,k2), rho, Rgas )
-    Ts2 = EOS( p=blks%P(np,i2,j2,k2), ro=rho, R=Rgas )
+    Ts2 = EOS( p=blks%P(np,i2,j2,k2), rho=rho, R=Rgas )
     call co_rotot_Rtot ( blks % P (1:nsc,i3,j3,k3), rho, Rgas )
-    Ts3 = EOS( p=blks%P(np,i3,j3,k3), ro=rho, R=Rgas )
+    Ts3 = EOS( p=blks%P(np,i3,j3,k3), rho=rho, R=Rgas )
     call co_rotot_Rtot ( blks % P (1:nsc,i4,j4,k4), rho, Rgas )
-    Ts4 = EOS( p=blks%P(np,i4,j4,k4), ro=rho, R=Rgas )
+    Ts4 = EOS( p=blks%P(np,i4,j4,k4), rho=rho, R=Rgas )
 
     Tg (3) = Ts1
     Tg (4) = Ts2
