@@ -27,7 +27,7 @@ if [ $# -eq 1 ]; then
 else
     if [[ "$2" == "ATLAS" || "$2" == "GRIB" ]]; then
         arg="utils/$2"
-    elif [[ "$2" == "MOSE" || "$2" == "FUSS" ]]; then
+    elif [[ "$2" == "MOSE" || "$2" == "FUSS" || "$2" == "ICE" || "$2" == "IGLOO" || "$2" == "GROOT" ]]; then
         arg="src/lib/$2"
     else
         arg="lib/$2"
