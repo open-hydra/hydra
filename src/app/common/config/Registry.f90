@@ -1,4 +1,5 @@
 module hydra_Input_Registry
+
   use iso_fortran_env, only: I4 => int32, R8 => real64
   implicit none
   private
@@ -114,11 +115,11 @@ contains
 
     if (this%size == this%capacity) then
 
-        if (this%capacity == 0) then
-            call this%reserve(8)
-    else
-            call this%reserve(2*this%capacity)
-    end if
+      if (this%capacity == 0) then
+        call this%reserve(8)
+      else
+        call this%reserve(2*this%capacity)
+      end if
 
     end if
 
@@ -278,7 +279,7 @@ contains
     logical, intent(in) :: required
     integer, target, intent(inout) :: var(:)
 
-    integer :: n
+    integer :: n, defval
 
     call ensure_space(this)
 
@@ -294,6 +295,9 @@ contains
 
     this%params(n)%type_id = TYPE_INT
     this%params(n)%value%iarr => var
+
+    read(default,*) defval
+    var(:) = defval
 
   end subroutine
 
@@ -312,6 +316,7 @@ contains
     real(R8), target, intent(inout) :: var(:)
 
     integer :: n
+    real(R8) :: defval
 
     call ensure_space(this)
 
@@ -327,6 +332,9 @@ contains
 
     this%params(n)%type_id = TYPE_REAL
     this%params(n)%value%rarr => var
+
+    read(default,*) defval
+    var(:) = defval
 
   end subroutine add_real_array
 
@@ -347,48 +355,47 @@ contains
 
     do i=1,reg%size
 
-        if (reg%params(i)%required .and. .not. reg%params(i)%is_set) then
-            out = "[ERROR] Required parameter not set: "//trim(reg%params(i)%name)
-            return
-    end if
+      if (reg%params(i)%required .and. .not. reg%params(i)%is_set) then
+        out = "[ERROR] Required parameter not set: "//trim(reg%params(i)%name)
+        return
+      end if
 
-    if (reg%params(i)%allowed == "") cycle
+      if (reg%params(i)%allowed == "") cycle
 
-    ! Arrays are parsed/validated by FiNeR, skip scalar rule checks here.
-    if (associated(reg%params(i)%value%iarr) .or. associated(reg%params(i)%value%rarr)) cycle
+      ! Arrays are parsed/validated by FiNeR, skip scalar rule checks here.
+      if (associated(reg%params(i)%value%iarr) .or. associated(reg%params(i)%value%rarr)) cycle
 
-    select case(reg%params(i)%type_id)
+      select case(reg%params(i)%type_id)
 
-    case(TYPE_INT)
+      case(TYPE_INT)
 
-      if (.not. associated(reg%params(i)%value%i)) cycle
+        if (.not. associated(reg%params(i)%value%i)) cycle
 
-      val = real(reg%params(i)%value%i, R8)
-      call validate_numeric(reg%params(i)%name, val, reg%params(i)%allowed, out)
-      if (out /= "") return
+        val = real(reg%params(i)%value%i, R8)
+        call validate_numeric(reg%params(i)%name, val, reg%params(i)%allowed, out)
+        if (out /= "") return
 
-    case(TYPE_REAL)
+      case(TYPE_REAL)
 
-      if (.not. associated(reg%params(i)%value%r)) cycle
+        if (.not. associated(reg%params(i)%value%r)) cycle
 
-      val = reg%params(i)%value%r
-      call validate_numeric(reg%params(i)%name, val, reg%params(i)%allowed, out)
-      if (out /= "") return
+        val = reg%params(i)%value%r
+        call validate_numeric(reg%params(i)%name, val, reg%params(i)%allowed, out)
+        if (out /= "") return
 
-    case(TYPE_STR)
+      case(TYPE_STR)
 
-      if (.not. associated(reg%params(i)%value%s)) cycle
+        if (.not. associated(reg%params(i)%value%s)) cycle
+        if (trim(reg%params(i)%value%s) == "") cycle
+        call validate_string(reg%params(i)%name, reg%params(i)%value%s, reg%params(i)%allowed, out)
+        if (out /= "") return
 
-      call validate_string(reg%params(i)%name, reg%params(i)%value%s, &
-        reg%params(i)%allowed, out)
-      if (out /= "") return
+      case default
+        cycle
 
-    case default
-      cycle
+      end select
 
-    end select
-
-  end do
+    end do
 
   end function Validate_Registry
 
@@ -445,10 +452,32 @@ contains
   character(*), intent(in) :: value
   character(*), intent(in) :: allowed
   character(len=*), intent(inout) :: out
+  character(len=:), allocatable :: token
+  character(len=:), allocatable :: lower_value
+  integer :: i, start, end
+  logical :: is_sep
 
-  if (index(allowed,trim(value)) == 0) then
-    out = "[ERROR] "//trim(name)//" must be one of: "//trim(allowed)
-  end if
+  ! Split allowed by comma and check each token
+  start = 1
+  do i = 1, len(allowed)+1
+    is_sep = i > len(allowed)
+    if (.not. is_sep) is_sep = (allowed(i:i) == ",")
+    if (is_sep) then
+        end = i - 1
+        token = adjustl(allowed(start:end))
+        ! [NOT ACTIIVE] Allow capital and lowercase values to compare them in a case-insensitive way
+        ! token = lowercase(token)
+        ! lower_value = lowercase(value)
+        lower_value = value
+        if (trim(token) == trim(lower_value)) then
+          return
+        end if
+        start = i + 1
+    end if
+  end do
+
+  ! If we get here, no match was found in the allowed list
+  out = "[ERROR] "//trim(name)//" must be one of: "//trim(allowed)
 
   end subroutine validate_string
 
@@ -470,43 +499,63 @@ contains
     logical :: new_section
 
     if (present(filename)) then
-    fileout=filename
+      fileout = filename
     else
-    fileout="input_parameters.md"
+      fileout = "registry.md"
     end if
 
     open(newunit=unit,file=fileout,status="replace")
 
-    write(unit,'(A)') "# FUSS Input Parameters"
+    write(unit,'(A)') "# hydra Input Parameters"
     write(unit,'(A)') ""
 
     do i=1,this%size
 
-        if (.not. allocated(current_section)) then
-    new_section = .true.
-        else
-    new_section = trim(this%params(i)%section) /= trim(current_section)
-        end if
+      if (.not. allocated(current_section)) then
+        new_section = .true.
+      else
+        new_section = trim(this%params(i)%section) /= trim(current_section)
+      end if
 
-        if (new_section) then
-            current_section = this%params(i)%section
-            write(unit,'(A)') ""
-            write(unit,'(A)') "## ["//trim(current_section)//"]"
-            write(unit,'(A)') ""
-            write(unit,'(A)') "| Parameter | Default | Allowed | Required | Description |"
-            write(unit,'(A)') "|-----------|---------|---------|----------|-------------|"
-        end if
+      if (new_section) then
+        current_section = this%params(i)%section
+        write(unit,'(A)') ""
+        write(unit,'(A)') "## "//trim(current_section)
+        write(unit,'(A)') ""
+        write(unit,'(A)') "| Parameter | Default | Allowed | Required | Description |"
+        write(unit,'(A)') "|-----------|---------|---------|----------|-------------|"
+      end if
 
-        write(unit,'(A)') "| "//trim(this%params(i)%name)// &
-            " | "//trim(this%params(i)%default_str)// &
-            " | "//trim(this%params(i)%allowed)// &
-            " | "//merge("yes"," no",this%params(i)%required)// &
-            " | "//trim(this%params(i)%description)//" |"
+      write(unit,'(A)') "| "//trim(this%params(i)%name)// &
+          " | "//trim(this%params(i)%default_str)// &
+          " | "//trim(this%params(i)%allowed)// &
+          " | "//merge("yes"," no",this%params(i)%required)// &
+          " | "//trim(this%params(i)%description)//" |"
 
     end do
 
     close(unit)
 
   end subroutine generate_markdown
+
+
+  function lowercase(str) result(out)
+
+    implicit none
+
+    character(*), intent(in) :: str
+    character(len=len(str)) :: out
+    integer :: i
+
+    do i = 1, len(str)
+        if (str(i:i) >= "A" .and. str(i:i) <= "Z") then
+            out(i:i) = char(iachar(str(i:i)) + 32)
+        else
+            out(i:i) = str(i:i)
+        end if
+    end do
+
+  end function lowercase
+
 
 end module hydra_Input_Registry

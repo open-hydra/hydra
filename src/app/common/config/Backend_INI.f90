@@ -50,26 +50,26 @@ contains
     ! Check for N-coupling, FUSS-iter, MOSE-iter in the input.ini and allocate arrays accordingly
     if (allocated(hydra_obj_sim_param%N_Coupling)) deallocate(hydra_obj_sim_param%N_Coupling)
     if (fini%has_option(option_name='N-coupling')) then
-      allocate(hydra_obj_sim_param%N_Coupling(1:fini%count_values(section_name='HYDRA-parameters', option_name='N-coupling')))
+      allocate(hydra_obj_sim_param%N_Coupling(1:fini%count_values(section_name='HYDRA-Parameters', option_name='N-coupling')))
     else
       allocate(hydra_obj_sim_param%N_Coupling(1))
     endif
     if (allocated(hydra_obj_sim_param%FUSS_iter)) deallocate(hydra_obj_sim_param%FUSS_iter)
     if (fini%has_option(option_name='FUSS-iter')) then
-      allocate(hydra_obj_sim_param%FUSS_iter(1:fini%count_values(section_name='HYDRA-parameters', option_name='FUSS-iter')))
+      allocate(hydra_obj_sim_param%FUSS_iter(1:fini%count_values(section_name='HYDRA-Parameters', option_name='FUSS-iter')))
     else
       allocate(hydra_obj_sim_param%FUSS_iter(1))
     endif
     if (allocated(hydra_obj_sim_param%MOSE_iter)) deallocate(hydra_obj_sim_param%MOSE_iter)
     if (fini%has_option(option_name='MOSE-iter')) then
-      allocate(hydra_obj_sim_param%MOSE_iter(1:fini%count_values(section_name='HYDRA-parameters', option_name='MOSE-iter')))
+      allocate(hydra_obj_sim_param%MOSE_iter(1:fini%count_values(section_name='HYDRA-Parameters', option_name='MOSE-iter')))
     else
       allocate(hydra_obj_sim_param%MOSE_iter(1))
     endif
 
     ! Read the MGL
     nmgl = 1
-    call fini%get(section_name='HYDRA-multigrid', option_name='levels', val=nmgl, error=error)
+    call fini%get(section_name='HYDRA-Multigrid', option_name='levels', val=nmgl, error=error)
 
   end subroutine Scan_Ini
 

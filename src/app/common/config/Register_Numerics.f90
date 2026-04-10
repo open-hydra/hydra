@@ -48,7 +48,7 @@ contains
     ! Register per-level iteration parameters (level1-iter, level2-iter, level3-iter, ...)
     do m = 1, hydra_obj_multigrid%MGL
       write(option,'(A5,I0,A5)') 'level', m, '-iter'
-      call reg%add( 'HYDRA-multigrid', trim(option), hydra_obj_multigrid%iter_threshold(m), '0', 'Iterations for multigrid level '//trim(str(.true.,m)), '>= 0', .true. )
+      call reg%add( 'HYDRA-Multigrid', trim(option), hydra_obj_multigrid%iter_threshold(m), '0', 'Iterations for multigrid level '//trim(str(.true.,m)), '>= 0', .true. )
     enddo
 
   end subroutine Register_Multigrid_Levels  
