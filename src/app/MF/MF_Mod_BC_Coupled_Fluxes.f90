@@ -40,7 +40,7 @@ contains
     ! Local
     integer  :: b, f, lower, upper, i
     
-    !$omp parallel
+    !$omp parallel private(b, f, lower, upper)
     upper = 0
     do b = 1, FUSS_domain%nb
       do f = 1, 6
@@ -57,7 +57,7 @@ contains
     enddo
     !$omp end parallel
 
-    !$omp parallel
+    !$omp parallel private(b, f, lower, upper)
     upper = 0
     do b = 1, MOSE_domain%nb
       do f = 1, 6

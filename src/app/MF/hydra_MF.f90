@@ -13,10 +13,10 @@ program hydra_program
   use hydraMF_Mod_dt,                only: Fix_Global_dt
   use hydraMF_Mod_BC_Coupled_Fluxes, only: BC_Coupled_Fluxes
   use FUSS_Advanced_Types_m, only: FUSS_simulation_type
-  use FUSS_Config_Types_m,   only: FUSS_obj_sim_param => obj_sim_param, FUSS_obj_multigrid => obj_multigrid
+  use FUSS_Config_Types_m,   only: FUSS_obj_sim_param => obj_sim_param
   use FUSS_Procedures_m,     only: FUSS_type
   use MOSE_Advanced_Types_m, only: MOSE_simulation_type
-  use MOSE_Config_Types_m,   only: MOSE_obj_sim_param => obj_sim_param, MOSE_obj_multigrid => obj_multigrid
+  use MOSE_Config_Types_m,   only: MOSE_obj_sim_param => obj_sim_param
   use MOSE_Procedures_m,     only: MOSE_type
   use IR_precision
   implicit none
@@ -66,21 +66,12 @@ program hydra_program
   if (hydra_obj_multigrid%MGL > 1) then
     FUSS_obj_sim_param%HYDRA_MG = .true.
     MOSE_obj_sim_param%HYDRA_MG = .true.
-    FUSS_obj_multigrid%MGL = hydra_obj_multigrid%MGL
-    MOSE_obj_multigrid%MGL = hydra_obj_multigrid%MGL
   endif
 
   ! Setup Solvers
   call Assign_Phases()
   call FUSS%setup( FUSS_simulation )
   call MOSE%setup( MOSE_simulation )
-
-  if (hydra_obj_multigrid%MGL > 1) then
-    do m = 1, hydra_obj_multigrid%MGL
-      FUSS_simulation%domain(m)%itermax = hydra_obj_multigrid%iter_threshold(m)*hydra_obj_sim_param%FUSS_iter(1)
-      MOSE_simulation%domain(m)%itermax = hydra_obj_multigrid%iter_threshold(m)*hydra_obj_sim_param%MOSE_iter(1)
-    enddo
-  endif
 
   ! Coupling Initializations
   if (hydra_obj_io%coupling_wall) then
@@ -96,7 +87,7 @@ program hydra_program
       call Fill_Coupled_Ghost_Cell( FUSS_simulation%domain(m), MOSE_simulation%domain(m) )
     enddo
   endif
-  
+
   ! Solve & Postprocess
   TODO = 1
   FUSS_obj_sim_param%TODO = TODO
@@ -117,14 +108,18 @@ program hydra_program
     else
       nmin = 0
       nmax = hydra_obj_sim_param%N_Coupling(1)
-      do n = 1, size(hydra_obj_sim_param%N_Coupling)
-        if (n_couple >= nmin .and. n_couple < nmax ) then
-          FUSS_iter = hydra_obj_sim_param%FUSS_iter(n)
-          MOSE_iter = hydra_obj_sim_param%MOSE_iter(n)
-        endif
-        nmin = nmax
-        nmax = hydra_obj_sim_param%N_Coupling(n+1)
-      enddo
+      FUSS_iter = hydra_obj_sim_param%FUSS_iter(1)
+      MOSE_iter = hydra_obj_sim_param%MOSE_iter(1)
+      if (size(hydra_obj_sim_param%N_Coupling) > 1) then 
+        do n = 1, size(hydra_obj_sim_param%N_Coupling)
+          if (n_couple >= nmin .and. n_couple < nmax ) then
+            FUSS_iter = hydra_obj_sim_param%FUSS_iter(n)
+            MOSE_iter = hydra_obj_sim_param%MOSE_iter(n)
+          endif
+          nmin = nmax
+          nmax = hydra_obj_sim_param%N_Coupling(n+1)
+        enddo
+      endif
     endif
 
     ! Update hydra input.ini options

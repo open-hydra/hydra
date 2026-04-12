@@ -22,7 +22,7 @@ contains
     integer  :: Bm_, Im_, Jm_, Km_, Fm_, Bs_, Is_, Js_, Ks_, Fs_
     real(R8) :: FUSS_new_flux
 
-    !$omp parallel
+    !$omp parallel private(b, f, lower, upper)
     upper = 0
     do b = 1, FUSS_domain%nb
       do f = 1, 6
@@ -99,7 +99,7 @@ contains
     integer  :: Bm_, Im_, Jm_, Km_, Fm_, Bs_, Is_, Js_, Ks_, Fs_
     real(R8) :: MOSE_new_flux(nprim)
 
-    !$omp parallel
+    !$omp parallel private(b, f, lower, upper)
     upper = 0
     do b = 1, MOSE_domain%nb
       do f = 1, 6
