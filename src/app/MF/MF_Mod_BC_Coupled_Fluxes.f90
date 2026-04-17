@@ -7,26 +7,36 @@ module hydraMF_Mod_BC_Coupled_Fluxes
   
 contains
 
-  subroutine BC_Coupled_Fluxes ( FUSS_domain, MOSE_domain )
+  subroutine BC_Coupled_Fluxes ( FUSS_domain, MOSE_domain, level )
     use hydraMF_Lib_Ghost
     use hydraMF_Lib_BC_Coupled_Fluxes
+    use hydraMF_Mod_CouplingExchange, only: exchange_coupling_Tg_P, exchange_coupling_Pg_matID
     use FUSS_Advanced_Types_m
     use MOSE_Advanced_Types_m
     implicit none
     type(FUSS_domain_type), intent(inout) :: FUSS_domain
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
+    integer, intent(in) :: level
 
-    ! Fill Ghost Cells
+#ifdef USE_MPI
+    ! Exchange cross-solver coupling data for entries whose secondary block is
+    ! on a different MPI rank.  Populates bc(i)%Tg / %Pg and the remote P /
+    ! matID caches before the local fill loops run.
+    call exchange_coupling_Tg_P    ( FUSS_domain, MOSE_domain, level )
+    call exchange_coupling_Pg_matID( FUSS_domain, MOSE_domain, level )
+#endif
+
+    ! Fill Ghost Cells (local-local entries only; remote entries filled above)
     call Fill_Coupled_Ghost_Cell ( FUSS_domain, MOSE_domain )
 
     ! Initialize ext_flux variables
     call Initialize_BC_Coupled_Fluxes ( FUSS_domain, MOSE_domain )
 
     ! Compute FUSS Flux
-    call Compute_FUSS_Flux ( FUSS_domain, MOSE_domain)
+    call Compute_FUSS_Flux ( FUSS_domain, MOSE_domain, level )
 
     ! Compute MOSE Flux
-    call Compute_MOSE_Flux ( FUSS_domain, MOSE_domain)
+    call Compute_MOSE_Flux ( FUSS_domain, MOSE_domain, level )
 
   end subroutine BC_Coupled_Fluxes
 

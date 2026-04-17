@@ -6,6 +6,7 @@ module hydraMF_IO_Wall
   use MOSE_Global_m
   use FUSS_Global_m
   use Lib_ORION_data
+  use FUSS_Mod_MPI, only: mpi_is_root
   implicit none
   type(ORION_data), allocatable :: IOwall(:)
 
@@ -157,26 +158,33 @@ contains
     integer              :: E_IO
     character(len=clen_) :: format(2)
 
-    path = 'OUTPUT/'
 
     ! Update IOwall variables
     call Extract_Properties_From_BC( FUSS_domain, MOSE_domain, level )
 
-    call parse(hydra_obj_io%coupling_format,' ', format)
 
-    ! Write the IOwall accordingly to the solution format
-    select case(trim(format(1)))
-      case('vtk')
-      IOwall(level)%vtk%format = trim(format(2))
-      localpath_vtk = trim(path)//'vtk/'
-      call execute_command_line('mkdir -p '//trim(localpath_vtk))
-      !TODO: manca time per time-accurate simulation
-      E_IO = vtk_write_structured_multiblock(orion=IOwall(level),vtspath=trim(localpath_vtk)//trim(file), &
-                                                                 vtmpath=trim(path)//trim(file),varnames=hydra_obj_io%Owallnames)
-    case('tecplot')
-      IOwall(level)%tec%format = trim(format(2))
-      E_IO = tec_write_structured_multiblock(orion=IOwall(level),varnames=hydra_obj_io%Owallnames,filename=trim(path)//trim(file)//trim(IOwall(level)%tec%extension))
-    end select
+    ! Only rank 0 writes the consolidated wall output file. In a multi-rank
+    ! run, IOwall(level) currently contains only the local partition's entries;
+    ! a full MPI_Gatherv step is needed as a follow-up to consolidate the data
+    ! before writing. See build_coupling_schedule TODOs.
+    if (mpi_is_root) then
+      path = 'OUTPUT/'
+      call parse(hydra_obj_io%coupling_format,' ', format)
+      
+      ! Write the IOwall accordingly to the solution format
+      select case(trim(format(1)))
+        case('vtk')
+        IOwall(level)%vtk%format = trim(format(2))
+        localpath_vtk = trim(path)//'vtk/'
+        call execute_command_line('mkdir -p '//trim(localpath_vtk))
+        !TODO: manca time per time-accurate simulation
+        E_IO = vtk_write_structured_multiblock(orion=IOwall(level),vtspath=trim(localpath_vtk)//trim(file), &
+                                                                  vtmpath=trim(path)//trim(file),varnames=hydra_obj_io%Owallnames)
+      case('tecplot')
+        IOwall(level)%tec%format = trim(format(2))
+        E_IO = tec_write_structured_multiblock(orion=IOwall(level),varnames=hydra_obj_io%Owallnames,filename=trim(path)//trim(file)//trim(IOwall(level)%tec%extension))
+      end select
+    endif
 
   end subroutine Write_Wall_Solution
 
@@ -188,6 +196,12 @@ contains
     use FUSS_Advanced_Types_m
     use FUSS_Global_m
     use hydraMF_Lib_BC_Coupled_Wall_Temperature, only: FUSS_BC_Coupled_Wall_Temperature, MOSE_BC_Coupled_Wall_Temperature
+    use hydraMF_Mod_CouplingExchange, only: is_FUSS_bc_local_local, is_MOSE_bc_local_local, & 
+                                            get_F_remote_P, get_M_remote_matID
+#ifdef USE_MPI                                      
+    use FUSS_Mod_MPI, only: FUSS_block_owner => block_owner, mpi_rank_, mpi_is_root, mpi_reduce_sum_r8_array
+    use MOSE_Mod_MPI, only: MOSE_block_owner => block_owner
+#endif   
     implicit none
     type(FUSS_domain_type), intent(inout) :: FUSS_domain
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
@@ -195,48 +209,97 @@ contains
     ! Local
     real(R8), dimension(8) :: Ovar
     integer  :: f, lower, upper, i, b, bb, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs
-    logical  :: assigne
+    integer :: n_wall_total, MOSE_n_wall_total, wall_i
+    real(R8), allocatable :: FUSS_wall_buf(:), MOSE_wall_buf(:)
     real(R8) :: FUSS_new_flux, MOSE_new_flux(nprim)
-
-    ! BC fluxes are computed in order of block and face type for both solvers.
-    bb = 0
-
+    real(R8) :: P_con(nsc), matID_con
+    real(R8), pointer :: p_remote(:)
+     
     ! FUSS
-    upper = 0
+    n_wall_total = 0
+    do b = 1, FUSS_domain%nb
+      do f = 1, 6
+        if (FUSS_obj_io_bc%coupling_flag(b,f)) n_wall_total = n_wall_total + FUSS_domain%n_bf(b,f)
+      end do
+    end do
+
+    allocate(FUSS_wall_buf(2 * n_wall_total))
+    FUSS_wall_buf = 0d0
+   
+    ! Each rank computes Ovar only for its local blocks
+    upper = 0; wall_i = 0
     do b = 1, FUSS_domain % nb
       do f = 1, 6
         lower = upper + 1                        ! Update lower bound
         upper = upper + FUSS_domain % n_bf(b,f)  ! Upper bound: add number of cells on face f of block b
-
-        assigne = .false.
-        if (FUSS_obj_io_bc%coupling_flag( b , f )) then
-          bb = bb + 1
-          assigne = .true.
-        else
-          cycle
-        endif
 
         do i = lower, upper
           Ovar = 0d0
           select case ( FUSS_domain % bc(i) % type )
             case (1000)
               Bm  = FUSS_domain % bc(i) % b
+              wall_i = wall_i + 1
+#ifdef USE_MPI
+              ! Skip entries whose FUSS primary block is not on this rank.
+              if (allocated(FUSS_block_owner)) then
+                if (FUSS_block_owner(Bm) /= mpi_rank_) cycle
+              end if
+#endif
               Im  = FUSS_domain % bc(i) % i
-              Jm  = FUSS_domain % bc(i) % j 
-              Km  = FUSS_domain % bc(i) % k 
+              Jm  = FUSS_domain % bc(i) % j
+              Km  = FUSS_domain % bc(i) % k
               Fm  = FUSS_domain % bc(i) % f
               Bs  = FUSS_domain % bc(i) % bs
               Is  = FUSS_domain % bc(i) % is
               Js  = FUSS_domain % bc(i) % js
               Ks  = FUSS_domain % bc(i) % ks
               Fs  = FUSS_domain % bc(i) % fs
+             
+              ! Get P(1:nsc) of MOSE secondary cell: local or remote cache.
+#ifdef USE_MPI
+              if (allocated(MOSE_block_owner) .and. MOSE_block_owner(Bs) /= mpi_rank_) then
+                p_remote => get_F_remote_P(level, i)
+                if (associated(p_remote)) then
+                  P_con(1:nsc) = p_remote(1:nsc)
+                else
+                  P_con(1:nsc) = MOSE_domain % blk(Bs) % P(1:nsc, Is, Js, Ks)
+                end if
+              else
+                P_con(1:nsc) = MOSE_domain % blk(Bs) % P(1:nsc, Is, Js, Ks)
+              end if
+#else
+              P_con(1:nsc) = MOSE_domain % blk(Bs) % P(1:nsc, Is, Js, Ks)
+#endif
               call FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
-                                          Is, Js, Ks, Fs, MOSE_domain % blk(Bs), &
+                                          Is, Js, Ks, Fs, P_con, &
                                           FUSS_domain%bc(i)%Mg(1), FUSS_domain%bc(i)%Tg, &
                                           FUSS_new_flux, Ovar(6:7) )
+           
+              FUSS_wall_buf(2*(wall_i-1)+1 : 2*wall_i) = Ovar(6:7)
           end select
+        enddo
 
-          if (assigne) then
+      enddo ! face
+    enddo ! block
+
+    ! Reduce FUSS_wall_buf to root. Each cell is owned by exactly one rank, so SUM gives
+    ! correct values.
+    call mpi_reduce_sum_r8_array(FUSS_wall_buf, 2*n_wall_total)
+
+    ! Root fills IOwall from the gathered buffer
+    if (mpi_is_root) then
+      upper = 0; wall_i = 0; bb = 0
+      do b = 1, FUSS_domain%nb
+        do f = 1, 6
+          lower = upper + 1
+          upper = upper + FUSS_domain%n_bf(b,f)
+          if (.not. FUSS_obj_io_bc%coupling_flag(b,f)) cycle
+          bb = bb + 1
+
+          do i = lower, upper
+            wall_i = wall_i + 1
+            Ovar(6:7) = FUSS_wall_buf(2*(wall_i-1)+1 : 2*wall_i)
+
             select case(f)
               case(1,2); im = 1                    ; jm = FUSS_domain%bc(i)%j ; km = FUSS_domain%bc(i)%k
               case(3,4); im = FUSS_domain%bc(i)% i ; jm = 1                   ; km = FUSS_domain%bc(i)%k
@@ -244,49 +307,94 @@ contains
             end select
             IOwall(level)%block(bb)%vars(1:5, im, jm, km) = 1786.25d-10
             IOwall(level)%block(bb)%vars(6:7, im, jm, km) = Ovar(6:7)
-          endif
 
         enddo
 
-      enddo ! face
-    enddo ! block
-
+        enddo ! face
+      enddo ! block
+    endif
+    
+    deallocate(FUSS_wall_buf)
+    
     ! MOSE
-    upper = 0
+    MOSE_n_wall_total = 0
+    do b = 1, MOSE_domain%nb
+      do f = 1, 6
+        if (MOSE_obj_io_bc%coupling_flag(b,f)) MOSE_n_wall_total = MOSE_n_wall_total + MOSE_domain%n_bf(b,f)
+      end do
+    end do
+
+    allocate(MOSE_wall_buf(7 * MOSE_n_wall_total))
+    MOSE_wall_buf = 0d0
+    ! MOSE
+    upper = 0; wall_i = 0
     do b = 1, MOSE_domain % nb
       do f = 1, 6
         lower = upper + 1                        ! Update lower bound
         upper = upper + MOSE_domain % n_bf(b,f)  ! Upper bound: add number of cells on face f of block b
-
-        assigne = .false.
-        if (MOSE_obj_io_bc%coupling_flag( b , f )) then
-          bb = bb + 1
-          assigne = .true.
-        else
-          cycle
-        endif
 
         do i = lower, upper
           Ovar = 0d0
           select case ( MOSE_domain % bc(i) % type )
             case (1000)
               Bm  = MOSE_domain % bc(i) % b
+              wall_i = wall_i + 1
+#ifdef USE_MPI
+              ! Skip entries whose MOSE primary block is not on this rank.
+              if (allocated(MOSE_block_owner)) then
+                if (MOSE_block_owner(Bm) /= mpi_rank_) cycle
+              end if
+#endif
               Im  = MOSE_domain % bc(i) % i
-              Jm  = MOSE_domain % bc(i) % j 
-              Km  = MOSE_domain % bc(i) % k 
+              Jm  = MOSE_domain % bc(i) % j
+              Km  = MOSE_domain % bc(i) % k
               Fm  = MOSE_domain % bc(i) % f
               Bs  = MOSE_domain % bc(i) % bs
               Is  = MOSE_domain % bc(i) % is
               Js  = MOSE_domain % bc(i) % js
               Ks  = MOSE_domain % bc(i) % ks
               Fs  = MOSE_domain % bc(i) % fs
+              ! Get matID of FUSS secondary cell: local or remote cache.
+#ifdef USE_MPI
+              if (allocated(FUSS_block_owner) .and. FUSS_block_owner(Bs) /= mpi_rank_) then
+                matID_con = get_M_remote_matID(level, i)
+              else
+                matID_con = FUSS_domain % blk(Bs) % matID(Is, Js, Ks)
+              end if
+#else
+              matID_con = FUSS_domain % blk(Bs) % matID(Is, Js, Ks)
+#endif
               call MOSE_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, MOSE_domain % blk(Bm), &
-                                          Is, Js, Ks, Fs, FUSS_domain % blk(Bs), &
+                                          Is, Js, Ks, Fs, matID_con, &
                                           MOSE_domain%bc(i)%Mg(1), MOSE_domain%bc(i)%Pg, &
                                           MOSE_new_flux, Ovar )
-          end select
+             
+              MOSE_wall_buf(7*(wall_i-1)+1 : 7*wall_i) = Ovar(1:7)
 
-          if (assigne) then
+          end select
+        enddo
+
+      enddo ! face
+    enddo ! block
+
+    ! Reduce MOSE_wall_buf to root. Each cell is owned by exactly one rank, so SUM gives
+    ! correct values.
+    call mpi_reduce_sum_r8_array(MOSE_wall_buf, 7*MOSE_n_wall_total)
+
+    ! Root fills IOwall from the gathered buffer
+    if (mpi_is_root) then
+      upper = 0; wall_i = 0
+      do b = 1, MOSE_domain%nb
+        do f = 1, 6
+          lower = upper + 1
+          upper = upper + MOSE_domain%n_bf(b,f)
+          if (.not.  MOSE_obj_io_bc%coupling_flag(b,f)) cycle
+          bb = bb + 1
+
+          do i = lower, upper
+            wall_i = wall_i + 1
+            Ovar(1:7) = MOSE_wall_buf(7*(wall_i-1)+1 : 7*wall_i)
+
             select case(f)
               case(1,2); im = 1                    ; jm = MOSE_domain%bc(i)%j ; km = MOSE_domain%bc(i)%k
               case(3,4); im = MOSE_domain%bc(i)% i ; jm = 1                   ; km = MOSE_domain%bc(i)%k
@@ -295,13 +403,16 @@ contains
             IOwall(level)%block(bb)%vars(1,im, jm, km)    = Ovar(1)
             IOwall(level)%block(bb)%vars(2:5, im, jm, km) = Ovar(2:5)
             IOwall(level)%block(bb)%vars(6:7, im, jm, km) = Ovar(6:7)
-          endif
+        
 
-        enddo
+          enddo
 
-      enddo ! face
-    enddo ! block
+        enddo ! face
+      enddo ! block
+    endif
 
+    deallocate(MOSE_wall_buf)
+    
   end subroutine Extract_Properties_From_BC
   
 end module hydraMF_IO_Wall

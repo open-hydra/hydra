@@ -4,6 +4,7 @@ module hydraMF_Lib_Ghost
   use hydra_Parameters_m
   use MOSE_Advanced_Types_m
   use FUSS_Advanced_Types_m
+  use hydraMF_Mod_CouplingExchange, only: is_FUSS_bc_local_local, is_MOSE_bc_local_local
 
   implicit none
   private
@@ -19,12 +20,15 @@ contains
     ! Local
     integer :: i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
 
-    ! FUSS
+    ! FUSS: only fill locally when both Bm and Bs are owned by this rank.
+    ! Remote-Bs entries are handled by exchange_coupling_Tg_P (called beforehand),
+    ! and remote-Bm entries belong to another rank's FUSS partition.
     !$omp parallel
     !$omp do schedule (dynamic) private(i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs)
     do i = 1, FUSS_domain % nbound
       select case ( FUSS_domain % bc(i) % type)
         case(1000)
+          if (.not. is_FUSS_bc_local_local(FUSS_domain, i)) cycle
           Bm = FUSS_domain % bc(i) % b
           Im = FUSS_domain % bc(i) % i 
           Jm = FUSS_domain % bc(i) % j 
@@ -47,6 +51,7 @@ contains
     do i = 1, FUSS_domain % nbound
       select case ( FUSS_domain % bc(i) % type)
         case(1000)
+          if (.not. is_FUSS_bc_local_local(FUSS_domain, i)) cycle
           Bs = FUSS_domain % bc(i) % bs
           Is = FUSS_domain % bc(i) % is 
           Js = FUSS_domain % bc(i) % js
@@ -62,12 +67,13 @@ contains
     enddo
     !$omp end parallel
 
-    ! MOSE
+    ! MOSE: same guard — skip entries where Bm or Bs is remote.
     !$omp parallel
     !$omp do schedule (dynamic) private(i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs)
     do i = 1, MOSE_domain % nbound
       select case ( MOSE_domain % bc(i) % type)
         case(1000)
+          if (.not. is_MOSE_bc_local_local(MOSE_domain, i)) cycle
           Bm = MOSE_domain % bc(i) % b
           Im = MOSE_domain % bc(i) % i 
           Jm = MOSE_domain % bc(i) % j 
@@ -90,6 +96,7 @@ contains
     do i = 1, MOSE_domain % nbound
       select case ( MOSE_domain % bc(i) % type)
         case(1000)
+          if (.not. is_MOSE_bc_local_local(MOSE_domain, i)) cycle
           Bs = MOSE_domain % bc(i) % bs
           Is = MOSE_domain % bc(i) % is 
           Js = MOSE_domain % bc(i) % js

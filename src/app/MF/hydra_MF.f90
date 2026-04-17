@@ -18,6 +18,14 @@ program hydra_program
   use MOSE_Advanced_Types_m, only: MOSE_simulation_type
   use MOSE_Config_Types_m,   only: MOSE_obj_sim_param => obj_sim_param
   use MOSE_Procedures_m,     only: MOSE_type
+  use FUSS_Mod_MPI,          only: FUSS_mpi_init => mpi_init_env, FUSS_mpi_finalize => mpi_finalize_env, &
+                                   mpi_is_root, mpi_size_
+  use MOSE_Mod_MPI,          only: MOSE_mpi_init => mpi_init_env
+  use hydraMF_Mod_CouplingExchange, only: build_coupling_schedule, cleanup_coupling_schedule
+#ifdef USE_MPI
+  use FUSS_Mod_GhostExchange, only: FUSS_cleanup_ghost => cleanup_ghost_schedule
+  use MOSE_Mod_GhostExchange, only: MOSE_cleanup_ghost => cleanup_ghost_schedule
+#endif
   use IR_precision
   implicit none
   type(MOSE_type)            :: MOSE
@@ -34,6 +42,9 @@ program hydra_program
   integer  :: mgl, m
   real(R8) :: hydra_time, pp_time
 
+  ! Initialize MPI (first call does MPI_INIT_THREAD; second just populates module state)
+  call FUSS_mpi_init()
+  call MOSE_mpi_init()
 
 #if defined (_OPENMP)
   !$omp parallel
@@ -41,14 +52,22 @@ program hydra_program
   !$omp end parallel
   FUSS_obj_sim_param%nthreads = nthreads
   MOSE_obj_sim_param%nthreads = nthreads
-  write(*,'(A)')    ' Parallel execution'
-  write(*,'(A)')    ' OpenMP:'
-  write(*,'(A,I4)') ' -  Number of threads --> ', nthreads
+  if (mpi_is_root) then
+    write(*,'(A)')    ' Parallel execution'
+    write(*,'(A)')    ' OpenMP:'
+    write(*,'(A,I4)') ' -  Number of threads --> ', nthreads
+  endif
 #else
-  !if (mpi_is_root) write(*,'(A)')    ' Serial execution'
-  write(*,'(A)')    ' Serial execution'
+  if (mpi_is_root) write(*,'(A)')    ' Serial execution'
   FUSS_obj_sim_param%nthreads = 1
   MOSE_obj_sim_param%nthreads = 1
+#endif
+
+#ifdef USE_MPI
+  if (mpi_is_root) then
+    write(*,'(A)')      ' MPI:'
+    write(*,'(A,I4)')   ' -  Number of ranks   --> ', mpi_size_
+  end if
 #endif
 
   ! Populate hydra_objs
@@ -82,7 +101,13 @@ program hydra_program
       else
         extension = '.szplt'
       endif
-      call Initialize_Wall_File( FUSS_simulation%domain(m), MOSE_simulation%domain(m), extension, m )
+
+      if (mpi_is_root) call Initialize_Wall_File( FUSS_simulation%domain(m), MOSE_simulation%domain(m), extension, m )
+      
+      ! Build the cross-solver coupling schedule for this MG level BEFORE any
+      ! setup routine that may iterate over type(1000) BCs. The schedule builds
+      ! the partner_of_* indices even in serial.
+      call build_coupling_schedule( FUSS_simulation%domain(m), MOSE_simulation%domain(m), m )
       call Setup_Coupled_Metrics( FUSS_simulation%domain(m), MOSE_simulation%domain(m) )
       call Fill_Coupled_Ghost_Cell( FUSS_simulation%domain(m), MOSE_simulation%domain(m) )
     enddo
@@ -137,7 +162,7 @@ program hydra_program
     ! Set Global dt for time-accurate
     if ( hydra_obj_sim_param%time_accurate ) then
       if ( hydra_obj_multigrid%MGL > 1 ) then
-        write(*,*) 'Multi-Grid can not be used for time-accurate simulations for now!'
+        if (mpi_is_root) write(*,*) 'Multi-Grid can not be used for time-accurate simulations for now!'
         stop
       else
         call Fix_Global_dt ( FUSS_simulation, MOSE_simulation, hydra_time )
@@ -147,7 +172,7 @@ program hydra_program
     ! Solve FUSS
     do i_FUSS = 1, FUSS_iter
       if ( FUSS_obj_sim_param%TODO <= 2 ) then
-        if (hydra_obj_io%coupling_wall) call BC_Coupled_Fluxes ( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl) )
+        if (hydra_obj_io%coupling_wall) call BC_Coupled_Fluxes ( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl), mgl )
         call FUSS%solve( FUSS_simulation, Dummy_Function )
         if ( FUSS_obj_sim_param%TODO <= 2 ) call FUSS%postprocess( FUSS_simulation )
       endif
@@ -156,7 +181,7 @@ program hydra_program
     ! Solve MOSE
     do i_MOSE = 1, MOSE_iter
       if ( MOSE_obj_sim_param%TODO <= 2 ) then
-        if (hydra_obj_io%coupling_wall) call BC_Coupled_Fluxes ( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl) )
+        if (hydra_obj_io%coupling_wall) call BC_Coupled_Fluxes ( FUSS_simulation%domain(mgl), MOSE_simulation%domain(mgl), mgl )
         call MOSE%solve( MOSE_simulation, Dummy_Function )
         if ( MOSE_obj_sim_param%TODO <= 2 ) call MOSE%postprocess( MOSE_simulation )
       endif
@@ -166,7 +191,7 @@ program hydra_program
     
     ! Intermediate Postprocess
     if (hydra_obj_multigrid%MGL > 1 .and. n_couple == sum(hydra_obj_multigrid%iter_threshold(mgl:))) then
-      print*, 'COUPLING-STEP POSTPROCESS - MG'
+      if (mpi_is_root) print*, 'COUPLING-STEP POSTPROCESS - MG'
       if (hydra_obj_io%coupling_wall) then
         n_wall = n_wall+1
         if (mgl == 1) then
@@ -181,7 +206,7 @@ program hydra_program
       mgl = mgl - 1
 
     elseif ( mod(n_couple, hydra_obj_io%coupling_diter) == 0d0 .or. hydra_time >= pp_time + hydra_obj_io%coupling_dtime ) then
-      print*, 'COUPLING-STEP POSTPROCESS'
+      if (mpi_is_root) print*, 'COUPLING-STEP POSTPROCESS'
       FUSS_obj_sim_param%HYDRA_postprocess = .true.
       MOSE_obj_sim_param%HYDRA_postprocess = .true.
       ex_FUSS_TODO = FUSS_obj_sim_param%TODO
@@ -234,13 +259,23 @@ program hydra_program
 
   enddo
 
-  print*, 'FINAL POSTPROCESS'
+  if (mpi_is_root) print*, 'FINAL POSTPROCESS'
   call FUSS%postprocess( FUSS_simulation )
   call MOSE%postprocess( MOSE_simulation )
   if (hydra_obj_io%coupling_wall) then
     hydrafile='hydra-wall'
     call Write_Wall_Solution( FUSS_simulation%domain(1), MOSE_simulation%domain(1), hydrafile, 1 )
   endif
+
+  ! Free persistent MPI requests before finalizing
+  call cleanup_coupling_schedule()
+#ifdef USE_MPI
+  call FUSS_cleanup_ghost()
+  call MOSE_cleanup_ghost()
+#endif
+
+  ! Finalize MPI environment
+  call FUSS_mpi_finalize()
 
 
 contains

@@ -7,7 +7,7 @@ module hydraMF_Lib_BC_Coupled_Wall_Temperature
   
 contains
 
-  subroutine FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, Blk_FUSS, Is, Js, Ks, Fs, Blk_MOSE, Mg, Tg, new_flux, Ovar )
+  subroutine FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, Blk_FUSS, Is, Js, Ks, Fs, P_con, Mg, Tg, new_flux, Ovar )
     use hydra_Parameters_m, only: guide_
     use FUSS_Advanced_Types_m
     use FUSS_Base_Types_m
@@ -19,7 +19,7 @@ contains
     implicit none
     integer,intent(in)                     :: Im, Jm, Km, Fm, Is, Js, Ks, Fs
     type(FUSS_block_type), intent(inout)   :: Blk_FUSS
-    type(MOSE_block_type), intent(inout)   :: Blk_MOSE
+    real(R8), intent(in)                   :: P_con(:)   ! P(1:nsc) of MOSE secondary cell (Is,Js,Ks)
     type(FUSS_tensor_3D_type), intent(in)  :: Mg
     real(R8), intent(in)                   :: Tg(6)
     real(R8), intent(inout)                :: new_flux
@@ -63,8 +63,8 @@ contains
     endif
 
     T_con = Tg(1)
-    call co_rotot_Rtot ( Blk_MOSE%P(1:nsc,Is,Js,Ks), rho, Rgas )
-    call co_k_mi_lam_Wilke ( Blk_MOSE % P(1:nsc,Is,Js,Ks), rho, T_con, mil, kappa_con )
+    call co_rotot_Rtot ( P_con, rho, Rgas )
+    call co_k_mi_lam_Wilke ( P_con, rho, T_con, mil, kappa_con )
 
     ! Tint computations
     select case ( Fm )
@@ -124,7 +124,7 @@ contains
   end subroutine FUSS_BC_Coupled_Wall_Temperature
 
 
-  subroutine MOSE_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, Blk_MOSE, Is, Js, Ks, Fs, Blk_FUSS, Mg, Pg, new_flux, Ovar )
+  subroutine MOSE_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, Blk_MOSE, Is, Js, Ks, Fs, matID_con, Mg, Pg, new_flux, Ovar )
     use hydra_Parameters_m, only: guide_
     use MOSE_Advanced_Types_m
     use MOSE_Base_Types_m
@@ -138,7 +138,7 @@ contains
     implicit none
     integer,intent(in) :: Im, Jm, Km, Fm, Is, Js, Ks, Fs
     type(MOSE_block_type), intent(inout)   :: Blk_MOSE
-    type(FUSS_block_type), intent(inout)   :: Blk_FUSS
+    real(R8), intent(in)                   :: matID_con   ! FUSS secondary cell (Is,Js,Ks) matID
     type(MOSE_tensor_3D_type), intent(in)  :: Mg
     real(R8), intent(in)                   :: Pg(1,6)
     real(R8), intent(inout)                :: new_flux(nprim)
@@ -188,7 +188,7 @@ contains
     endif
 
     T_con    = Pg(1,1)
-    call co_Kappa( Blk_FUSS % matID(Is,Js,Ks), T_con, kappa_con )
+    call co_Kappa( matID_con, T_con, kappa_con )
 
     ! Tint computations
     select case ( Fm )

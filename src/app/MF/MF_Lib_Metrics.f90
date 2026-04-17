@@ -5,6 +5,7 @@ module hydraMF_Lib_Metrics
   use MOSE_Advanced_Types_m
   use FUSS_Base_Types_m
   use FUSS_Advanced_Types_m
+  use hydraMF_Mod_CouplingExchange, only: is_FUSS_bc_local_local, is_MOSE_bc_local_local
 
   implicit none
   private
@@ -13,7 +14,11 @@ module hydraMF_Lib_Metrics
 contains
 
   subroutine Setup_Coupled_Metrics ( FUSS_domain, MOSE_domain )
-
+    ! NOTE: For MPI runs where a type(1000) BC has its primary block (Bm) and
+    ! secondary block (Bs) owned by different ranks, the Mg/dlg/volg for that
+    ! entry are NOT populated here (the remote rank's node coords are needed).
+    ! A follow-up metrics-node exchange in hydraMF_Mod_CouplingExchange is
+    ! required for full cross-rank support.
     implicit none
     type(FUSS_domain_type), intent(inout) :: FUSS_domain
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
@@ -25,6 +30,7 @@ contains
     do i = 1, FUSS_domain % nbound
       select case ( FUSS_domain % bc(i) % type )
         case(1000)
+          if (.not. is_FUSS_bc_local_local(FUSS_domain, i)) cycle
           Bm = FUSS_domain % bc(i) % b
           Im = FUSS_domain % bc(i) % i 
           Jm = FUSS_domain % bc(i) % j 
@@ -52,6 +58,7 @@ contains
     do i = 1, MOSE_domain % nbound
       select case ( MOSE_domain % bc(i) % type )
         case(1000)
+          if (.not. is_MOSE_bc_local_local(MOSE_domain, i)) cycle
           Bm = MOSE_domain % bc(i) % b
           Im = MOSE_domain % bc(i) % i 
           Jm = MOSE_domain % bc(i) % j 
