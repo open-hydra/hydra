@@ -16,9 +16,6 @@
 [submodule "lib/OSlo"]
 	path = lib/OSlo
 	url = git@github.com:MarcoGrossi92/OSlo.git
-[submodule "utils/ATLAS"]
-	path = utils/ATLAS
-	url = git@github.com:MarcoGrossi92/ATLAS.git
 [submodule "utils/GRIB"]
 	path = utils/GRIB
 	url = git@github.com:MarcoGrossi92/GRIB.git
