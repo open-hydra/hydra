@@ -19,3 +19,6 @@
 [submodule "utils/GRIB"]
 	path = utils/GRIB
 	url = git@github.com:MarcoGrossi92/GRIB.git
+[submodule "utils/ATLAS"]
+	path = utils/ATLAS
+	url = git@github.com:open-hydra/ATLAS.git
