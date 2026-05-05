@@ -14,7 +14,7 @@ module hydraMF_Lib_Metrics
 contains
 
   subroutine Setup_Coupled_Metrics ( FUSS_domain, MOSE_domain )
-    ! NOTE: For MPI runs where a type(1000) BC has its primary block (Bm) and
+    ! NOTE: For MPI runs where a type(103) BC has its primary block (Bm) and
     ! secondary block (Bs) owned by different ranks, the Mg/dlg/volg for that
     ! entry are NOT populated here (the remote rank's node coords are needed).
     ! A follow-up metrics-node exchange in hydraMF_Mod_CouplingExchange is
@@ -29,7 +29,7 @@ contains
     !$omp do schedule (dynamic) private(i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s)
     do i = 1, FUSS_domain % nbound
       select case ( FUSS_domain % bc(i) % type )
-        case(1000)
+        case(103)
           if (.not. is_FUSS_bc_local_local(FUSS_domain, i)) cycle
           Bm = FUSS_domain % bc(i) % b
           Im = FUSS_domain % bc(i) % i 
@@ -57,7 +57,7 @@ contains
     !$omp do schedule (dynamic) private(i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s)
     do i = 1, MOSE_domain % nbound
       select case ( MOSE_domain % bc(i) % type )
-        case(1000)
+        case(103)
           if (.not. is_MOSE_bc_local_local(MOSE_domain, i)) cycle
           Bm = MOSE_domain % bc(i) % b
           Im = MOSE_domain % bc(i) % i 

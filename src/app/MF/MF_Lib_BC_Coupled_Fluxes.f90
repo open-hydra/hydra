@@ -41,7 +41,7 @@ contains
         !$omp private (FUSS_new_flux, P_con)
         do i = lower, upper
           select case ( FUSS_domain%bc(i)%type )
-            case (1000)
+            case (103)
               Bm  = FUSS_domain % bc(i) % b
               ! Only process entries whose primary block (Bm) is owned by this rank.
 #ifdef USE_MPI
@@ -135,7 +135,7 @@ contains
         !$omp private (MOSE_new_flux, matID_con)
         do i = lower, upper
           select case ( MOSE_domain%bc(i)%type )
-            case (1000)
+            case (103)
               Bm  = MOSE_domain % bc(i) % b
 #ifdef USE_MPI
               if (allocated(MOSE_block_owner)) then

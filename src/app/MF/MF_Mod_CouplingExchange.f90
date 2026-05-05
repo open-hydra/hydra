@@ -1,6 +1,6 @@
-!>@brief Cross-solver (FUSS <-> MOSE) MPI exchange for type(1000) coupling BCs.
+!>@brief Cross-solver (FUSS <-> MOSE) MPI exchange for type(103) coupling BCs.
 !>
-!> For each BC of type(1000), the "primary" block (Bm) belongs to one solver
+!> For each BC of type(103 the "primary" block (Bm) belongs to one solver
 !> while the "secondary" block (Bs) belongs to the OTHER solver. When the
 !> two blocks are owned by different MPI ranks (in their respective solver
 !> partitions), the primary-side rank needs data about the secondary-side
@@ -113,8 +113,8 @@ module hydraMF_Mod_CouplingExchange
     ! Remote-received single-cell data, stored in BC-index-sized arrays so the
     ! wall-T routine can reuse them without touching the remote block directly.
     ! Allocated only on the FUSS-owner (for P_cell) and MOSE-owner (for matID_cell).
-    real(R8), allocatable :: F_remote_P(:,:)     !< (nsc, FUSS%nbound), for type(1000)&remote only
-    real(R8), allocatable :: M_remote_matID(:)   !< (MOSE%nbound),       for type(1000)&remote only
+    real(R8), allocatable :: F_remote_P(:,:)     !< (nsc, FUSS%nbound), for type(103te only
+    real(R8), allocatable :: M_remote_matID(:)   !< (MOSE%nbound),       for type(103remote only
 
     ! Partner indices: for local BCs whose Bs is ALSO locally owned (same rank owns both
     ! the FUSS Bm and the partner MOSE Bm'), the reverse-flux update into partner%ext_flux
@@ -191,7 +191,7 @@ contains
     ! --- PASS 1: count entries per direction ---
     n_F_recv = 0; n_F_send = 0
     do i = 1, FUSS_domain%nbound
-      if (FUSS_domain%bc(i)%type /= 1000) cycle
+      if (FUSS_domain%bc(i)%type /= 103) cycle
       Bm = FUSS_domain%bc(i)%b
       Bs = FUSS_domain%bc(i)%bs
       fuss_o = FUSS_block_owner(Bm)
@@ -203,7 +203,7 @@ contains
 
     n_M_recv = 0; n_M_send = 0
     do i = 1, MOSE_domain%nbound
-      if (MOSE_domain%bc(i)%type /= 1000) cycle
+      if (MOSE_domain%bc(i)%type /= 103) cycle
       Bm = MOSE_domain%bc(i)%b
       Bs = MOSE_domain%bc(i)%bs
       mose_o = MOSE_block_owner(Bm)
@@ -288,9 +288,9 @@ contains
     type(level_sched_t), intent(inout) :: L
     integer :: i, j
     do i = 1, FUSS_domain%nbound
-      if (FUSS_domain%bc(i)%type /= 1000) cycle
+      if (FUSS_domain%bc(i)%type /= 103) cycle
       do j = 1, MOSE_domain%nbound
-        if (MOSE_domain%bc(j)%type /= 1000) cycle
+        if (MOSE_domain%bc(j)%type /= 103) cycle
         if (FUSS_domain%bc(i)%bs == MOSE_domain%bc(j)%b  .and. &
             FUSS_domain%bc(i)%is == MOSE_domain%bc(j)%i  .and. &
             FUSS_domain%bc(i)%js == MOSE_domain%bc(j)%j  .and. &
@@ -315,7 +315,7 @@ contains
     integer :: nr, ns
     nr = 0; ns = 0
     do i = 1, FUSS_domain%nbound
-      if (FUSS_domain%bc(i)%type /= 1000) cycle
+      if (FUSS_domain%bc(i)%type /= 103) cycle
       Bm = FUSS_domain%bc(i)%b
       Bs = FUSS_domain%bc(i)%bs
       fuss_o = FUSS_block_owner(Bm)
@@ -354,7 +354,7 @@ contains
     integer :: nr, ns
     nr = 0; ns = 0
     do i = 1, MOSE_domain%nbound
-      if (MOSE_domain%bc(i)%type /= 1000) cycle
+      if (MOSE_domain%bc(i)%type /= 103) cycle
       Bm = MOSE_domain%bc(i)%b
       Bs = MOSE_domain%bc(i)%bs
       mose_o = MOSE_block_owner(Bm)
@@ -417,7 +417,7 @@ contains
       i = L%F_send_ent(k)%global_bc_idx
       ! partner: the MOSE bc whose (b,i,j,k,f) matches (bs,is,js,ks,fs) of FUSS bc i
       do j = 1, MOSE_domain%nbound
-        if (MOSE_domain%bc(j)%type /= 1000) cycle
+        if (MOSE_domain%bc(j)%type /= 103) cycle
         if (FUSS_domain%bc(i)%bs == MOSE_domain%bc(j)%b  .and. &
             FUSS_domain%bc(i)%is == MOSE_domain%bc(j)%i  .and. &
             FUSS_domain%bc(i)%js == MOSE_domain%bc(j)%j  .and. &
@@ -446,7 +446,7 @@ contains
     do k = 1, nrm_r
       i = L%M_send_ent(k)%global_bc_idx
       do j = 1, FUSS_domain%nbound
-        if (FUSS_domain%bc(j)%type /= 1000) cycle
+        if (FUSS_domain%bc(j)%type /= 103) cycle
         if (MOSE_domain%bc(i)%bs == FUSS_domain%bc(j)%b  .and. &
             MOSE_domain%bc(i)%is == FUSS_domain%bc(j)%i  .and. &
             MOSE_domain%bc(i)%js == FUSS_domain%bc(j)%j  .and. &
@@ -681,7 +681,7 @@ contains
 
   !---------------------------------------------------------------------------
   !> After Compute_FUSS_Flux has written FUSS%bc(i)%ext_flux = 0.5*FUSS_new_flux
-  !> for each FUSS type(1000) entry, this routine packs the FUSS_new_flux value
+  !> for each FUSS type(103) entry, this routine packs the FUSS_new_flux value
   !> for each ENTRY WITH REMOTE Bs and sends it to the MOSE-owner, which
   !> subtracts 0.5*FUSS_new_flux from partner MOSE%bc(j)%ext_flux(np).
   !> Expects the caller to provide the per-entry FUSS_new_flux in a temp array

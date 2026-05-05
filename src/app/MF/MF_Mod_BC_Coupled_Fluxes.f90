@@ -59,7 +59,7 @@ contains
         !$omp do schedule ( dynamic ) private (i)
         do i = lower, upper
           select case ( FUSS_domain%bc(i)%type )
-            case (1000)
+            case (103)
               FUSS_domain % bc(i) % ext_flux = 0.0d0
           end select
         enddo
@@ -76,7 +76,7 @@ contains
         !$omp do schedule ( dynamic ) private (i)
         do i = lower, upper
           select case ( MOSE_domain%bc(i)%type )
-            case (1000)
+            case (103)
               MOSE_domain % bc(i) % ext_flux = 0.0d0
           end select
         enddo

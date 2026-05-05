@@ -105,7 +105,7 @@ program hydra_program
       if (mpi_is_root) call Initialize_Wall_File( FUSS_simulation%domain(m), MOSE_simulation%domain(m), extension, m )
       
       ! Build the cross-solver coupling schedule for this MG level BEFORE any
-      ! setup routine that may iterate over type(1000) BCs. The schedule builds
+      ! setup routine that may iterate over type(103) BCs. The schedule builds
       ! the partner_of_* indices even in serial.
       call build_coupling_schedule( FUSS_simulation%domain(m), MOSE_simulation%domain(m), m )
       call Setup_Coupled_Metrics( FUSS_simulation%domain(m), MOSE_simulation%domain(m) )

@@ -27,7 +27,7 @@ contains
     !$omp do schedule (dynamic) private(i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs)
     do i = 1, FUSS_domain % nbound
       select case ( FUSS_domain % bc(i) % type)
-        case(1000)
+        case(103)
           if (.not. is_FUSS_bc_local_local(FUSS_domain, i)) cycle
           Bm = FUSS_domain % bc(i) % b
           Im = FUSS_domain % bc(i) % i 
@@ -50,7 +50,7 @@ contains
     !$omp do schedule (dynamic) private(i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s)
     do i = 1, FUSS_domain % nbound
       select case ( FUSS_domain % bc(i) % type)
-        case(1000)
+        case(103)
           if (.not. is_FUSS_bc_local_local(FUSS_domain, i)) cycle
           Bs = FUSS_domain % bc(i) % bs
           Is = FUSS_domain % bc(i) % is 
@@ -72,7 +72,7 @@ contains
     !$omp do schedule (dynamic) private(i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs)
     do i = 1, MOSE_domain % nbound
       select case ( MOSE_domain % bc(i) % type)
-        case(1000)
+        case(103)
           if (.not. is_MOSE_bc_local_local(MOSE_domain, i)) cycle
           Bm = MOSE_domain % bc(i) % b
           Im = MOSE_domain % bc(i) % i 
@@ -95,7 +95,7 @@ contains
     !$omp do schedule (dynamic) private(i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s)
     do i = 1, MOSE_domain % nbound
       select case ( MOSE_domain % bc(i) % type)
-        case(1000)
+        case(103)
           if (.not. is_MOSE_bc_local_local(MOSE_domain, i)) cycle
           Bs = MOSE_domain % bc(i) % bs
           Is = MOSE_domain % bc(i) % is 

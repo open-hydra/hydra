@@ -236,7 +236,7 @@ contains
         do i = lower, upper
           Ovar = 0d0
           select case ( FUSS_domain % bc(i) % type )
-            case (1000)
+            case (103)
               Bm  = FUSS_domain % bc(i) % b
               wall_i = wall_i + 1
 #ifdef USE_MPI
@@ -336,7 +336,7 @@ contains
         do i = lower, upper
           Ovar = 0d0
           select case ( MOSE_domain % bc(i) % type )
-            case (1000)
+            case (103)
               Bm  = MOSE_domain % bc(i) % b
               wall_i = wall_i + 1
 #ifdef USE_MPI
