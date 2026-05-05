@@ -22,7 +22,7 @@ case $COMMAND in
   build)          source "$SCRIPT_DIR/modules/building/dispatch.sh" "$@" ;;
 
   # git submodules tasks
-  submodule)         source "$SCRIPT_DIR/modules/git.sh" "$@";;
+  submodule)      source "$SCRIPT_DIR/modules/git.sh" "$@";;
 
   # Simulations tasks
   clean)          source "$SCRIPT_DIR/modules/simulations/clean.sh" ;;
