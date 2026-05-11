@@ -22,3 +22,6 @@
 [submodule "utils/ATLAS"]
 	path = utils/ATLAS
 	url = git@github.com:open-hydra/ATLAS.git
+[submodule "src/lib/GROOT"]
+	path = src/lib/GROOT
+	url = git@github.com:open-hydra/GROOT.git
