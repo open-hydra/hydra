@@ -5,7 +5,7 @@
 case "$1" in
     hydra*)
         source "$SCRIPT_DIR/modules/building/hydra.sh" "$@" ;;
-    ATLAS|GRIB|MOSE|IGLOO|ICE|FUSS|MOSKA|Q2D)
+    ATLAS|GRIB|MOSE|FUSS|GROOT)
         source "$SCRIPT_DIR/modules/building/submods.sh" "$@" ;;
     *)
         log_error "Unknown build target: $@"

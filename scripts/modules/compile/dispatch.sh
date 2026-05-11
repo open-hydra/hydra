@@ -22,7 +22,7 @@ done
 case "$@" in
     hydra*)
         source "$SCRIPT_DIR/modules/compile/hydra.sh" "$@" ;;
-    GRIB|ATLAS|MOSE|IGLOO|ICE|FUSS|MOSKA|Q2D)
+    ATLAS|GRIB|MOSE|FUSS|GROOT)
         source "$SCRIPT_DIR/modules/compile/submods.sh" "$@" ;;
     *)
         log_error "Unknown compile target: $@"

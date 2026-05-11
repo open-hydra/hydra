@@ -4,15 +4,15 @@
 
 # Preliminaries
 PROG="$1"
-
 if [[ $PROG == "ATLAS" || $PROG == "GRIB" ]]; then
   where=utils
+elif [[ $PROG == "MOSE" || $PROG == "FUSS" || $PROG == "GROOT" ]]; then
+  where=src/lib
 else
   where=lib
 fi
 
 cd "$HYDRADIR/$where/$PROG" || log_error "PROG $PROG not found"
-log_info "Compiling $PROG"
 
 # Edit CMakePresets.json if requested
 PRESET_PATH="$HYDRADIR/$where/$PROG/CMakePresets.json"
@@ -26,6 +26,7 @@ if [[ $edit == true ]]; then
 fi
 
 # Compile the PROG
+log_info "Compiling $PROG"
 log_info "Passing jurisdiction to install.sh in $HYDRADIR/$where/$PROG"
 echo
 ./install.sh compile
