@@ -70,6 +70,7 @@ git submodule update --init --recursive lib/third_party/FiNeR
 
 git submodule update --init src/lib/MOSE
 git submodule update --init src/lib/FUSS
+git submodule update --init src/lib/PESTE
 
 # -------------------------
 # Configure + build

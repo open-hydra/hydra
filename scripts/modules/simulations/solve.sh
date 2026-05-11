@@ -1,6 +1,6 @@
 #!/bin/bash
 
-# solve.sh - logic for running supported solvers (MOSE, FUSS, GROOT, hydra)
+# solve.sh - logic for running supported solvers (MOSE, FUSS, GROOT, PESTE, hydra)
 
 source "$SCRIPT_DIR/utils/common.sh"
 
@@ -35,7 +35,7 @@ run_solver() {
 
   local solver_exec
   case "$solver" in
-    MOSE|FUSS|GROOT)
+    MOSE|FUSS|GROOT|PESTE)
       local_var="${solver}LOCAL"
       master_var="${solver}MASTER"
 

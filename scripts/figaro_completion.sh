@@ -7,9 +7,9 @@ _figaro_completions()
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  opts="doctor submodule clean compile build kill ATLAS MOSE FUSS GROOT hydra-MF"
-  subsolvers="MOSE FUSS GROOT"
-  progs="ATLAS GRIB MOSE FUSS GROOT hydra-MF"
+  opts="doctor submodule clean compile build kill ATLAS MOSE FUSS GROOT PESTE hydra-MF"
+  subsolvers="MOSE FUSS GROOT PESTE"
+  progs="ATLAS GRIB MOSE FUSS GROOT PESTE hydra-MF"
   atlas_opt="GPB ICB BCB import"
   git_opts="update delete"
 
@@ -34,7 +34,7 @@ _figaro_completions()
       COMPREPLY=( $(compgen -W "${atlas_opt}" -- ${cur}) )
       return 0
       ;;
-    hydra*|MOSE|FUSS|GROOT)
+    hydra*|MOSE|FUSS|GROOT|PESTE)
       COMPREPLY=( $(compgen -W "solve" -- ${cur}) )
       return 0
       ;;

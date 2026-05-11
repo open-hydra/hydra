@@ -28,7 +28,7 @@ case $COMMAND in
   clean)          source "$SCRIPT_DIR/modules/simulations/clean.sh" ;;
   ATLAS)          source "$SCRIPT_DIR/modules/simulations/ATLAS.sh" "$@" ;;
   kill)           source "$SCRIPT_DIR/modules/simulations/kill.sh" ;;
-  hydra*|MOSE|FUSS|GROOT)
+  hydra*|MOSE|FUSS|GROOT|PESTE)
                   source "$SCRIPT_DIR/modules/simulations/solve.sh" "$COMMAND" "$@" ;;
 
   *)

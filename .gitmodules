@@ -25,3 +25,6 @@
 [submodule "src/lib/GROOT"]
 	path = src/lib/GROOT
 	url = git@github.com:open-hydra/GROOT.git
+[submodule "src/lib/PESTE"]
+	path = src/lib/PESTE
+	url = git@github.com:open-hydra/PESTE.git
