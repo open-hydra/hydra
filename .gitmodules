@@ -1,6 +1,3 @@
-[submodule "src/lib/MOSE"]
-	path = src/lib/MOSE
-	url = git@github.com:open-hydra/MOSE.git
 [submodule "src/lib/FUSS"]
 	path = src/lib/FUSS
 	url = git@github.com:open-hydra/FUSS.git
@@ -13,18 +10,15 @@
 [submodule "lib/third_party/FiNeR"]
 	path = lib/third_party/FiNeR
 	url = git@github.com:szaghi/FiNeR.git
-[submodule "lib/OSlo"]
-	path = lib/OSlo
-	url = git@github.com:MarcoGrossi92/OSlo.git
-[submodule "utils/GRIB"]
-	path = utils/GRIB
-	url = git@github.com:MarcoGrossi92/GRIB.git
 [submodule "utils/ATLAS"]
 	path = utils/ATLAS
 	url = git@github.com:open-hydra/ATLAS.git
 [submodule "src/lib/GROOT"]
 	path = src/lib/GROOT
 	url = git@github.com:open-hydra/GROOT.git
-[submodule "src/lib/PESTE"]
-	path = src/lib/PESTE
-	url = git@github.com:open-hydra/PESTE.git
+[submodule "src/lib/MOSE"]
+	path = src/lib/MOSE
+	url = https://github.com/open-hydra/MOSE.git
+[submodule "lib/OSLO"]
+	path = lib/OSLO
+	url = https://github.com/MarcoGrossi92/OSLO.git
