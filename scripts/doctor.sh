@@ -49,6 +49,8 @@ echo "Environment checks"
 if [[ -z "${HYDRADIR:-}" ]]; then
     log_warn "HYDRADIR is not set"
     echo "      Fix: run ./bootstrap.sh or export HYDRADIR=/path/to/hydra"
+    echo "           Defaulting to current directory for checks"
+    HYDRADIR=$(pwd)
 else
     log_success "HYDRADIR is set"
     require_dir "$HYDRADIR" || log_error "HYDRADIR does not exist"
@@ -59,13 +61,8 @@ fi
 # -------------------------
 echo
 echo "Project structure checks"
-require_file "$HYDRADIR/CMakeLists.txt" \
-    && log_success "CMakeLists.txt found" \
-    || log_error "Missing CMakeLists.txt"
-
-require_dir "$HYDRADIR/build" \
-    && log_success "build/ directory exists" \
-    || log_warn "build/ directory missing (will be created on build)"
+require_file "$HYDRADIR/CMakeLists.txt" && log_success "CMakeLists.txt found" || log_error "Missing CMakeLists.txt"
+require_dir "$HYDRADIR/build" && log_success "build/ directory exists" || log_warn "build/ directory missing (will be created on build)"
 
 # -------------------------
 # Tools

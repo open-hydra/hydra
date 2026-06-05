@@ -54,12 +54,12 @@ print_usage() {
   echo "      Compile an existing build of hydra-MF using CMake presets"
   echo
 
-  echo "figaro build MOSE --master=hydra --use-openmp"
-  echo "      Build MOSE solver with hydra as master and OpenMP enabled"
+  echo "figaro build MOSE --use-openmp"
+  echo "      Build MOSE solver with OpenMP enabled"
   echo
 
-  echo "figaro submodule update GRIB"
-  echo "      Update GRIB git submodule to the commit specified in the main repository"
+  echo "figaro submodule update MOSE"
+  echo "      Update MOSE git submodule to the commit specified in the main repository"
   echo
 
   echo "figaro MOSE -p 4 solve"
