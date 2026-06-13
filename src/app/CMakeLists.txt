@@ -58,3 +58,14 @@ if(EXE_NAME STREQUAL "MF")
             ${CMAKE_SOURCE_DIR}/src/app/MF
         LIBS FUSSL MOSEL FiNeR)
 ENDIF()
+
+# hydra-AF
+if(EXE_NAME STREQUAL "AF")
+    add_fortran_executable_from_dirs(
+        hydra_AF
+        SRCDIRS
+            ${CMAKE_SOURCE_DIR}/src/app/common/base
+            ${CMAKE_SOURCE_DIR}/src/app/common/config
+            ${CMAKE_SOURCE_DIR}/src/app/AF
+        LIBS FUSSL ARESL FiNeR)
+ENDIF()

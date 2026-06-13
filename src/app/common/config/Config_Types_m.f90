@@ -13,7 +13,7 @@ module hydra_Config_Types_m
     character(len=llen_) :: error_message
     character(len=llen_) :: description
     ! USER-DEFINED INPUTS
-    integer,  allocatable, dimension(:) :: N_Coupling, MOSE_iter, FUSS_iter
+    integer,  allocatable, dimension(:) :: N_Coupling, FUSS_iter, MOSE_iter, ARES_iter
     logical   :: time_accurate
     real(R8)  :: time_threshold   ! Tempo max per arresto esecuzione 
     integer   :: iter_threshold   ! Numero max iterate per arresto esecuzione
