@@ -66,6 +66,12 @@ contains
     else
       allocate(hydra_obj_sim_param%MOSE_iter(1))
     endif
+    if (allocated(hydra_obj_sim_param%ARES_iter)) deallocate(hydra_obj_sim_param%ARES_iter)
+    if (fini%has_option(option_name='ARES-iter')) then
+      allocate(hydra_obj_sim_param%ARES_iter(1:fini%count_values(section_name='HYDRA-Parameters', option_name='ARES-iter')))
+    else
+      allocate(hydra_obj_sim_param%ARES_iter(1))
+    endif
 
     ! Read the MGL
     nmgl = 1

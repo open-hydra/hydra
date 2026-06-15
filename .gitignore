@@ -1,6 +1,6 @@
 # Building file
 CMakePresets.json
-.setvars.sh
+scripts/setvars.sh
 build
 
 # Fortran module files

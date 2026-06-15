@@ -1,0 +1,101 @@
+# Contributing
+
+Thanks for contributing to Hydra.
+
+This repository is a framework/integration layer, so contributions may
+land in either:
+
+- Hydra framework code (`src/app`, `scripts`, docs)
+- solver libraries (`src/lib/MOSE`, `src/lib/FUSS`, etc) --- submit to solver repos first, then update submodule reference here
+
+Choose the repository according to ownership of the change.
+
+## Development Workflow
+
+1. Create a branch from `main`.
+2. Keep changes focused (one topic per PR when possible).
+3. Run framework checks and at least one benchmark run.
+4. Open a PR with clear scope and validation notes.
+
+## Local Setup
+
+```bash
+git clone --recurse-submodules https://github.com/open-hydra/hydra.git
+cd hydra
+source ./bootstrap.sh
+```
+
+## Build/Compile Loop
+
+```bash
+figaro build hydra-MF --compilers=gnu --use-openmp
+figaro compile hydra-MF
+```
+
+Useful maintenance commands:
+
+```bash
+figaro doctor
+figaro submodule update
+figaro submodule update --remote MOSE
+```
+
+## Where to Place Changes
+
+| Change type | Preferred location |
+|-------------|--------------------|
+| Coupling loop, shared runtime, HYDRA-* input | `src/app/common/*`, `src/app/MF/*` |
+| Build/CLI automation | `scripts/*` |
+| Solver physics/numerics internals | corresponding solver repository under `src/lib/*` |
+| Framework docs | `docs/*` in this repository |
+
+## Coding and Style Guidelines
+
+### Fortran (framework sources)
+
+- Use `implicit none` in every module/subroutine.
+- Declare argument intent (`in`, `out`, `inout`).
+- Keep naming consistent with existing hydra modules (`hydra*` prefixes).
+- Preserve existing formatting style in touched files.
+
+### Shell scripts
+
+- Use `set -euo pipefail` for task scripts.
+- Prefer reusable helpers in `scripts/utils/`.
+- Keep command interfaces consistent with `figaro` conventions.
+
+### Documentation
+
+- Keep framework docs hydra-focused.
+- Link to solver docs for solver-deep details.
+- Avoid duplicating full solver manuals in this repository.
+
+## Pull Request Checklist
+
+- [ ] Change scope is clear (framework vs solver repository)
+- [ ] Build succeeds (`figaro build ...`, `figaro compile ...`)
+- [ ] Relevant benchmark run completed
+- [ ] Documentation updated for user-visible behavior
+- [ ] No unrelated formatting or refactoring noise
+
+## Common Contribution Scenarios
+
+### A. hydra coupling behavior update
+
+1. Modify `src/app/MF/*`.
+2. Run `figaro compile hydra-MF`.
+3. Re-run `test/Tw-Flat-Plate` benchmark cases.
+4. Include before/after behavior notes in PR.
+
+### B. HYDRA-* input extension
+
+1. Add registration in `src/app/common/config/Register_*.f90`.
+2. Wire runtime usage in framework code.
+3. Update user/developer docs.
+4. Validate with at least one case.
+
+### C. Solver-level model change
+
+If the change is purely solver internals (for example MOSE numerics),
+prefer submitting it in the solver repository first, then update the
+submodule reference in hydra.

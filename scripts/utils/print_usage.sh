@@ -50,7 +50,7 @@ print_usage() {
   echo "      Build hydra solver 'MF' with GNU compilers and OpenMP enabled"
   echo
 
-  echo "figaro compile-hydra-MF"
+  echo "figaro compile hydra-MF"
   echo "      Compile an existing build of hydra-MF using CMake presets"
   echo
 

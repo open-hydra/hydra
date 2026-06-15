@@ -23,24 +23,24 @@ mkdir -p "$HYDRADIR/build"
 # Shell integration
 # -------------------------
 log_info "Setting up shell integration"
-rm -f $HYDRADIR/.setvars.sh
-echo 'export HYDRADIR='$HYDRADIR >> .setvars.sh
-echo 'source '$HYDRADIR'/scripts/figaro_completion.sh' >> .setvars.sh
+rm -f $HYDRADIR/scripts/setvars.sh
+echo 'export HYDRADIR='$HYDRADIR >> $HYDRADIR/scripts/setvars.sh
+echo 'source '$HYDRADIR'/scripts/figaro_completion.sh' >> $HYDRADIR/scripts/setvars.sh
 if [[ $SHELL == *"zsh"* ]]; then
-    echo 'figaro () { '$HYDRADIR'/scripts/figaro.sh $@; }' >> .setvars.sh
+    echo 'figaro () { '$HYDRADIR'/scripts/figaro.sh $@; }' >> $HYDRADIR/scripts/setvars.sh
     RCFILE=$HOME/.zshrc
     log_success "Detected zsh shell"
 elif [[ $SHELL == *"bash"* ]]; then
-    echo 'function figaro () { '$HYDRADIR'/scripts/figaro.sh $@; }' >> .setvars.sh
+    echo 'function figaro () { '$HYDRADIR'/scripts/figaro.sh $@; }' >> $HYDRADIR/scripts/setvars.sh
     RCFILE=$HOME/.bashrc
     log_success "Detected bash shell"
 else
     log_error "Unsupported shell, skipping shell integration"
     exit 1
 fi
-echo 'export -f figaro' >> .setvars.sh
+echo 'export -f figaro' >> $HYDRADIR/scripts/setvars.sh
 grep -v "hydra" $RCFILE > tmpfile && mv tmpfile $RCFILE
-echo 'source '$HYDRADIR'/.setvars.sh' >> $RCFILE
+echo 'source '$HYDRADIR'/scripts/setvars.sh' >> $RCFILE
 
 # -------------------------
 # End

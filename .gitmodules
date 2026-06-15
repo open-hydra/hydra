@@ -22,3 +22,6 @@
 [submodule "lib/OSLO"]
 	path = lib/OSLO
 	url = https://github.com/MarcoGrossi92/OSLO.git
+[submodule "src/lib/ARES"]
+	path = src/lib/ARES
+	url = git@github.com:open-hydra/ARES.git
