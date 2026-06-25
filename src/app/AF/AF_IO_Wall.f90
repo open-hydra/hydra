@@ -6,7 +6,7 @@ module hydraAF_IO_Wall
   use ARES_Global_m
   use FUSS_Global_m
   use Lib_ORION_data
-  use FUSS_Mod_MPI, only: mpi_is_root
+  use FUSS_Mod_MPI, only: mpi_is_root, mpi_reduce_sum_r8_array
   implicit none
   type(ORION_data), allocatable :: IOwall(:)
 
