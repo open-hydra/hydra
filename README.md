@@ -1,5 +1,5 @@
 <p align="center">
-  <h1 align="center">hydra</h1>
+  <h1 align="center">Hydra</h1>
   <p align="center"><b>A multi-physics CFD framework for coupled compressible flow, solid heat transfer, and reactive simulations</b></p>
 </p>
 
@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/language-Fortran%20%7C%20C%2B%2B-734f96.svg" alt="Language: Fortran | C++">
   <a href="https://github.com/open-hydra/hydra/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPLv3-blue.svg" alt="License: GPLv3"></a>
   <img src="https://img.shields.io/badge/build-CMake-064F8C.svg" alt="Build: CMake">
-  <img src="https://img.shields.io/badge/parallelism-OpenMP-E84393.svg" alt="OpenMP">
+  <img src="https://img.shields.io/badge/parallelism-OpenMP-E84393.svg" alt="OpenMP, MPI">
 </p>
 
 ---
@@ -34,9 +34,9 @@ Each Hydra solver is an independent library with its own repository, documentati
 
 | Library | Role |
 |---------|------|
-| [ORION](https://github.com/MarcoGrossi92/ORION) | Mesh I/O and structured grid management |
+| [ORION](https://github.com/MarcoGrossi92/ORION) | Field I/O and structured grid management |
 | [FLINT](https://github.com/MarcoGrossi92/FLINT) | Fortran library for integrated thermochemistry |
-| [OSLO](https://github.com/MarcoGrossi92/OSLO) | Fortran utility layer |
+| [OSLO](https://github.com/MarcoGrossi92/OSLO) | ODE solver library |
 | [FiNeR](https://github.com/szaghi/FiNeR) | Fortran INI-style input file parser |
 
 ---
@@ -48,19 +48,19 @@ Hydra builds coupled executables where two solvers exchange interface data at ru
 | Executable | Coupling | Use Case |
 |------------|----------|----------|
 | `hydra-MF` | MOSE + FUSS | Conjugate heat transfer: compressible fluid + solid heat conduction |
-| `hydra-AF` | ARES + FUSS | Aerothermal fluid + solid heat conduction (re-entry, ablation) |
+| `hydra-AF` | ARES + FUSS | Conjugate heat transfer: real fluid + solid heat conduction |
 
 ---
 
 ## Key Features
 
 - **Modular multi-physics** — plug-in solver architecture; each solver evolves independently with its own CI and test suite
+- **Robust numerics** — multi-block structured grids, MUSCL reconstruction, low-Mach preconditioning
+- **RANS turbulence closure** — several RANS models including Spalart-Allmaras and Shear-Stress-Tensor
+- **Reactive flows** — finite-rate chemistry, chemical equilibrium (NASA CEA), soot formation
 - **Conjugate heat transfer** — fluid–solid coupling with consistent wall-flux and wall-temperature exchange
-- **High-fidelity aerodynamics** — RANS turbulence models, MUSCL reconstruction, multi-block structured grids (via MOSE)
-- **Reactive flows** — finite-rate chemistry, chemical equilibrium (NASA CEA), soot formation (via MOSE/FLINT)
-- **Aerothermal modeling** — coupled ablation and heat conduction for re-entry applications (via ARES)
 - **Multiphase flows** *(under development)* — Lagrangian particle tracking and Eulerian two-fluid formulations for dispersed-phase simulations
-- **OpenMP parallelism** — shared-memory parallel execution out of the box; MPI support available
+- **OpenMP + MPI parallelism** — parallel execution out of the box
 - **`figaro` CLI** — a single command-line tool to configure, build, run, and manage all Hydra workflows
 - **Modern Fortran + C/C++** — built with CMake ≥ 3.23, compatible with GFortran and Intel oneAPI compilers
 
@@ -80,11 +80,10 @@ Hydra builds coupled executables where two solvers exchange interface data at ru
 
 OpenMP support is enabled by default. MPI is optional.
 
-### 1 — Clone with submodules
+### 1 — Clone the whole repo
 
 ```bash
-git clone --recurse-submodules https://github.com/open-hydra/hydra.git
-cd hydra
+git clone && cd hydra
 ```
 
 ### 2 — Bootstrap
@@ -95,38 +94,23 @@ Run the bootstrap script once to configure the environment and install the `figa
 ./bootstrap.sh
 ```
 
-Then restart your shell or source the generated file:
-
-```bash
-source scripts/setvars.sh
-```
-
-### 3 — Check the environment
-
-```bash
-figaro doctor
-```
-
-### 4 — Build a coupled executable
+### 3 — Build a coupled executable
 
 ```bash
 # Fluid–solid conjugate heat transfer
-figaro compile MF
-
-# Aerothermal + solid
-figaro compile AF
+figaro build hydra-MF
 ```
 
 Compiled binaries land in `bin/`.
 
-### 5 — Run a case
+### 4 — Run a case
 
 ```bash
 # Prepare case with ATLAS pre-processor
-figaro ATLAS <case_dir>
+figaro ATLAS GPB ICB BCB
 
 # Launch the coupled solver
-figaro hydra-MF <case_dir>
+figaro hydra-MF solve
 ```
 
 ---
@@ -142,15 +126,10 @@ figaro <command> [options]
 | Command | Description |
 |---------|-------------|
 | `doctor` | Run environment and toolchain sanity checks |
-| `compile <EXE>` | Configure and compile a Hydra executable (`MF`, `AF`, …) |
-| `build <EXE>` | Build without reconfiguring |
-| `submodule <op>` | Manage git submodules |
-| `ATLAS <case>` | Run the ATLAS pre-processor on a case directory |
-| `hydra-MF <case>` | Launch the fluid–solid coupled solver |
-| `hydra-AF <case>` | Launch the aerothermal coupled solver |
-| `MOSE <case>` | Run the standalone MOSE fluid solver |
-| `FUSS <case>` | Run the standalone FUSS solid solver |
-| `clean` | Remove simulation output files from a case |
+| `compile <solver>` | Configure and compile a Hydra solver |
+| `build <solver>` | Build without reconfiguring |
+| `ATLAS <type>` | Run the ATLAS pre-processor |
+| `<solver> solve` | Launch a solver |
 | `kill` | Terminate a running Hydra process |
 
 ---
