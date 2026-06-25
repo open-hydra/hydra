@@ -5,7 +5,7 @@ build Hydra executables and run your first workflow.
 
 !!! info "Hydra and solver docs"
     Hydra documentation focuses on framework-level orchestration and coupling.
-    Detailed solver setup remains in each solver documentation (MOSE, FUSS, PESTE).
+    Detailed solver setup remains in each solver documentation (MOSE, FUSS).
 
 <div class="grid cards" markdown>
 

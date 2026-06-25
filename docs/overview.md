@@ -16,8 +16,8 @@ Each solver in Hydra is designed for a specific class of equations and physical 
 |--------|---------------|----------|----------------|
 | **MOSE** | Compressible ideal-gas flow (Euler/Navier-Stokes), turbulence, reacting flows | `src/lib/MOSE` | [MOSE docs](https://open-hydra.github.io/MOSE/) |
 | **FUSS** | Solid heat conduction (steady and transient) | `src/lib/FUSS` | [FUSS docs](https://open-hydra.github.io/FUSS/) |
-| **PESTE** | Pressure-enthalpy compressible/reacting formulation with tabulated equilibrium thermo-chemistry | `src/lib/PESTE` | [PESTE docs](https://open-hydra.github.io/PESTE/) |
-| **GROOT** | Reserved solver slot (under development) | `src/lib/GROOT` | Not published yet |
+| **GROOT** | Radiative heat transfer | `src/lib/GROOT` | [GROOT docs](https://open-hydra.github.io/GROOT/) |
+| **ARES** | Real fluid dynamics | `src/lib/ARES` | [ARES docs](https://open-hydra.github.io/ARES/) |
 
 !!! info "Hydra and solver repositories"
     Solver libraries are versioned in their own repositories and included in Hydra as submodules. Hydra-level docs summarize how solvers fit together; solver-level docs provide full theory and user references.
@@ -55,6 +55,6 @@ Use the Hydra docs for framework-level orientation, then jump to solver docs for
 |----------|------|
 | [ATLAS](https://github.com/open-hydra/ATLAS) | Pre-processing and case preparation tools |
 | Hydra (`open-hydra/hydra`) | Multi-solver integration, orchestration, coupled executables |
-| Solver repos (MOSE/FUSS/PESTE) | Physics-specific implementations and detailed docs |
+| Solver repos (MOSE, FUSS, GROOT, ARES, et al.) | Physics-specific implementations and detailed docs |
 
 For licensing details, see [License](about/license.md).

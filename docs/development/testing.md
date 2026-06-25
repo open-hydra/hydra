@@ -6,7 +6,7 @@ Because Hydra is an orchestration layer over solver libraries, testing
 has two complementary scopes:
 
 - framework checks (build, runtime orchestration, coupling behavior)
-- solver checks (done in MOSE/FUSS/PESTE repositories)
+- solver checks (done in solver repositories)
 
 ## Current Test Assets in This Repository
 

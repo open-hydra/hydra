@@ -35,7 +35,7 @@ figaro <command> [options] [args]
 | `build ...` | Configure and build hydra target or solver submodule |
 | `compile ...` | Recompile using existing presets/build dirs |
 | `ATLAS ...` | Run ATLAS preprocessing helpers and import outputs |
-| `<solver> ... solve` | Run solver executable (`MOSE`, `FUSS`, `GROOT`, `PESTE`, `hydra-*`) |
+| `<solver> ... solve` | Run solver executable (`MOSE`, `FUSS`, `GROOT`, `hydra-*`) |
 | `clean` | Remove local simulation outputs (`OUTPUT`, local `bin`, logs) |
 | `kill` | Stop background run saved in `.ID` |
 
