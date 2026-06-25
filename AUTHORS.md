@@ -4,20 +4,22 @@
 
 - Marco Grossi
 - Vincenzo Barbato
-- Giacomo Passarani
-- Alessandro Montanari
-- Gianluca Cocirla
-- Alex Falco
 - Alessio Sereno
+- Alessandro Montanari
+- Alex Falco
+- Giacomo Passarani
+- Andrea Giacomi
+- Gianluca Cocirla
+- Marco Fabiani
 
 ## Present Maintainers
 
 - Marco Grossi
 - Vincenzo Barbato
-- Giacomo Passarani
-- Alessandro Montanari
-- Gianluca Cocirla
-- Alex Falco
 - Alessio Sereno
-- Marco Fabiani
+- Alessandro Montanari
+- Alex Falco
+- Giacomo Passarani
 - Andrea Giacomi
+- Gianluca Cocirla
+- Marco Fabiani
