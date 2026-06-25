@@ -8,7 +8,7 @@ source "$SCRIPT_DIR/utils/common.sh"
 PROG="$1"
 if [[ $PROG == "ATLAS" || $PROG == "GRIB" ]]; then
   where=utils
-elif [[ $PROG == "MOSE" || $PROG == "FUSS" || $PROG == "GROOT" || $PROG == "PESTE" || $PROG == "ARES" ]]; then
+elif [[ $PROG == "MOSE" || $PROG == "FUSS" || $PROG == "GROOT" || $PROG == "ARES" ]]; then
   where=src/lib
 else
   where=lib
