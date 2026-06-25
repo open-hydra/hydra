@@ -8,7 +8,7 @@
   <img src="https://img.shields.io/badge/language-Fortran%20%7C%20C%2B%2B-734f96.svg" alt="Language: Fortran | C++">
   <a href="https://github.com/open-hydra/hydra/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-GPLv3-blue.svg" alt="License: GPLv3"></a>
   <img src="https://img.shields.io/badge/build-CMake-064F8C.svg" alt="Build: CMake">
-  <img src="https://img.shields.io/badge/parallelism-OpenMP-E84393.svg" alt="OpenMP, MPI">
+  <img src="https://img.shields.io/badge/parallelism-OpenMP%20%7C%20MPI-E84393.svg" alt="OpenMP | MPI">
 </p>
 
 ---
