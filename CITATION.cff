@@ -1,5 +1,7 @@
-cff-version: 0.1.0-alpha
-title: "MOSE"
+cff-version: 1.2.0
+title: "hydra: A multi-physics CFD framework for multi-physics simulations"
+message: "If you use this software in your research, please cite it using the metadata below."
+type: software
 authors:
   - family-names: "Grossi"
     given-names: "Marco"
@@ -19,6 +21,24 @@ authors:
     given-names: "Gianluca"
   - family-names: "Fabiani"
     given-names: "Marco"
+abstract: >
+  Hydra is an open-source multi-physics computational framework that composes
+  specialized CFD solvers into coupled simulation pipelines. It orchestrates
+  modular solver libraries — covering compressible Euler and Navier–Stokes flows, 
+  real fluid dynamics, chemical kinetics, solid heat conduction, radiative heat transfer, 
+  and particle tracking — through a unified build system and command-line interface. 
+keywords:
+  - computational fluid dynamics
+  - multi-physics
+  - conjugate heat transfer
+  - compressible flow
+  - particle tracking
+  - reactive flows
+  - radiative heat transfer
+  - Fortran
+  - OpenMP
+  - MPI
+repository-code: "https://github.com/open-hydra/hydra"
+url: "https://open-hydra.github.io/hydra/"
 license: GPL-3.0
-url: "https://github.com/open-hydra/hydra"
-type: software
+date-released: "2026-06-25"
