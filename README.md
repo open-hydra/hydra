@@ -1,6 +1,6 @@
 <p align="center">
   <h1 align="center">Hydra</h1>
-  <p align="center"><b>A multi-physics CFD framework for coupled compressible flow, solid heat transfer, and reactive simulations</b></p>
+  <p align="center"><b>A highly modular CFD framework for coupled multi-physics simulations</b></p>
 </p>
 
 <p align="center">
