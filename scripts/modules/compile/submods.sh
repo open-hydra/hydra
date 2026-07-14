@@ -29,6 +29,10 @@ fi
 log_info "Compiling $PROG"
 log_info "Passing jurisdiction to install.sh in $HYDRADIR/$where/$PROG"
 echo
-./install.sh compile
+if [[ $PROG == "ATLAS" ]]; then
+  ./scripts/compile.sh
+else
+  ./install.sh compile
+fi
 echo
 log_success "$PROG compilation completed"

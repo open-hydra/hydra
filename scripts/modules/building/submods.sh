@@ -20,10 +20,16 @@ cd $HYDRADIR/$where/$PROG || log_error "PROG $PROG not found."
 log_info "Building $PROG"
 log_info "Passing jurisdiction to install.sh in $HYDRADIR/$where/$PROG"
 echo
-./install.sh build --include-orion=$HYDRADIR/lib/ORION \
-                   --include-finer=$HYDRADIR/lib/third_party/FiNeR \
-                   --include-oslo=$HYDRADIR/lib/OSLO \
-                   --include-flint=$HYDRADIR/lib/FLINT \
-                "${@:2}"
+if [[ $PROG == "ATLAS" ]]; then
+  ./install.sh build --include-orion=$HYDRADIR/lib/ORION \
+                    --include-finer=$HYDRADIR/lib/third_party/FiNeR \
+                  "${@:2}"
+else
+  ./install.sh build --include-orion=$HYDRADIR/lib/ORION \
+                    --include-finer=$HYDRADIR/lib/third_party/FiNeR \
+                    --include-oslo=$HYDRADIR/lib/OSLO \
+                    --include-flint=$HYDRADIR/lib/FLINT \
+                  "${@:2}"
+fi
 echo
 log_success "$PROG build completed"
