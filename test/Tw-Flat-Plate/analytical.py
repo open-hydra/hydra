@@ -235,8 +235,8 @@ if __name__ == "__main__":
 
     ks_kf_ratios = [40, 400, 4000]
 
-    # Map each ratio to its SOLUTION file
-    solution_dir = "SOLUTION"
+    # Map each ratio to its solution file
+    solution_dir = "reference"
     tec_files = {
         40:   f"{solution_dir}/ks_kf_40_wall.tec",
         400:  f"{solution_dir}/ks_kf_400_wall.tec",
