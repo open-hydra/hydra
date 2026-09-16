@@ -132,6 +132,7 @@ contains
     use ARES_Lib_RANS
     use ARES_Config_Types_m, only: obj_rans
     use ARES_Lib_BC_Fluxes, only: Compute_Wall_Properties
+    use ARES_Lib_Prt_Correction, only: delta_Prt
     use FLINT_Lib_Thermodynamic
     use FUSS_Advanced_Types_m
     use FUSS_Lib_Solid
@@ -152,6 +153,7 @@ contains
     real(R8) :: rho, mil, kl, Prim(nprim), Prim_wall(nprim), dl, T
     real(R8) :: Tint, T_wall, q_wall, rho_wall, Stress(3), Gradient(nprim,3), Flux(nprim)
     real(R8) :: pressure, h_wall, mit, kt, cp, hs
+    real(R8) :: dPrt ! Turbulent Prandtl correction for rough wall
 
     call Compute_Modfm ( Fm, modfm, modfm1, modfm2, modfm3 )
     call Face_Index ( Fm, Dir, Im, Jm, Km, Face_im, Face_jm, Face_km )
@@ -257,7 +259,7 @@ contains
       Gradient(nt:nprim,Dir) = ( Prim(nt:nprim)/rho - Prim_Wall(nt:nprim)/rho_wall ) * modfm3 
       call Eddy_Viscosity ( mut=mit, rans_variables=Prim_Wall(nt:nprim), &
                             mul=mil, rho=rho_wall, vel_gradient=Gradient(nu:nw,:), &
-                            walldist=dl, ks=hs)
+                            walldist=0d0, ks=hs)   ! wall face: y = 0 (dl stays the cell distance for Set_Wall_Values)
     else 
       mit = 0d0
     end if
@@ -268,8 +270,16 @@ contains
 
     ! Stress vector
     Stress = Stress_Vector ( Gradient(nu:nw,:), Normal, mil, mit, Prim(nt:) )
-    cp = ph2vars(pressure, h_wall, hT_tab ) 
-    kt = mit*cp/obj_rans%Prt
+    cp = ph2vars(pressure, h_wall, hT_tab )
+    if ( obj_rans%Prt_correction ) then
+      ! Evaluated at the wall face (y=0). The rough-wall value mitilde_w = vk*u_tau*rho*0.03*hs
+      ! yields the same u_tau as the cell value taken at y=dl, but leaves the near-wall damping
+      ! exp(-y/hs) equal to 1, as required for a flux computed on the wall face itself.
+      dPrt = delta_Prt ( mil, cp, kl, Prim_Wall(nt), hs, 0d0 )
+    else
+      dPrt = 0.00d0
+    end if
+    kt = mit*cp/(obj_rans%Prt+dPrt)
 
     ! Fluxes
     Flux(np) = 0d0 
