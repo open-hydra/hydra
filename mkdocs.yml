@@ -94,6 +94,7 @@ nav:
     - Figaro CLI: user/figaro.md
     - Hydra Input: user/input.md
     - Running Cases in Hydra: user/using.md
+    - Parallel Execution: user/parallel.md
     - Hydra Registry: user/registry.md
 
   - Theory Guide: 
@@ -101,6 +102,7 @@ nav:
 
   - Verification & Validation:
     - vv/index.md
+    - Conjugate Flat Plate: vv/conjugate-flat-plate.md
 
   - Developer Guide:
     - development/index.md

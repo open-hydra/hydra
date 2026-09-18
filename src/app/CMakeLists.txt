@@ -15,6 +15,10 @@ function(add_fortran_executable_from_dirs TARGET_NAME)
     foreach(DIR ${AFE_SRCDIRS})
         file(GLOB DIR_SOURCES CONFIGURE_DEPENDS "${DIR}/*.f90")
         list(APPEND ALL_SRC_FILES ${DIR_SOURCES})
+        # A few helpers have to be C: the cycle counter calls perf_event_open,
+        # which has no Fortran binding.
+        file(GLOB DIR_C_SOURCES CONFIGURE_DEPENDS "${DIR}/*.c")
+        list(APPEND ALL_SRC_FILES ${DIR_C_SOURCES})
     endforeach()
 
     if(NOT ALL_SRC_FILES)
@@ -23,6 +27,11 @@ function(add_fortran_executable_from_dirs TARGET_NAME)
 
     # Create the executable
     add_executable(${TARGET_NAME} ${ALL_SRC_FILES})
+
+    # All sources here are Fortran, but TecIO is a C++ archive: without this
+    # CMake infers CXX for the link step and the Fortran main is never seen
+    # ("undefined reference to `main'").
+    set_target_properties(${TARGET_NAME} PROPERTIES LINKER_LANGUAGE Fortran)
 
     # Link libraries
     target_link_libraries(${TARGET_NAME} PRIVATE ${AFE_LIBS})

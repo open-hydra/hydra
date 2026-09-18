@@ -31,6 +31,13 @@ summarizes the split and points to solver-specific user documentation.
 
     [:octicons-arrow-right-24: Run guide](using.md)
 
+-   :material-chip:{ .lg .middle } __Parallel Execution__
+
+    ---
+
+    Choosing ranks × threads, NUMA placement, measured scaling, and batch scripts.
+
+    [:octicons-arrow-right-24: Running in parallel](parallel.md)
 
 </div>
 

@@ -2,6 +2,7 @@
 CMakePresets.json
 scripts/setvars.sh
 build
+site
 
 # Fortran module files
 mod
