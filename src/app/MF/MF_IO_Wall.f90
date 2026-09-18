@@ -367,7 +367,8 @@ contains
               call MOSE_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, MOSE_domain % blk(Bm), &
                                           Is, Js, Ks, Fs, matID_con, &
                                           MOSE_domain%bc(i)%Mg(1), MOSE_domain%bc(i)%Pg, &
-                                          MOSE_new_flux, Ovar )
+                                          MOSE_new_flux, Ovar, &
+                                          k_rough = MOSE_domain%bc(i)%k_rough )
              
               MOSE_wall_buf(7*(wall_i-1)+1 : 7*wall_i) = Ovar(1:7)
 

@@ -32,6 +32,9 @@ contains
     ! Shell options
     call reg%add( section, 'ini-diter', hydra_obj_io%ini_diter, '1000', 'input.ini update iter frequency', '> 0', .false. )
 
+    ! Wall-clock instrumentation of the coupling loop
+    call reg%add( section, 'timer-diter', hydra_obj_io%timer_diter, '0', 'Coupling-step timing report frequency (0 = off)', '>= 0', .false. )
+
   end subroutine Register_IO_Fields
 
 

@@ -27,10 +27,10 @@ contains
 #endif
 
     ! Fill Ghost Cells (local-local entries only; remote entries filled above)
-    call Fill_Coupled_Ghost_Cell ( FUSS_domain, MOSE_domain )
+    call Fill_Coupled_Ghost_Cell ( FUSS_domain, MOSE_domain, level )
 
     ! Initialize ext_flux variables
-    call Initialize_BC_Coupled_Fluxes ( FUSS_domain, MOSE_domain )
+    call Initialize_BC_Coupled_Fluxes ( FUSS_domain, MOSE_domain, level )
 
     ! Compute FUSS Flux
     call Compute_FUSS_Flux ( FUSS_domain, MOSE_domain, level )
@@ -41,48 +41,43 @@ contains
   end subroutine BC_Coupled_Fluxes
 
 
-  subroutine Initialize_BC_Coupled_Fluxes ( FUSS_domain, MOSE_domain )
+  !> Clear the accumulator on the coupling entries this rank owns.
+  !>
+  !> Only owned entries need clearing: every write into ext_flux -- the local
+  !> update in Compute_*_Flux and the remote one applied by the reverse-flux
+  !> exchange -- targets an entry whose primary block is local, and the solvers'
+  !> BC loops read ext_flux only for blocks they own (Mod_BC_Fluxes cycles on
+  !> is_local_block). Clearing the whole array meant sweeping it on every rank.
+  subroutine Initialize_BC_Coupled_Fluxes ( FUSS_domain, MOSE_domain, level )
     use FUSS_Advanced_Types_m
     use MOSE_Advanced_Types_m
+    use hydraMF_Mod_CouplingExchange, only: own103_FUSS, own103_MOSE
     implicit none
     type(FUSS_domain_type), intent(inout) :: FUSS_domain
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
+    integer, intent(in) :: level
     ! Local
-    integer  :: b, f, lower, upper, i
-    
-    !$omp parallel private(b, f, lower, upper)
-    upper = 0
-    do b = 1, FUSS_domain%nb
-      do f = 1, 6
-        lower = upper + 1
-        upper = upper + FUSS_domain%n_bf(b,f)
-        !$omp do schedule ( dynamic ) private (i)
-        do i = lower, upper
-          select case ( FUSS_domain%bc(i)%type )
-            case (103)
-              FUSS_domain % bc(i) % ext_flux = 0.0d0
-          end select
-        enddo
-      enddo
-    enddo
-    !$omp end parallel
+    integer :: k, n_F, n_M
+    integer, pointer :: ownF(:), ownM(:)
 
-    !$omp parallel private(b, f, lower, upper)
-    upper = 0
-    do b = 1, MOSE_domain%nb
-      do f = 1, 6
-        lower = upper + 1
-        upper = upper + MOSE_domain%n_bf(b,f)
-        !$omp do schedule ( dynamic ) private (i)
-        do i = lower, upper
-          select case ( MOSE_domain%bc(i)%type )
-            case (103)
-              MOSE_domain % bc(i) % ext_flux = 0.0d0
-          end select
-        enddo
+    call own103_FUSS(level, n_F, ownF)
+    call own103_MOSE(level, n_M, ownM)
+
+    if (n_F > 0) then
+      !$omp parallel do schedule (static) private(k)
+      do k = 1, n_F
+        FUSS_domain % bc(ownF(k)) % ext_flux = 0.0d0
       enddo
-    enddo
-    !$omp end parallel
+      !$omp end parallel do
+    end if
+
+    if (n_M > 0) then
+      !$omp parallel do schedule (static) private(k)
+      do k = 1, n_M
+        MOSE_domain % bc(ownM(k)) % ext_flux = 0.0d0
+      enddo
+      !$omp end parallel do
+    end if
 
   end subroutine Initialize_BC_Coupled_Fluxes
 

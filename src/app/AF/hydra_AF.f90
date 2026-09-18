@@ -22,6 +22,12 @@ program hydra_program
                                    mpi_is_root, mpi_size_
   use ARES_Mod_MPI,          only: ARES_mpi_init => mpi_init_env
   use hydraAF_Mod_CouplingExchange, only: build_coupling_schedule, cleanup_coupling_schedule
+  use hydra_Mod_Timers,      only: timer_run_begin, timer_summary, timer_report, &
+                                   timer_step_begin, timer_step_end, &
+                                   timer_fuss_begin, timer_fuss_end, &
+                                   timer_fluid_begin, timer_fluid_end, &
+                                   timer_coup_begin, timer_coup_end, &
+                                   timer_fluid_name
 #ifdef USE_MPI
   use FUSS_Mod_GhostExchange, only: FUSS_cleanup_ghost => cleanup_ghost_schedule
   use ARES_Mod_GhostExchange, only: ARES_cleanup_ghost => cleanup_ghost_schedule
@@ -108,8 +114,8 @@ program hydra_program
       ! setup routine that may iterate over type(103) BCs. The schedule builds
       ! the partner_of_* indices even in serial.
       call build_coupling_schedule( FUSS_simulation%domain(m), ARES_simulation%domain(m), m )
-      call Setup_Coupled_Metrics( FUSS_simulation%domain(m), ARES_simulation%domain(m) )
-      call Fill_Coupled_Ghost_Cell( FUSS_simulation%domain(m), ARES_simulation%domain(m) )
+      call Setup_Coupled_Metrics( FUSS_simulation%domain(m), ARES_simulation%domain(m), m )
+      call Fill_Coupled_Ghost_Cell( FUSS_simulation%domain(m), ARES_simulation%domain(m), m )
     enddo
   endif
 
@@ -121,7 +127,13 @@ program hydra_program
   n_wall = 0
   mgl = hydra_obj_multigrid%MGL
 
+  ! Set-up is over: start the coupling clock
+  timer_fluid_name = 'ARES'
+  call timer_run_begin()
+
   do while ( TODO <= 2 )
+
+    call timer_step_begin()
 
     ! Set iteration number for each solver
     if ( hydra_obj_sim_param%time_accurate ) then
@@ -172,18 +184,30 @@ program hydra_program
     ! Solve FUSS
     do i_FUSS = 1, FUSS_iter
       if ( FUSS_obj_sim_param%TODO <= 2 ) then
-        if (hydra_obj_io%coupling_wall) call BC_Coupled_Fluxes ( FUSS_simulation%domain(mgl), ARES_simulation%domain(mgl), mgl )
+        if (hydra_obj_io%coupling_wall) then
+          call timer_coup_begin()
+          call BC_Coupled_Fluxes ( FUSS_simulation%domain(mgl), ARES_simulation%domain(mgl), mgl )
+          call timer_coup_end()
+        endif
+        call timer_fuss_begin()
         call FUSS%solve( FUSS_simulation, Dummy_Function )
         if ( FUSS_obj_sim_param%TODO <= 2 ) call FUSS%postprocess( FUSS_simulation )
+        call timer_fuss_end()
       endif
     enddo
 
     ! Solve ARES
     do i_ARES = 1, ARES_iter
       if ( ARES_obj_sim_param%TODO <= 2 ) then
-        if (hydra_obj_io%coupling_wall) call BC_Coupled_Fluxes ( FUSS_simulation%domain(mgl), ARES_simulation%domain(mgl), mgl )
+        if (hydra_obj_io%coupling_wall) then
+          call timer_coup_begin()
+          call BC_Coupled_Fluxes ( FUSS_simulation%domain(mgl), ARES_simulation%domain(mgl), mgl )
+          call timer_coup_end()
+        endif
+        call timer_fluid_begin()
         call ARES%solve( ARES_simulation, Dummy_Function )
         if ( ARES_obj_sim_param%TODO <= 2 ) call ARES%postprocess( ARES_simulation )
+        call timer_fluid_end()
       endif
     enddo
     
@@ -257,7 +281,16 @@ program hydra_program
       ARES_obj_sim_param%TODO = 1
     endif
 
+    ! Wall-clock report (collective: every rank runs the same step counter)
+    call timer_step_end()
+    if ( hydra_obj_io%timer_diter > 0 ) then
+      if ( mod (n_couple, hydra_obj_io%timer_diter) == 0 ) call timer_report ( n_couple )
+    endif
+
   enddo
+
+  ! Timing summary (collective - every rank contributes its accumulators)
+  call timer_summary()
 
   if (mpi_is_root) print*, 'FINAL POSTPROCESS'
   call FUSS%postprocess( FUSS_simulation )

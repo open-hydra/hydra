@@ -5,7 +5,12 @@ module hydraAF_Lib_Metrics
   use ARES_Advanced_Types_m
   use FUSS_Base_Types_m
   use FUSS_Advanced_Types_m
-  use hydraAF_Mod_CouplingExchange, only: is_FUSS_bc_local_local, is_ARES_bc_local_local
+  use hydraAF_Mod_CouplingExchange, only: is_FUSS_bc_local_local, is_ARES_bc_local_local, &
+                                          coupled_secondary_node_indices,               &
+                                          exchange_coupling_metric_nodes,               &
+                                          free_coupling_metric_nodes,                   &
+                                          n_F_meta_entries, n_M_meta_entries,           &
+                                          get_F_meta_entry, get_M_meta_entry
 
   implicit none
   private
@@ -13,17 +18,23 @@ module hydraAF_Lib_Metrics
 
 contains
 
-  subroutine Setup_Coupled_Metrics ( FUSS_domain, ARES_domain )
-    ! NOTE: For MPI runs where a type(103) BC has its primary block (Bm) and
-    ! secondary block (Bs) owned by different ranks, the Mg/dlg/volg for that
-    ! entry are NOT populated here (the remote rank's node coords are needed).
-    ! A follow-up metrics-node exchange in hydraAF_Mod_CouplingExchange is
-    ! required for full cross-rank support.
+  !> Build Mg/dlg/volg for every type(103) coupling BC.
+  !>
+  !> The two loops below can only serve entries whose secondary block is owned
+  !> by this rank, because they read that block's node coordinates directly.
+  !> Entries whose two blocks were partitioned onto different ranks are then
+  !> completed from coordinates fetched over MPI; skipping them leaves Mg = 0,
+  !> which makes the wall-temperature routines drop the secondary side out of
+  !> the interface temperature without any error being raised.
+  subroutine Setup_Coupled_Metrics ( FUSS_domain, ARES_domain, level )
     implicit none
     type(FUSS_domain_type), intent(inout) :: FUSS_domain
     type(ARES_domain_type), intent(inout) :: ARES_domain
+    integer, intent(in) :: level
     ! Local
     integer :: i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
+    integer :: k
+    real(R8) :: snode(3,4,gc_)
 
     !$omp parallel
     !$omp do schedule (dynamic) private(i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s)
@@ -80,6 +91,60 @@ contains
       end select
     enddo
     !$omp end parallel
+
+    ! Cross-rank entries: fetch the secondary block's node coordinates from the
+    ! rank that owns it, then build the same metric tensor from them.
+    call exchange_coupling_metric_nodes ( FUSS_domain, ARES_domain, level )
+
+    do k = 1, n_F_meta_entries(level)
+      call get_F_meta_entry ( level, k, i, snode )
+      if (i <= 0) cycle
+      Bm = FUSS_domain % bc(i) % b
+      Im = FUSS_domain % bc(i) % i
+      Jm = FUSS_domain % bc(i) % j
+      Km = FUSS_domain % bc(i) % k
+      Fm = FUSS_domain % bc(i) % f
+      Bs = FUSS_domain % bc(i) % bs
+      Is = FUSS_domain % bc(i) % is
+      Js = FUSS_domain % bc(i) % js
+      Ks = FUSS_domain % bc(i) % ks
+      Fs = FUSS_domain % bc(i) % fs
+      d11s = FUSS_domain % bc(i) % d11
+      d12s = FUSS_domain % bc(i) % d12
+      d21s = FUSS_domain % bc(i) % d21
+      d22s = FUSS_domain % bc(i) % d22
+      call BC_Coupled_Metrics_FUSS ( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
+                                     Is, Js, Ks, Fs, ARES_domain % blk(Bs), &
+                                     d11s, d12s, d21s, d22s, FUSS_domain % bc(i) % Mg, &
+                                     FUSS_domain % bc(i) % dlg, FUSS_domain % bc(i) % volg, &
+                                     snode )
+    enddo
+
+    do k = 1, n_M_meta_entries(level)
+      call get_M_meta_entry ( level, k, i, snode )
+      if (i <= 0) cycle
+      Bm = ARES_domain % bc(i) % b
+      Im = ARES_domain % bc(i) % i
+      Jm = ARES_domain % bc(i) % j
+      Km = ARES_domain % bc(i) % k
+      Fm = ARES_domain % bc(i) % f
+      Bs = ARES_domain % bc(i) % bs
+      Is = ARES_domain % bc(i) % is
+      Js = ARES_domain % bc(i) % js
+      Ks = ARES_domain % bc(i) % ks
+      Fs = ARES_domain % bc(i) % fs
+      d11s = ARES_domain % bc(i) % d11
+      d12s = ARES_domain % bc(i) % d12
+      d21s = ARES_domain % bc(i) % d21
+      d22s = ARES_domain % bc(i) % d22
+      call BC_Coupled_Metrics_ARES ( Im, Jm, Km, Fm, ARES_domain % blk(Bm), &
+                                     Is, Js, Ks, Fs, FUSS_domain % blk(Bs), &
+                                     d11s, d12s, d21s, d22s, ARES_domain % bc(i) % Mg, &
+                                     ARES_domain % bc(i) % dlg, ARES_domain % bc(i) % volg, &
+                                     snode )
+    enddo
+
+    call free_coupling_metric_nodes ( level )
 
   end subroutine Setup_Coupled_Metrics
 
@@ -346,7 +411,10 @@ contains
   end subroutine Compute_Metric_Tensor_ARES
 
 
-  subroutine BC_Coupled_Metrics_FUSS ( Im, Jm, Km, Fm, blkm, Is, Js, Ks, Fs, blks, d11s, d12s, d21s, d22s, Mg, dlg, volg )
+  !> When snode is present the secondary block's node coordinates are taken
+  !> from it instead of from blks, which lets a rank build Mg for an entry
+  !> whose secondary block belongs to another rank. blks is then untouched.
+  subroutine BC_Coupled_Metrics_FUSS ( Im, Jm, Km, Fm, blkm, Is, Js, Ks, Fs, blks, d11s, d12s, d21s, d22s, Mg, dlg, volg, snode )
 
     implicit none
     integer, intent(in)                    :: Im, Jm, Km, Fm, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
@@ -355,30 +423,11 @@ contains
     type(FUSS_tensor_3D_type), intent(out) :: Mg(2)
     type(FUSS_vector_3D_type), intent(out) :: dlg(2)
     real(R8), intent(out)                  :: volg(2)
+    real(R8), intent(in), optional         :: snode(:,:,:)  !< (3, node, ghost level)
     ! Local
-    integer      :: g, Is1, Js1, Ks1
-    integer      :: II, JJ, KK, III, JJJ, KKK      
-    integer      :: guidem(6,3), guides(6,3), guidem2(6,3), guides2(6,3)
+    integer      :: g, n, idx(3,4)
+    real(R8)     :: nc(3,4)
     type(FUSS_vector_3D_type), dimension(0:gc_):: N1, N2, N3, N4, N5, N6, N7, N8
-    
-    ! ---------------------------------------------------------------------------------------------
-    ! Preliminary definitions
-    guidem(1,1)=-2 ; guidem(1,2)= 0 ; guidem(1,3)= 0 ; guidem(2,1)=1 ; guidem(2,2)=0 ; guidem(2,3)=0
-    guidem(3,1)= 0 ; guidem(3,2)=-2 ; guidem(3,3)= 0 ; guidem(4,1)=0 ; guidem(4,2)=1 ; guidem(4,3)=0
-    guidem(5,1)= 0 ; guidem(5,2)=0  ; guidem(5,3)=-2 ; guidem(6,1)=0 ; guidem(6,2)=0 ; guidem(6,3)=1
-
-    guidem2(1,1)=-3 ; guidem2(1,2)= 0 ; guidem2(1,3)= 0 ; guidem2(2,1)=2 ; guidem2(2,2)=0 ; guidem2(2,3)=0
-    guidem2(3,1)= 0 ; guidem2(3,2)=-3 ; guidem2(3,3)= 0 ; guidem2(4,1)=0 ; guidem2(4,2)=2 ; guidem2(4,3)=0
-    guidem2(5,1)= 0 ; guidem2(5,2)= 0 ; guidem2(5,3)=-3 ; guidem2(6,1)=0 ; guidem2(6,2)=0 ; guidem2(6,3)=2
-
-    guides(1,1)= 0 ; guides(1,2)= 0 ; guides(1,3)= 0 ; guides(2,1)=-1 ; guides(2,2)= 0 ; guides(2,3)= 0
-    guides(3,1)= 0 ; guides(3,2)= 0 ; guides(3,3)= 0 ; guides(4,1)= 0 ; guides(4,2)=-1 ; guides(4,3)= 0
-    guides(5,1)= 0 ; guides(5,2)= 0 ; guides(5,3)= 0 ; guides(6,1)= 0 ; guides(6,2)= 0 ; guides(6,3)=-1
-
-    guides2(1,1)= 1 ; guides2(1,2)= 0 ; guides2(1,3)= 0 ; guides2(2,1)=-2 ; guides2(2,2)= 0 ; guides2(2,3)= 0
-    guides2(3,1)= 0 ; guides2(3,2)= 1 ; guides2(3,3)= 0 ; guides2(4,1)= 0 ; guides2(4,2)=-2 ; guides2(4,3)= 0
-    guides2(5,1)= 0 ; guides2(5,2)= 0 ; guides2(5,3)= 1 ; guides2(6,1)= 0 ; guides2(6,2)= 0 ; guides2(6,3)=-2
-    ! ---------------------------------------------------------------------------------------------
 
     select case (Fm)
       case(1)
@@ -415,126 +464,77 @@ contains
 
     do g = 1, gc_
 
-      ! connected cell node index
-      Is1 = Is + (gc_-g)*guides(Fs,1)+(g-1)*guides2(Fs,1)
-      Js1 = Js + (gc_-g)*guides(Fs,2)+(g-1)*guides2(Fs,2)
-      Ks1 = Ks + (gc_-g)*guides(Fs,3)+(g-1)*guides2(Fs,3)
-
-      ! compute the indexes in the connected block corresponding to the ghost nodes to update in the local block 
-      select case(Fs)
-        case(1:2) ! i-faces
-          II=Is1
-          JJ=(2*Js1+d11s+d21s)/2
-          KK=(2*Ks1+d12s+d22s)/2
-        case(3:4) ! j-faces
-          II=(2*Is1+d11s+d21s)/2
-          JJ=Js1
-          KK=(2*Ks1+d12s+d22s)/2
-        case(5:6) ! k-faces
-          II=(2*Is1+d11s+d21s)/2
-          JJ=(2*Js1+d12s+d22s)/2
-          KK=Ks1
-      end select
-      if (Fm == 1) then
-          N4(g)%c = blks%node(ii,jj,kk)%c
-      elseif (Fm == 2) then
-          N8(g)%c = blks%node(ii,jj,kk)%c
-      elseif (Fm == 3) then
-          N6(g)%c = blks%node(ii,jj,kk)%c
-      elseif (Fm == 4) then
-          N8(g)%c = blks%node(ii,jj,kk)%c
-      elseif (Fm == 5) then
-          N7(g)%c = blks%node(ii,jj,kk)%c
-      elseif (Fm == 6) then
-          N8(g)%c = blks%node(ii,jj,kk)%c
+      ! Node indices in the connected (secondary) block, then the four node
+      ! coordinates themselves: read straight from that block when it is local,
+      ! or taken from what its owning rank sent when it is not.
+      call coupled_secondary_node_indices ( g, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, idx )
+      if ( present(snode) ) then
+        nc(:,1:4) = snode(:,1:4,g)
+      else
+        do n = 1, 4
+          nc(:,n) = blks % node(idx(1,n),idx(2,n),idx(3,n)) % c
+        enddo
       endif
 
-      ! update the remaining 3 indexes (only necessary in the corners, but for good measure)
-      ! node i1-1,i2 update
-      select case(Fs)
-        case(1:2)
-          III=II
-          JJJ=JJ-d11s
-          KKK=KK-d12s
-        case(3:4)
-          III=II-d11s
-          JJJ=JJ
-          KKK=KK-d12s
-        case(5:6)
-          III=II-d11s
-          JJJ=JJ-d12s
-          KKK=KK
-      end select
+      ! connected node
       if (Fm == 1) then
-        N2(g)%c = blks%node(iii,jjj,kkk)%c
+          N4(g)%c = nc(:,1)
       elseif (Fm == 2) then
-        N6(g)%c = blks%node(iii,jjj,kkk)%c
+          N8(g)%c = nc(:,1)
       elseif (Fm == 3) then
-        N2(g)%c = blks%node(iii,jjj,kkk)%c
+          N6(g)%c = nc(:,1)
       elseif (Fm == 4) then
-        N4(g)%c = blks%node(iii,jjj,kkk)%c
+          N8(g)%c = nc(:,1)
       elseif (Fm == 5) then
-        N3(g)%c = blks%node(iii,jjj,kkk)%c
+          N7(g)%c = nc(:,1)
       elseif (Fm == 6) then
-        N4(g)%c = blks%node(iii,jjj,kkk)%c
+          N8(g)%c = nc(:,1)
       endif
 
-      ! node i1,i2-1 update
-      select case(Fs)
-        case(1:2)
-          III=II
-          JJJ=JJ-d21s
-          KKK=KK-d22s
-        case(3:4)
-          III=II-d21s
-          JJJ=JJ
-          KKK=KK-d22s
-        case(5:6)
-          III=II-d21s
-          JJJ=JJ-d22s
-          KKK=KK
-      end select
+      ! the remaining 3 nodes (only necessary in the corners, but for good measure)
+      ! node i1-1,i2
       if (Fm == 1) then
-        N3(g)%c = blks%node(iii,jjj,kkk)%c
+        N2(g)%c = nc(:,2)
       elseif (Fm == 2) then
-        N7(g)%c = blks%node(iii,jjj,kkk)%c
+        N6(g)%c = nc(:,2)
       elseif (Fm == 3) then
-        N5(g)%c = blks%node(iii,jjj,kkk)%c
+        N2(g)%c = nc(:,2)
       elseif (Fm == 4) then
-        N7(g)%c = blks%node(iii,jjj,kkk)%c
+        N4(g)%c = nc(:,2)
       elseif (Fm == 5) then
-        N5(g)%c = blks%node(iii,jjj,kkk)%c
+        N3(g)%c = nc(:,2)
       elseif (Fm == 6) then
-        N6(g)%c = blks%node(iii,jjj,kkk)%c
+        N4(g)%c = nc(:,2)
       endif
 
-      ! node i1-1,i2-1 update
-      select case(Fs)
-        case(1:2)
-          III=II
-          JJJ=JJ-d11s-d21s
-          KKK=KK-d12s-d22s
-        case(3:4)
-          III=II-d11s-d21s
-          JJJ=JJ
-          KKK=KK-d12s-d22s
-        case(5:6)
-          III=II-d11s-d21s
-          JJJ=JJ-d12s-d22s
-          KKK=KK
-      end select
+      ! node i1,i2-1
       if (Fm == 1) then
-        N1(g)%c = blks%node(iii,jjj,kkk)%c
+        N3(g)%c = nc(:,3)
       elseif (Fm == 2) then
-        N5(g)%c = blks%node(iii,jjj,kkk)%c
+        N7(g)%c = nc(:,3)
       elseif (Fm == 3) then
-        N1(g)%c = blks%node(iii,jjj,kkk)%c
+        N5(g)%c = nc(:,3)
       elseif (Fm == 4) then
-        N3(g)%c = blks%node(iii,jjj,kkk)%c
+        N7(g)%c = nc(:,3)
       elseif (Fm == 5) then
-        N1(g)%c = blks%node(iii,jjj,kkk)%c
+        N5(g)%c = nc(:,3)
       elseif (Fm == 6) then
-        N2(g)%c = blks%node(iii,jjj,kkk)%c
+        N6(g)%c = nc(:,3)
+      endif
+
+      ! node i1-1,i2-1
+      if (Fm == 1) then
+        N1(g)%c = nc(:,4)
+      elseif (Fm == 2) then
+        N5(g)%c = nc(:,4)
+      elseif (Fm == 3) then
+        N1(g)%c = nc(:,4)
+      elseif (Fm == 4) then
+        N3(g)%c = nc(:,4)
+      elseif (Fm == 5) then
+        N1(g)%c = nc(:,4)
+      elseif (Fm == 6) then
+        N2(g)%c = nc(:,4)
       endif
 
       ! compute metric variables
@@ -564,7 +564,10 @@ contains
   end subroutine BC_Coupled_Metrics_FUSS
 
 
-  subroutine BC_Coupled_Metrics_ARES ( Im, Jm, Km, Fm, blkm, Is, Js, Ks, Fs, blks, d11s, d12s, d21s, d22s, Mg, dlg, volg )
+  !> When snode is present the secondary block's node coordinates are taken
+  !> from it instead of from blks, which lets a rank build Mg for an entry
+  !> whose secondary block belongs to another rank. blks is then untouched.
+  subroutine BC_Coupled_Metrics_ARES ( Im, Jm, Km, Fm, blkm, Is, Js, Ks, Fs, blks, d11s, d12s, d21s, d22s, Mg, dlg, volg, snode )
 
     implicit none
     integer, intent(in)                    :: Im, Jm, Km, Fm, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
@@ -573,30 +576,11 @@ contains
     type(ARES_tensor_3D_type), intent(out) :: Mg(2)
     type(ARES_vector_3D_type), intent(out) :: dlg(2)
     real(R8), intent(out)                  :: volg(2)
+    real(R8), intent(in), optional         :: snode(:,:,:)  !< (3, node, ghost level)
     ! Local
-    integer      :: g, Is1, Js1, Ks1
-    integer      :: II, JJ, KK, III, JJJ, KKK      
-    integer      :: guidem(6,3), guides(6,3), guidem2(6,3), guides2(6,3)
+    integer      :: g, n, idx(3,4)
+    real(R8)     :: nc(3,4)
     type(ARES_vector_3D_type), dimension(0:gc_):: N1, N2, N3, N4, N5, N6, N7, N8
-    
-    ! ---------------------------------------------------------------------------------------------
-    ! Preliminary definitions
-    guidem(1,1)=-2 ; guidem(1,2)= 0 ; guidem(1,3)= 0 ; guidem(2,1)=1 ; guidem(2,2)=0 ; guidem(2,3)=0
-    guidem(3,1)= 0 ; guidem(3,2)=-2 ; guidem(3,3)= 0 ; guidem(4,1)=0 ; guidem(4,2)=1 ; guidem(4,3)=0
-    guidem(5,1)= 0 ; guidem(5,2)=0  ; guidem(5,3)=-2 ; guidem(6,1)=0 ; guidem(6,2)=0 ; guidem(6,3)=1
-
-    guidem2(1,1)=-3 ; guidem2(1,2)= 0 ; guidem2(1,3)= 0 ; guidem2(2,1)=2 ; guidem2(2,2)=0 ; guidem2(2,3)=0
-    guidem2(3,1)= 0 ; guidem2(3,2)=-3 ; guidem2(3,3)= 0 ; guidem2(4,1)=0 ; guidem2(4,2)=2 ; guidem2(4,3)=0
-    guidem2(5,1)= 0 ; guidem2(5,2)= 0 ; guidem2(5,3)=-3 ; guidem2(6,1)=0 ; guidem2(6,2)=0 ; guidem2(6,3)=2
-
-    guides(1,1)= 0 ; guides(1,2)= 0 ; guides(1,3)= 0 ; guides(2,1)=-1 ; guides(2,2)= 0 ; guides(2,3)= 0
-    guides(3,1)= 0 ; guides(3,2)= 0 ; guides(3,3)= 0 ; guides(4,1)= 0 ; guides(4,2)=-1 ; guides(4,3)= 0
-    guides(5,1)= 0 ; guides(5,2)= 0 ; guides(5,3)= 0 ; guides(6,1)= 0 ; guides(6,2)= 0 ; guides(6,3)=-1
-
-    guides2(1,1)= 1 ; guides2(1,2)= 0 ; guides2(1,3)= 0 ; guides2(2,1)=-2 ; guides2(2,2)= 0 ; guides2(2,3)= 0
-    guides2(3,1)= 0 ; guides2(3,2)= 1 ; guides2(3,3)= 0 ; guides2(4,1)= 0 ; guides2(4,2)=-2 ; guides2(4,3)= 0
-    guides2(5,1)= 0 ; guides2(5,2)= 0 ; guides2(5,3)= 1 ; guides2(6,1)= 0 ; guides2(6,2)= 0 ; guides2(6,3)=-2
-    ! ---------------------------------------------------------------------------------------------
 
     select case (Fm)
       case(1)
@@ -633,126 +617,77 @@ contains
 
     do g = 1, gc_
 
-      ! connected cell node index
-      Is1 = Is + (gc_-g)*guides(Fs,1)+(g-1)*guides2(Fs,1)
-      Js1 = Js + (gc_-g)*guides(Fs,2)+(g-1)*guides2(Fs,2)
-      Ks1 = Ks + (gc_-g)*guides(Fs,3)+(g-1)*guides2(Fs,3)
-
-      ! compute the indexes in the connected block corresponding to the ghost nodes to update in the local block 
-      select case(Fs)
-        case(1:2) ! i-faces
-          II=Is1
-          JJ=(2*Js1+d11s+d21s)/2
-          KK=(2*Ks1+d12s+d22s)/2
-        case(3:4) ! j-faces
-          II=(2*Is1+d11s+d21s)/2
-          JJ=Js1
-          KK=(2*Ks1+d12s+d22s)/2
-        case(5:6) ! k-faces
-          II=(2*Is1+d11s+d21s)/2
-          JJ=(2*Js1+d12s+d22s)/2
-          KK=Ks1
-      end select
-      if (Fm == 1) then
-          N4(g)%c = blks%node(ii,jj,kk)%c
-      elseif (Fm == 2) then
-          N8(g)%c = blks%node(ii,jj,kk)%c
-      elseif (Fm == 3) then
-          N6(g)%c = blks%node(ii,jj,kk)%c
-      elseif (Fm == 4) then
-          N8(g)%c = blks%node(ii,jj,kk)%c
-      elseif (Fm == 5) then
-          N7(g)%c = blks%node(ii,jj,kk)%c
-      elseif (Fm == 6) then
-          N8(g)%c = blks%node(ii,jj,kk)%c
+      ! Node indices in the connected (secondary) block, then the four node
+      ! coordinates themselves: read straight from that block when it is local,
+      ! or taken from what its owning rank sent when it is not.
+      call coupled_secondary_node_indices ( g, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, idx )
+      if ( present(snode) ) then
+        nc(:,1:4) = snode(:,1:4,g)
+      else
+        do n = 1, 4
+          nc(:,n) = blks % node(idx(1,n),idx(2,n),idx(3,n)) % c
+        enddo
       endif
 
-      ! update the remaining 3 indexes (only necessary in the corners, but for good measure)
-      ! node i1-1,i2 update
-      select case(Fs)
-        case(1:2)
-          III=II
-          JJJ=JJ-d11s
-          KKK=KK-d12s
-        case(3:4)
-          III=II-d11s
-          JJJ=JJ
-          KKK=KK-d12s
-        case(5:6)
-          III=II-d11s
-          JJJ=JJ-d12s
-          KKK=KK
-      end select
+      ! connected node
       if (Fm == 1) then
-        N2(g)%c = blks%node(iii,jjj,kkk)%c
+          N4(g)%c = nc(:,1)
       elseif (Fm == 2) then
-        N6(g)%c = blks%node(iii,jjj,kkk)%c
+          N8(g)%c = nc(:,1)
       elseif (Fm == 3) then
-        N2(g)%c = blks%node(iii,jjj,kkk)%c
+          N6(g)%c = nc(:,1)
       elseif (Fm == 4) then
-        N4(g)%c = blks%node(iii,jjj,kkk)%c
+          N8(g)%c = nc(:,1)
       elseif (Fm == 5) then
-        N3(g)%c = blks%node(iii,jjj,kkk)%c
+          N7(g)%c = nc(:,1)
       elseif (Fm == 6) then
-        N4(g)%c = blks%node(iii,jjj,kkk)%c
+          N8(g)%c = nc(:,1)
       endif
 
-      ! node i1,i2-1 update
-      select case(Fs)
-        case(1:2)
-          III=II
-          JJJ=JJ-d21s
-          KKK=KK-d22s
-        case(3:4)
-          III=II-d21s
-          JJJ=JJ
-          KKK=KK-d22s
-        case(5:6)
-          III=II-d21s
-          JJJ=JJ-d22s
-          KKK=KK
-      end select
+      ! the remaining 3 nodes (only necessary in the corners, but for good measure)
+      ! node i1-1,i2
       if (Fm == 1) then
-        N3(g)%c = blks%node(iii,jjj,kkk)%c
+        N2(g)%c = nc(:,2)
       elseif (Fm == 2) then
-        N7(g)%c = blks%node(iii,jjj,kkk)%c
+        N6(g)%c = nc(:,2)
       elseif (Fm == 3) then
-        N5(g)%c = blks%node(iii,jjj,kkk)%c
+        N2(g)%c = nc(:,2)
       elseif (Fm == 4) then
-        N7(g)%c = blks%node(iii,jjj,kkk)%c
+        N4(g)%c = nc(:,2)
       elseif (Fm == 5) then
-        N5(g)%c = blks%node(iii,jjj,kkk)%c
+        N3(g)%c = nc(:,2)
       elseif (Fm == 6) then
-        N6(g)%c = blks%node(iii,jjj,kkk)%c
+        N4(g)%c = nc(:,2)
       endif
 
-      ! node i1-1,i2-1 update
-      select case(Fs)
-        case(1:2)
-          III=II
-          JJJ=JJ-d11s-d21s
-          KKK=KK-d12s-d22s
-        case(3:4)
-          III=II-d11s-d21s
-          JJJ=JJ
-          KKK=KK-d12s-d22s
-        case(5:6)
-          III=II-d11s-d21s
-          JJJ=JJ-d12s-d22s
-          KKK=KK
-      end select
+      ! node i1,i2-1
       if (Fm == 1) then
-        N1(g)%c = blks%node(iii,jjj,kkk)%c
+        N3(g)%c = nc(:,3)
       elseif (Fm == 2) then
-        N5(g)%c = blks%node(iii,jjj,kkk)%c
+        N7(g)%c = nc(:,3)
       elseif (Fm == 3) then
-        N1(g)%c = blks%node(iii,jjj,kkk)%c
+        N5(g)%c = nc(:,3)
       elseif (Fm == 4) then
-        N3(g)%c = blks%node(iii,jjj,kkk)%c
+        N7(g)%c = nc(:,3)
       elseif (Fm == 5) then
-        N1(g)%c = blks%node(iii,jjj,kkk)%c
+        N5(g)%c = nc(:,3)
       elseif (Fm == 6) then
-        N2(g)%c = blks%node(iii,jjj,kkk)%c
+        N6(g)%c = nc(:,3)
+      endif
+
+      ! node i1-1,i2-1
+      if (Fm == 1) then
+        N1(g)%c = nc(:,4)
+      elseif (Fm == 2) then
+        N5(g)%c = nc(:,4)
+      elseif (Fm == 3) then
+        N1(g)%c = nc(:,4)
+      elseif (Fm == 4) then
+        N3(g)%c = nc(:,4)
+      elseif (Fm == 5) then
+        N1(g)%c = nc(:,4)
+      elseif (Fm == 6) then
+        N2(g)%c = nc(:,4)
       endif
 
       ! compute metric variables

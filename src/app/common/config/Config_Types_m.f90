@@ -35,6 +35,7 @@ module hydra_Config_Types_m
     character(len=llen_) :: coupling_format        ! solution format (native,tecplot,vtk) and formatting (ascii,raw)
     logical              :: coupling_wall
     integer              :: ini_diter              ! input.ini update
+    integer              :: timer_diter            ! Coupling-step timing report (0 = off)
     ! Useful variables
     character(len=hlen_) :: Owallnames
     integer              :: Onwall

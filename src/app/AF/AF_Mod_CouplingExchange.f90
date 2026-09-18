@@ -38,6 +38,7 @@ module hydraAF_Mod_CouplingExchange
   use ARES_Mod_MPI, only: ARES_block_owner => block_owner, &
                           ARES_is_local_block => is_local_block, &
                           mpi_rank_, mpi_size_, check_mpi_error
+  use hydra_Global_m, only: gc_
 
   implicit none
   private
@@ -51,6 +52,11 @@ module hydraAF_Mod_CouplingExchange
   public :: partner_of_FUSS_bc, partner_of_ARES_bc
   public :: is_FUSS_bc_local_local, is_ARES_bc_local_local
   public :: get_F_remote_P, get_M_remote_matID
+  public :: coupled_secondary_node_indices
+  public :: exchange_coupling_metric_nodes, free_coupling_metric_nodes
+  public :: own103_FUSS, own103_ARES
+  public :: n_F_meta_entries, n_M_meta_entries
+  public :: get_F_meta_entry, get_M_meta_entry
 
   ! Coupling stencil size: gc_ ghost cells (normal) + 4 corner cells (tangential)
   ! Matches Tg(6) and Pg(1,6) in Advanced_Types_m for the default gc_=2.
@@ -61,6 +67,12 @@ module hydraAF_Mod_CouplingExchange
   integer, parameter :: TAG_PG_MID  = 7002
   integer, parameter :: TAG_RFLUX_F = 7003  ! reverse flux into ARES%ext_flux(nh)
   integer, parameter :: TAG_RFLUX_M = 7004  ! reverse flux into FUSS%ext_flux
+  integer, parameter :: TAG_META_F   = 7005  ! secondary node coords, ARES -> FUSS
+  integer, parameter :: TAG_META_M   = 7006  ! secondary node coords, FUSS -> ARES
+
+  !> Node coordinates a primary rank needs from the secondary block to build the
+  !> coupling metric tensor: 4 nodes per ghost level, 3 components each.
+  integer, parameter :: NMETA_NODE = 4
 
 
   !> Entry on the primary-side ("recv") rank: local BC needing remote stencil data.
@@ -122,6 +134,30 @@ module hydraAF_Mod_CouplingExchange
     integer, allocatable :: partner_of_FUSS(:)   !< (FUSS%nbound) -> ARES bc idx (or 0)
     integer, allocatable :: partner_of_ARES(:)   !< (ARES%nbound) -> FUSS bc idx (or 0)
 
+    ! Compact lists of the type(103) BC indices whose PRIMARY block this rank
+    ! owns -- i.e. exactly the coupling work this rank has to do.
+    !
+    ! The coupling loops used to sweep the whole bc array on every rank and
+    ! `cycle` past everything they did not own. That array is global and GROWS
+    ! with the block count, because every cut manufactures type(101) split
+    ! faces, while the type(103) work inside it is constant -- the interface is
+    ! the same surface however the mesh is cut. So adding ranks lengthened the
+    ! sweep while shrinking each rank's share of the useful work, and the
+    ! coupling got slower with rank count instead of faster. Iterating these
+    ! lists makes the cost proportional to what the rank owns.
+    integer, allocatable :: own103_F(:)          !< FUSS bc indices, primary block local
+    integer, allocatable :: own103_A(:)          !< ARES bc indices, primary block local
+    integer :: n_own103_F = 0                    !< used length of own103_F
+    integer :: n_own103_A = 0                    !< used length of own103_A
+
+    ! Per-entry reverse-flux scratch, in bc-index space because
+    ! exchange_coupling_reverse_flux_* addresses it by bc index. Persistent: it
+    ! used to be allocated and zeroed at global size on every call, almost all
+    ! of it untouched. Every index the exchange reads is written by the same
+    ! call, so it needs no clearing between steps.
+    real(R8), allocatable :: rflux_F(:)          !< (FUSS%nbound)
+    real(R8), allocatable :: rflux_A(:)          !< (ARES%nbound)
+
     ! Remote reverse-flux exchange (same pairing as forward, but reversed direction and
     ! using a scalar accumulator per entry).
     type(dir_t) :: RF_FUSS_send   !< FUSS-owner sends -0.5*F_new_flux to ARES-owner
@@ -133,6 +169,13 @@ module hydraAF_Mod_CouplingExchange
     type(dir_t) :: RF_ARES_recv   !< FUSS-owner receives (applied to FUSS partner ext_flux)
     integer, allocatable :: RF_ARES_recv_fussbc(:) !< maps recv slot -> FUSS bc idx
 
+    ! One-off exchange of the secondary-block node coordinates that
+    ! BC_Coupled_Metrics_* needs to build Mg. Same rank pairing as the forward
+    ! directions, so the groups are copied from them. Allocated during setup
+    ! and released again as soon as the metrics have been built.
+    type(dir_t) :: F_meta_recv, F_meta_send
+    type(dir_t) :: M_meta_recv, M_meta_send
+
     logical :: built = .false.
   end type level_sched_t
 
@@ -142,11 +185,226 @@ contains
 
 
   !---------------------------------------------------------------------------
+  !> Collect the type(103) BC indices whose primary block this rank owns, for
+  !> each phase, plus the persistent reverse-flux scratch addressed by bc index.
+  !>
+  !> This is the only place that still walks the full bc array, and it runs once
+  !> per multigrid level at setup rather than repeatedly per coupling step.
+  subroutine build_own103_lists(FUSS_domain, ARES_domain, L)
+    implicit none
+    type(FUSS_domain_type), intent(in) :: FUSS_domain
+    type(ARES_domain_type), intent(in) :: ARES_domain
+    type(level_sched_t), intent(inout) :: L
+    integer :: i, n
+
+    ! --- FUSS ---
+    n = 0
+    do i = 1, FUSS_domain%nbound
+      if (FUSS_domain%bc(i)%type /= 103) cycle
+      if (.not. owns_FUSS_primary(FUSS_domain, i)) cycle
+      n = n + 1
+    end do
+    allocate(L%own103_F(max(n,1))); L%own103_F = 0
+    L%n_own103_F = n
+    n = 0
+    do i = 1, FUSS_domain%nbound
+      if (FUSS_domain%bc(i)%type /= 103) cycle
+      if (.not. owns_FUSS_primary(FUSS_domain, i)) cycle
+      n = n + 1
+      L%own103_F(n) = i
+    end do
+
+    ! --- ARES ---
+    n = 0
+    do i = 1, ARES_domain%nbound
+      if (ARES_domain%bc(i)%type /= 103) cycle
+      if (.not. owns_ARES_primary(ARES_domain, i)) cycle
+      n = n + 1
+    end do
+    allocate(L%own103_A(max(n,1))); L%own103_A = 0
+    L%n_own103_A = n
+    n = 0
+    do i = 1, ARES_domain%nbound
+      if (ARES_domain%bc(i)%type /= 103) cycle
+      if (.not. owns_ARES_primary(ARES_domain, i)) cycle
+      n = n + 1
+      L%own103_A(n) = i
+    end do
+
+    allocate(L%rflux_F(max(FUSS_domain%nbound,1))); L%rflux_F = 0.0d0
+    allocate(L%rflux_A(max(ARES_domain%nbound,1))); L%rflux_A = 0.0d0
+  end subroutine build_own103_lists
+
+
+  !> Ownership of a BC's primary block. With no partition (serial build, or
+  !> before partition_blocks has run) every block is this rank's.
+  logical function owns_FUSS_primary(FUSS_domain, i) result(own)
+    implicit none
+    type(FUSS_domain_type), intent(in) :: FUSS_domain
+    integer, intent(in) :: i
+    own = .true.
+    if (.not. allocated(FUSS_block_owner)) return
+    own = ( FUSS_block_owner(FUSS_domain%bc(i)%b) == mpi_rank_ )
+  end function owns_FUSS_primary
+
+  logical function owns_ARES_primary(ARES_domain, i) result(own)
+    implicit none
+    type(ARES_domain_type), intent(in) :: ARES_domain
+    integer, intent(in) :: i
+    own = .true.
+    if (.not. allocated(ARES_block_owner)) return
+    own = ( ARES_block_owner(ARES_domain%bc(i)%b) == mpi_rank_ )
+  end function owns_ARES_primary
+
+
+  !> The FUSS coupling work this rank owns: count, bc indices, and the
+  !> reverse-flux scratch. `n` is 0 and the pointers are unassociated when the
+  !> schedule for `level` has not been built.
+  subroutine own103_FUSS(level, n, idx, rflux)
+    implicit none
+    integer, intent(in) :: level
+    integer, intent(out) :: n
+    integer, pointer, intent(out) :: idx(:)
+    real(R8), pointer, intent(out), optional :: rflux(:)
+    type(level_sched_t), pointer :: L
+    n = 0
+    nullify(idx)
+    if (present(rflux)) nullify(rflux)
+    if (.not. allocated(levels)) return
+    if (level < 1 .or. level > size(levels)) return
+    L => levels(level)
+    if (.not. allocated(L%own103_F)) return
+    n = L%n_own103_F
+    idx => L%own103_F
+    if (present(rflux) .and. allocated(L%rflux_F)) rflux => L%rflux_F
+  end subroutine own103_FUSS
+
+  subroutine own103_ARES(level, n, idx, rflux)
+    implicit none
+    integer, intent(in) :: level
+    integer, intent(out) :: n
+    integer, pointer, intent(out) :: idx(:)
+    real(R8), pointer, intent(out), optional :: rflux(:)
+    type(level_sched_t), pointer :: L
+    n = 0
+    nullify(idx)
+    if (present(rflux)) nullify(rflux)
+    if (.not. allocated(levels)) return
+    if (level < 1 .or. level > size(levels)) return
+    L => levels(level)
+    if (.not. allocated(L%own103_A)) return
+    n = L%n_own103_A
+    idx => L%own103_A
+    if (present(rflux) .and. allocated(L%rflux_A)) rflux => L%rflux_A
+  end subroutine own103_ARES
+
+
+  !---------------------------------------------------------------------------
+  !> Indices, inside the SECONDARY block, of the four nodes that feed ghost
+  !> level g of a type(103) coupling BC.
+  !>
+  !> They depend only on secondary-side data (Is,Js,Ks,Fs and the four
+  !> orientation flags d11s..d22s) and never on the primary block, which is what
+  !> lets the rank owning the secondary block pack these coordinates for a
+  !> primary block it knows nothing about.  BC_Coupled_Metrics_* and the
+  !> metric-node packers all call this, so they cannot drift apart.
+  !>
+  !> Node order: 1 = the connected node itself, 2 = its (i1-1,i2) neighbour,
+  !> 3 = (i1,i2-1), 4 = (i1-1,i2-1).
+  pure subroutine coupled_secondary_node_indices(g, Is, Js, Ks, Fs, &
+                                                 d11s, d12s, d21s, d22s, idx)
+    implicit none
+    integer, intent(in)  :: g, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
+    integer, intent(out) :: idx(3,NMETA_NODE)
+    ! Local
+    integer :: Is1, Js1, Ks1, II, JJ, KK
+    integer :: guides(6,3), guides2(6,3)
+
+    guides(1,1)= 0 ; guides(1,2)= 0 ; guides(1,3)= 0 ; guides(2,1)=-1 ; guides(2,2)= 0 ; guides(2,3)= 0
+    guides(3,1)= 0 ; guides(3,2)= 0 ; guides(3,3)= 0 ; guides(4,1)= 0 ; guides(4,2)=-1 ; guides(4,3)= 0
+    guides(5,1)= 0 ; guides(5,2)= 0 ; guides(5,3)= 0 ; guides(6,1)= 0 ; guides(6,2)= 0 ; guides(6,3)=-1
+
+    guides2(1,1)= 1 ; guides2(1,2)= 0 ; guides2(1,3)= 0 ; guides2(2,1)=-2 ; guides2(2,2)= 0 ; guides2(2,3)= 0
+    guides2(3,1)= 0 ; guides2(3,2)= 1 ; guides2(3,3)= 0 ; guides2(4,1)= 0 ; guides2(4,2)=-2 ; guides2(4,3)= 0
+    guides2(5,1)= 0 ; guides2(5,2)= 0 ; guides2(5,3)= 1 ; guides2(6,1)= 0 ; guides2(6,2)= 0 ; guides2(6,3)=-2
+
+    ! connected cell node index
+    Is1 = Is + (gc_-g)*guides(Fs,1) + (g-1)*guides2(Fs,1)
+    Js1 = Js + (gc_-g)*guides(Fs,2) + (g-1)*guides2(Fs,2)
+    Ks1 = Ks + (gc_-g)*guides(Fs,3) + (g-1)*guides2(Fs,3)
+
+    select case(Fs)
+      case(1:2) ! i-faces
+        II = Is1
+        JJ = (2*Js1+d11s+d21s)/2
+        KK = (2*Ks1+d12s+d22s)/2
+      case(3:4) ! j-faces
+        II = (2*Is1+d11s+d21s)/2
+        JJ = Js1
+        KK = (2*Ks1+d12s+d22s)/2
+      case default ! k-faces
+        II = (2*Is1+d11s+d21s)/2
+        JJ = (2*Js1+d12s+d22s)/2
+        KK = Ks1
+    end select
+    idx(1,1) = II ; idx(2,1) = JJ ; idx(3,1) = KK
+
+    ! node i1-1,i2
+    select case(Fs)
+      case(1:2)
+        idx(1,2) = II            ; idx(2,2) = JJ-d11s       ; idx(3,2) = KK-d12s
+      case(3:4)
+        idx(1,2) = II-d11s       ; idx(2,2) = JJ            ; idx(3,2) = KK-d12s
+      case default
+        idx(1,2) = II-d11s       ; idx(2,2) = JJ-d12s       ; idx(3,2) = KK
+    end select
+
+    ! node i1,i2-1
+    select case(Fs)
+      case(1:2)
+        idx(1,3) = II            ; idx(2,3) = JJ-d21s       ; idx(3,3) = KK-d22s
+      case(3:4)
+        idx(1,3) = II-d21s       ; idx(2,3) = JJ            ; idx(3,3) = KK-d22s
+      case default
+        idx(1,3) = II-d21s       ; idx(2,3) = JJ-d22s       ; idx(3,3) = KK
+    end select
+
+    ! node i1-1,i2-1
+    select case(Fs)
+      case(1:2)
+        idx(1,4) = II            ; idx(2,4) = JJ-d11s-d21s  ; idx(3,4) = KK-d12s-d22s
+      case(3:4)
+        idx(1,4) = II-d11s-d21s  ; idx(2,4) = JJ            ; idx(3,4) = KK-d12s-d22s
+      case default
+        idx(1,4) = II-d11s-d21s  ; idx(2,4) = JJ-d12s-d22s  ; idx(3,4) = KK
+    end select
+
+  end subroutine coupled_secondary_node_indices
+
+
+  !---------------------------------------------------------------------------
+  !> Type-103 interface entries whose solid block belongs to this rank.
+  integer function count_owned_interface(FUSS_domain) result(n)
+    implicit none
+    type(FUSS_domain_type), intent(in) :: FUSS_domain
+    integer :: i
+
+    n = 0
+    do i = 1, FUSS_domain%nbound
+      if (FUSS_domain%bc(i)%type /= 103) cycle
+      if (FUSS_block_owner(FUSS_domain%bc(i)%b) /= mpi_rank_) cycle
+      n = n + 1
+    end do
+  end function count_owned_interface
+
+
+  !---------------------------------------------------------------------------
   !> Build the cross-solver coupling schedule for one MG level.
   !> Idempotent on built=.true.  Depends on the two solvers' block_owner arrays
   !> having already been populated by partition_blocks().
   subroutine build_coupling_schedule(FUSS_domain, ARES_domain, level)
     use ARES_Global_m, only: np
+    use hydra_Mod_Timers, only: timer_set_interface_counts
     implicit none
     type(FUSS_domain_type), intent(in) :: FUSS_domain
     type(ARES_domain_type), intent(in) :: ARES_domain
@@ -154,6 +412,7 @@ contains
     ! Local
     integer :: i, Bm, Bs, fuss_o, ARES_o
     integer :: n_F_recv, n_F_send, n_M_recv, n_M_send
+    integer :: n_iface_owned
     type(level_sched_t), pointer :: L
 
     if (.not. allocated(levels)) allocate(levels(max(level,1)))
@@ -179,11 +438,17 @@ contains
     allocate(L%partner_of_ARES(ARES_domain%nbound)); L%partner_of_ARES = 0
     call build_partner_indices(FUSS_domain, ARES_domain, L)
 
+    ! Built before the serial/single-rank early returns below: the coupling loops
+    ! iterate these lists in every build, MPI or not.
+    call build_own103_lists(FUSS_domain, ARES_domain, L)
+
 #ifndef USE_MPI
+    call timer_set_interface_counts(0, count_owned_interface(FUSS_domain))
     L%built = .true.
     return
 #else
     if (mpi_size_ <= 1) then
+      call timer_set_interface_counts(0, count_owned_interface(FUSS_domain))
       L%built = .true.
       return
     end if
@@ -212,6 +477,9 @@ contains
       if (mpi_rank_ == ARES_o) n_M_recv = n_M_recv + 1
       if (mpi_rank_ == fuss_o) n_M_send = n_M_send + 1
     end do
+
+    n_iface_owned = count_owned_interface(FUSS_domain)
+    call timer_set_interface_counts(n_F_recv, n_iface_owned)
 
     L%F_recv%n_entries = n_F_recv
     L%F_send%n_entries = n_F_send
@@ -674,6 +942,222 @@ contains
 
 
   !---------------------------------------------------------------------------
+  !> One-off exchange of the secondary-block node coordinates needed to build
+  !> the coupling metric tensor Mg of BCs whose two blocks live on different
+  !> ranks.
+  !>
+  !> Setup_Coupled_Metrics can only build Mg for entries whose secondary block
+  !> is local, because it reads that block's node coordinates directly. Without
+  !> this exchange the remaining entries keep Mg = 0, and the wall-temperature
+  !> routines then reduce to Tint = Num_loc/Den_loc: the secondary side drops
+  !> out of the interface temperature altogether, silently and with no error.
+  !>
+  !> Call once per MG level from Setup_Coupled_Metrics and release the buffers
+  !> with free_coupling_metric_nodes as soon as the metrics have been built.
+  subroutine exchange_coupling_metric_nodes(FUSS_domain, ARES_domain, level)
+    implicit none
+    type(FUSS_domain_type), intent(in) :: FUSS_domain
+    type(ARES_domain_type), intent(in) :: ARES_domain
+    integer, intent(in) :: level
+#ifdef USE_MPI
+    type(level_sched_t), pointer :: L
+    integer :: k, payload
+
+    if (mpi_size_ <= 1) return
+    if (.not. allocated(levels)) return
+    if (level < 1 .or. level > size(levels)) return
+    L => levels(level)
+    if (.not. L%built) return
+
+    payload = 3 * NMETA_NODE * gc_
+
+    L%F_meta_recv%n_entries = L%F_recv%n_entries
+    L%F_meta_send%n_entries = L%F_send%n_entries
+    L%M_meta_recv%n_entries = L%M_recv%n_entries
+    L%M_meta_send%n_entries = L%M_send%n_entries
+    L%F_meta_recv%payload_per_entry = payload
+    L%F_meta_send%payload_per_entry = payload
+    L%M_meta_recv%payload_per_entry = payload
+    L%M_meta_send%payload_per_entry = payload
+    call copy_groups(L%F_recv, L%F_meta_recv)
+    call copy_groups(L%F_send, L%F_meta_send)
+    call copy_groups(L%M_recv, L%M_meta_recv)
+    call copy_groups(L%M_send, L%M_meta_send)
+    call alloc_dir_buf(L%F_meta_recv)
+    call alloc_dir_buf(L%F_meta_send)
+    call alloc_dir_buf(L%M_meta_recv)
+    call alloc_dir_buf(L%M_meta_send)
+
+    ! FUSS-primary entries: the ARES owner of Bs packs its node coordinates.
+    if (L%F_meta_recv%n_entries > 0 .or. L%F_meta_send%n_entries > 0) then
+      call post_recvs(L%F_meta_recv, TAG_META_F)
+      do k = 1, L%F_meta_send%n_entries
+        associate (e => L%F_send_ent(k))
+          call pack_metric_nodes_ARES(ARES_domain%blk(e%local_bs), &
+                                      e%is, e%js, e%ks, e%fs, &
+                                      e%d11, e%d12, e%d21, e%d22, &
+                                      L%F_meta_send%buf((k-1)*payload + 1 : k*payload))
+        end associate
+      end do
+      call post_sends(L%F_meta_send, TAG_META_F)
+      call wait_all(L%F_meta_recv)
+      call wait_all(L%F_meta_send)
+    end if
+
+    ! ARES-primary entries: the FUSS owner of Bs packs its node coordinates.
+    if (L%M_meta_recv%n_entries > 0 .or. L%M_meta_send%n_entries > 0) then
+      call post_recvs(L%M_meta_recv, TAG_META_M)
+      do k = 1, L%M_meta_send%n_entries
+        associate (e => L%M_send_ent(k))
+          call pack_metric_nodes_FUSS(FUSS_domain%blk(e%local_bs), &
+                                      e%is, e%js, e%ks, e%fs, &
+                                      e%d11, e%d12, e%d21, e%d22, &
+                                      L%M_meta_send%buf((k-1)*payload + 1 : k*payload))
+        end associate
+      end do
+      call post_sends(L%M_meta_send, TAG_META_M)
+      call wait_all(L%M_meta_recv)
+      call wait_all(L%M_meta_send)
+    end if
+#endif
+    ! Dummy usage silences unused-arg warnings in serial builds
+    if (.false.) then
+      if (FUSS_domain%nbound < 0) return
+      if (ARES_domain%nbound < 0) return
+      if (level < 0) return
+    end if
+  end subroutine exchange_coupling_metric_nodes
+
+
+  !---------------------------------------------------------------------------
+  !> Release the metric-node buffers once Mg has been built.
+  subroutine free_coupling_metric_nodes(level)
+    implicit none
+    integer, intent(in) :: level
+    if (.not. allocated(levels)) return
+    if (level < 1 .or. level > size(levels)) return
+    call reset_dir(levels(level)%F_meta_recv)
+    call reset_dir(levels(level)%F_meta_send)
+    call reset_dir(levels(level)%M_meta_recv)
+    call reset_dir(levels(level)%M_meta_send)
+  end subroutine free_coupling_metric_nodes
+
+
+  !---------------------------------------------------------------------------
+  !> Number of FUSS-primary / ARES-primary BCs on this rank whose secondary node
+  !> coordinates arrived over MPI. Zero in serial, where every BC is local-local.
+  integer function n_F_meta_entries(level) result(n)
+    implicit none
+    integer, intent(in) :: level
+    n = 0
+    if (.not. allocated(levels)) return
+    if (level < 1 .or. level > size(levels)) return
+    if (.not. levels(level)%built) return
+    n = levels(level)%F_meta_recv%n_entries
+  end function n_F_meta_entries
+
+  integer function n_M_meta_entries(level) result(n)
+    implicit none
+    integer, intent(in) :: level
+    n = 0
+    if (.not. allocated(levels)) return
+    if (level < 1 .or. level > size(levels)) return
+    if (.not. levels(level)%built) return
+    n = levels(level)%M_meta_recv%n_entries
+  end function n_M_meta_entries
+
+
+  !---------------------------------------------------------------------------
+  !> Entry k of those lists: the local BC index it belongs to, and the received
+  !> node coordinates as snode(3, NMETA_NODE, gc_), laid out exactly as
+  !> BC_Coupled_Metrics_* expects them.
+  subroutine get_F_meta_entry(level, k, bc_idx, snode)
+    implicit none
+    integer,  intent(in)  :: level, k
+    integer,  intent(out) :: bc_idx
+    real(R8), intent(out) :: snode(:,:,:)
+    integer :: g, n, off, payload
+
+    bc_idx = 0
+    snode  = 0.0d0
+    if (k < 1 .or. k > n_F_meta_entries(level)) return
+#ifdef USE_MPI
+    bc_idx  = levels(level)%F_recv_ent(k)%bc_idx
+    payload = levels(level)%F_meta_recv%payload_per_entry
+    do g = 1, gc_
+      do n = 1, NMETA_NODE
+        off = (k-1)*payload + ((g-1)*NMETA_NODE + (n-1))*3
+        snode(1:3, n, g) = levels(level)%F_meta_recv%buf(off+1:off+3)
+      end do
+    end do
+#endif
+  end subroutine get_F_meta_entry
+
+  subroutine get_M_meta_entry(level, k, bc_idx, snode)
+    implicit none
+    integer,  intent(in)  :: level, k
+    integer,  intent(out) :: bc_idx
+    real(R8), intent(out) :: snode(:,:,:)
+    integer :: g, n, off, payload
+
+    bc_idx = 0
+    snode  = 0.0d0
+    if (k < 1 .or. k > n_M_meta_entries(level)) return
+#ifdef USE_MPI
+    bc_idx  = levels(level)%M_recv_ent(k)%bc_idx
+    payload = levels(level)%M_meta_recv%payload_per_entry
+    do g = 1, gc_
+      do n = 1, NMETA_NODE
+        off = (k-1)*payload + ((g-1)*NMETA_NODE + (n-1))*3
+        snode(1:3, n, g) = levels(level)%M_meta_recv%buf(off+1:off+3)
+      end do
+    end do
+#endif
+  end subroutine get_M_meta_entry
+
+
+#ifdef USE_MPI
+  !---------------------------------------------------------------------------
+  !> Pack the gc_ * NMETA_NODE secondary node coordinates of one entry.
+  subroutine pack_metric_nodes_ARES(blks, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, buf_out)
+    use ARES_Advanced_Types_m, only: ARES_block_type
+    implicit none
+    type(ARES_block_type), intent(in) :: blks
+    integer,  intent(in)  :: Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
+    real(R8), intent(out) :: buf_out(:)
+    ! Local
+    integer :: g, n, off, idx(3,NMETA_NODE)
+
+    do g = 1, gc_
+      call coupled_secondary_node_indices(g, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, idx)
+      do n = 1, NMETA_NODE
+        off = ((g-1)*NMETA_NODE + (n-1)) * 3
+        buf_out(off+1:off+3) = blks%node(idx(1,n), idx(2,n), idx(3,n))%c
+      end do
+    end do
+  end subroutine pack_metric_nodes_ARES
+
+  subroutine pack_metric_nodes_FUSS(blks, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, buf_out)
+    use FUSS_Advanced_Types_m, only: FUSS_block_type
+    implicit none
+    type(FUSS_block_type), intent(in) :: blks
+    integer,  intent(in)  :: Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
+    real(R8), intent(out) :: buf_out(:)
+    ! Local
+    integer :: g, n, off, idx(3,NMETA_NODE)
+
+    do g = 1, gc_
+      call coupled_secondary_node_indices(g, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, idx)
+      do n = 1, NMETA_NODE
+        off = ((g-1)*NMETA_NODE + (n-1)) * 3
+        buf_out(off+1:off+3) = blks%node(idx(1,n), idx(2,n), idx(3,n))%c
+      end do
+    end do
+  end subroutine pack_metric_nodes_FUSS
+#endif
+
+
+  !---------------------------------------------------------------------------
   !> After Compute_FUSS_Flux has written FUSS%bc(i)%ext_flux = 0.5*FUSS_new_flux
   !> for each FUSS type(103) entry, this routine packs the FUSS_new_flux value
   !> for each ENTRY WITH REMOTE Bs and sends it to the ARES-owner, which
@@ -857,6 +1341,12 @@ contains
     if (allocated(L%partner_of_ARES)) deallocate(L%partner_of_ARES)
     if (allocated(L%RF_FUSS_recv_ARESbc)) deallocate(L%RF_FUSS_recv_ARESbc)
     if (allocated(L%RF_ARES_recv_fussbc)) deallocate(L%RF_ARES_recv_fussbc)
+    if (allocated(L%own103_F)) deallocate(L%own103_F)
+    if (allocated(L%own103_A)) deallocate(L%own103_A)
+    if (allocated(L%rflux_F)) deallocate(L%rflux_F)
+    if (allocated(L%rflux_A)) deallocate(L%rflux_A)
+    L%n_own103_F = 0
+    L%n_own103_A = 0
     call reset_dir(L%F_recv)
     call reset_dir(L%F_send)
     call reset_dir(L%M_recv)
@@ -865,6 +1355,10 @@ contains
     call reset_dir(L%RF_FUSS_recv)
     call reset_dir(L%RF_ARES_send)
     call reset_dir(L%RF_ARES_recv)
+    call reset_dir(L%F_meta_recv)
+    call reset_dir(L%F_meta_send)
+    call reset_dir(L%M_meta_recv)
+    call reset_dir(L%M_meta_send)
     L%built = .false.
   end subroutine reset_level
 
@@ -1012,10 +1506,12 @@ contains
   end subroutine alloc_dir_buf
 
   subroutine post_recvs(d, tag)
+    use hydra_Mod_Timers, only: timer_xchg_begin, timer_xchg_end
     implicit none
     type(dir_t), intent(inout) :: d
     integer, intent(in) :: tag
     integer :: g, ierr, off, cnt
+    call timer_xchg_begin()
     do g = 1, d%n_groups
       off = (d%groups(g)%offset - 1) * d%payload_per_entry
       cnt = d%groups(g)%count * d%payload_per_entry
@@ -1023,13 +1519,16 @@ contains
                      d%groups(g)%rank, tag, MPI_COMM_WORLD, d%reqs(g), ierr)
       call check_mpi_error(ierr)
     end do
+    call timer_xchg_end()
   end subroutine post_recvs
 
   subroutine post_sends(d, tag)
+    use hydra_Mod_Timers, only: timer_xchg_begin, timer_xchg_end
     implicit none
     type(dir_t), intent(inout) :: d
     integer, intent(in) :: tag
     integer :: g, ierr, off, cnt
+    call timer_xchg_begin()
     do g = 1, d%n_groups
       off = (d%groups(g)%offset - 1) * d%payload_per_entry
       cnt = d%groups(g)%count * d%payload_per_entry
@@ -1037,18 +1536,22 @@ contains
                      d%groups(g)%rank, tag, MPI_COMM_WORLD, d%reqs(g), ierr)
       call check_mpi_error(ierr)
     end do
+    call timer_xchg_end()
   end subroutine post_sends
 
   subroutine wait_all(d)
+    use hydra_Mod_Timers, only: timer_xchg_begin, timer_xchg_end
     implicit none
     type(dir_t), intent(inout) :: d
     integer :: ierr
     integer, allocatable :: statuses(:,:)
     if (d%n_groups <= 0) return
+    call timer_xchg_begin()
     allocate(statuses(MPI_STATUS_SIZE, d%n_groups))
     call MPI_WAITALL(d%n_groups, d%reqs, statuses, ierr)
     call check_mpi_error(ierr)
     deallocate(statuses)
+    call timer_xchg_end()
   end subroutine wait_all
 #endif
 

@@ -9,7 +9,7 @@ contains
 
   subroutine Compute_FUSS_Flux ( FUSS_domain, ARES_domain, level )
     use hydraAF_Lib_BC_Coupled_Wall_Temperature, only: FUSS_BC_Coupled_Wall_Temperature
-    use hydraAF_Mod_CouplingExchange, only: partner_of_FUSS_bc, &
+    use hydraAF_Mod_CouplingExchange, only: partner_of_FUSS_bc, own103_FUSS, &
                                             exchange_coupling_reverse_flux_FUSS
     use FUSS_Advanced_Types_m
     use ARES_Advanced_Types_m
@@ -23,87 +23,81 @@ contains
     type(ARES_domain_type), intent(inout) :: ARES_domain
     integer, intent(in) :: level
     ! Local
-    integer  :: b, f, lower, upper, i, j, ares_bm
+    integer  :: k, n_own, i, j, ares_bm
     integer  :: Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs
     real(R8) :: FUSS_new_flux
     real(R8) :: P_con(np)
-    real(R8), allocatable :: new_flux_arr(:)  !< per-entry flux for remote ARES partner update
+    integer,  pointer :: own(:)                !< type(103) entries whose Bm this rank owns
+    real(R8), pointer :: new_flux_arr(:)       !< per-entry flux for remote ARES partner update
 
-    allocate(new_flux_arr(FUSS_domain%nbound)); new_flux_arr = 0.0d0
+    ! Iterate only this rank's coupling entries. The list and the bc-indexed
+    ! scratch are built once per level in build_coupling_schedule; sweeping the
+    ! whole bc array here made the cost grow with the block count instead of
+    ! falling with the rank count.
+    call own103_FUSS(level, n_own, own, new_flux_arr)
 
-    !$omp parallel private(b, f, lower, upper)
-    upper = 0
-    do b = 1, FUSS_domain%nb
-      do f = 1, 6
-        lower = upper + 1
-        upper = upper + FUSS_domain%n_bf(b,f)
-        !$omp do schedule ( dynamic ) private (i,j,ares_bm,Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs) &
-        !$omp private (FUSS_new_flux, P_con)
-        do i = lower, upper
-          select case ( FUSS_domain%bc(i)%type )
-            case (103)
-              Bm  = FUSS_domain % bc(i) % b
-              ! Only process entries whose primary block (Bm) is owned by this rank.
+    if (n_own > 0) then
+      !$omp parallel do schedule (static) &
+      !$omp private (k, i, j, ares_bm, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs) &
+      !$omp private (FUSS_new_flux, P_con)
+      do k = 1, n_own
+        i   = own(k)
+        Bm  = FUSS_domain % bc(i) % b
+        Im  = FUSS_domain % bc(i) % i
+        Jm  = FUSS_domain % bc(i) % j
+        Km  = FUSS_domain % bc(i) % k
+        Fm  = FUSS_domain % bc(i) % f
+        Bs  = FUSS_domain % bc(i) % bs
+        Is  = FUSS_domain % bc(i) % is
+        Js  = FUSS_domain % bc(i) % js
+        Ks  = FUSS_domain % bc(i) % ks
+        Fs  = FUSS_domain % bc(i) % fs
+
+        ! Fetch P(1:np) of the ARES secondary cell: direct access when Bs is
+        ! local, or from the remote cache populated by exchange_coupling_Tg_P.
+        call get_secondary_P(ARES_domain, i, Bs, Is, Js, Ks, level, P_con)
+
+        call FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
+                                    Is, Js, Ks, Fs, P_con, &
+                                    FUSS_domain%bc(i)%Mg(1), FUSS_domain%bc(i)%Tg, FUSS_new_flux )
+        FUSS_domain % bc(i) % ext_flux = FUSS_domain % bc(i) % ext_flux + 0.5d0 * FUSS_new_flux
+        new_flux_arr(i) = FUSS_new_flux
+
+        ! Apply reverse flux into the partner ARES bc when partner is local.
+        j = partner_of_FUSS_bc(level, i)
+        if (j > 0) then
 #ifdef USE_MPI
-              if (allocated(FUSS_block_owner)) then
-                if (FUSS_block_owner(Bm) /= mpi_rank_) cycle
-              end if
-#endif
-              Im  = FUSS_domain % bc(i) % i
-              Jm  = FUSS_domain % bc(i) % j
-              Km  = FUSS_domain % bc(i) % k
-              Fm  = FUSS_domain % bc(i) % f
-              Bs  = FUSS_domain % bc(i) % bs
-              Is  = FUSS_domain % bc(i) % is
-              Js  = FUSS_domain % bc(i) % js
-              Ks  = FUSS_domain % bc(i) % ks
-              Fs  = FUSS_domain % bc(i) % fs
-
-              ! Fetch P(1:np) of the ARES secondary cell: direct access when Bs is
-              ! local, or from the remote cache populated by exchange_coupling_Tg_P.
-              call get_secondary_P(ARES_domain, i, Bs, Is, Js, Ks, level, P_con)
-
-              call FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
-                                          Is, Js, Ks, Fs, P_con, &
-                                          FUSS_domain%bc(i)%Mg(1), FUSS_domain%bc(i)%Tg, FUSS_new_flux )
-              FUSS_domain % bc(i) % ext_flux = FUSS_domain % bc(i) % ext_flux + 0.5d0 * FUSS_new_flux
-              new_flux_arr(i) = FUSS_new_flux
-
-              ! Apply reverse flux into the partner ARES bc when partner is local.
-              j = partner_of_FUSS_bc(level, i)
-              if (j > 0) then
-#ifdef USE_MPI
-                ares_bm = ARES_domain%bc(j)%b
-                if (.not. allocated(ARES_block_owner) .or. &
-                    ARES_block_owner(ares_bm) == mpi_rank_) then
-                  ARES_domain%bc(j)%ext_flux(nh) = ARES_domain%bc(j)%ext_flux(nh) &
-                                                 - 0.5d0 * FUSS_new_flux
-                end if
+          ares_bm = ARES_domain%bc(j)%b
+          if (.not. allocated(ARES_block_owner) .or. &
+              ARES_block_owner(ares_bm) == mpi_rank_) then
+            ARES_domain%bc(j)%ext_flux(nh) = ARES_domain%bc(j)%ext_flux(nh) &
+                                           - 0.5d0 * FUSS_new_flux
+          end if
 #else
-                ARES_domain%bc(j)%ext_flux(nh) = ARES_domain%bc(j)%ext_flux(nh) &
-                                               - 0.5d0 * FUSS_new_flux
+          ARES_domain%bc(j)%ext_flux(nh) = ARES_domain%bc(j)%ext_flux(nh) &
+                                         - 0.5d0 * FUSS_new_flux
 #endif
-              end if
-          end select
-        enddo
+        end if
       enddo
-    enddo
-    !$omp end parallel
+      !$omp end parallel do
+    end if
 
     ! For FUSS-primary BCs whose ARES partner lives on a different rank, send
     ! the accumulated flux there to apply as -0.5*flux into ARES ext_flux(nh).
+    ! Not guarded by n_own: a rank owning no FUSS coupling entries can still own
+    ! ARES blocks that RECEIVE reverse flux, and skipping the exchange there
+    ! would leave its partners' sends unmatched.
 #ifdef USE_MPI
-    call exchange_coupling_reverse_flux_FUSS(new_flux_arr, FUSS_domain, ARES_domain, level)
+    if (associated(new_flux_arr)) &
+      call exchange_coupling_reverse_flux_FUSS(new_flux_arr, FUSS_domain, ARES_domain, level)
 #endif
-
-    deallocate(new_flux_arr)
 
   end subroutine Compute_FUSS_Flux
 
 
   subroutine Compute_ARES_Flux ( FUSS_domain, ARES_domain, level )
     use hydraAF_Lib_BC_Coupled_Wall_Temperature, only: ARES_BC_Coupled_Wall_Temperature
-    use hydraAF_Mod_CouplingExchange, only: partner_of_ARES_bc, &
+    use hydraAF_Mod_CouplingExchange, only: partner_of_ARES_bc, own103_ARES, &
                                             exchange_coupling_reverse_flux_ARES
     use FUSS_Advanced_Types_m
     use ARES_Advanced_Types_m
@@ -117,75 +111,64 @@ contains
     type(ARES_domain_type), intent(inout) :: ARES_domain
     integer, intent(in) :: level
     ! Local
-    integer  :: b, f, lower, upper, i, j, fuss_bm
+    integer  :: k, n_own, i, j, fuss_bm
     integer  :: Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs
     real(R8) :: ARES_new_flux(nprim)
     real(R8) :: matID_con
-    real(R8), allocatable :: new_flux_nh_arr(:)
+    integer,  pointer :: own(:)                !< type(103) entries whose Bm this rank owns
+    real(R8), pointer :: new_flux_nh_arr(:)    !< per-entry flux for remote FUSS partner update
 
-    allocate(new_flux_nh_arr(ARES_domain%nbound)); new_flux_nh_arr = 0.0d0
+    call own103_ARES(level, n_own, own, new_flux_nh_arr)
 
-    !$omp parallel private(b, f, lower, upper)
-    upper = 0
-    do b = 1, ARES_domain%nb
-      do f = 1, 6
-        lower = upper + 1
-        upper = upper + ARES_domain%n_bf(b,f)
-        !$omp do schedule ( dynamic ) private (i,j,fuss_bm,Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs) &
-        !$omp private (ARES_new_flux, matID_con)
-        do i = lower, upper
-          select case ( ARES_domain%bc(i)%type )
-            case (103)
-              Bm  = ARES_domain % bc(i) % b
+    if (n_own > 0) then
+      !$omp parallel do schedule (static) &
+      !$omp private (k, i, j, fuss_bm, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs) &
+      !$omp private (ARES_new_flux, matID_con)
+      do k = 1, n_own
+        i   = own(k)
+        Bm  = ARES_domain % bc(i) % b
+        Im  = ARES_domain % bc(i) % i
+        Jm  = ARES_domain % bc(i) % j
+        Km  = ARES_domain % bc(i) % k
+        Fm  = ARES_domain % bc(i) % f
+        Bs  = ARES_domain % bc(i) % bs
+        Is  = ARES_domain % bc(i) % is
+        Js  = ARES_domain % bc(i) % js
+        Ks  = ARES_domain % bc(i) % ks
+        Fs  = ARES_domain % bc(i) % fs
+
+        call get_secondary_matID(FUSS_domain, ARES_domain, i, Bs, Is, Js, Ks, &
+                                 level, matID_con)
+
+        call ARES_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, ARES_domain % blk(Bm), &
+                                    Is, Js, Ks, Fs, matID_con, &
+                                    ARES_domain%bc(i)%Mg(1), ARES_domain%bc(i)%Pg, ARES_new_flux )
+        ARES_domain % bc(i) % ext_flux = ARES_domain % bc(i) % ext_flux + 0.5d0 * ARES_new_flux
+        new_flux_nh_arr(i) = ARES_new_flux(nh)
+
+        j = partner_of_ARES_bc(level, i)
+        if (j > 0) then
 #ifdef USE_MPI
-              if (allocated(ARES_block_owner)) then
-                if (ARES_block_owner(Bm) /= mpi_rank_) cycle
-              end if
-#endif
-              Im  = ARES_domain % bc(i) % i
-              Jm  = ARES_domain % bc(i) % j
-              Km  = ARES_domain % bc(i) % k
-              Fm  = ARES_domain % bc(i) % f
-              Bs  = ARES_domain % bc(i) % bs
-              Is  = ARES_domain % bc(i) % is
-              Js  = ARES_domain % bc(i) % js
-              Ks  = ARES_domain % bc(i) % ks
-              Fs  = ARES_domain % bc(i) % fs
-
-              call get_secondary_matID(FUSS_domain, ARES_domain, i, Bs, Is, Js, Ks, &
-                                       level, matID_con)
-
-              call ARES_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, ARES_domain % blk(Bm), &
-                                          Is, Js, Ks, Fs, matID_con, &
-                                          ARES_domain%bc(i)%Mg(1), ARES_domain%bc(i)%Pg, ARES_new_flux )
-              ARES_domain % bc(i) % ext_flux = ARES_domain % bc(i) % ext_flux + 0.5d0 * ARES_new_flux
-              new_flux_nh_arr(i) = ARES_new_flux(nh)
-
-              j = partner_of_ARES_bc(level, i)
-              if (j > 0) then
-#ifdef USE_MPI
-                fuss_bm = FUSS_domain%bc(j)%b
-                if (.not. allocated(FUSS_block_owner) .or. &
-                    FUSS_block_owner(fuss_bm) == mpi_rank_) then
-                  FUSS_domain%bc(j)%ext_flux = FUSS_domain%bc(j)%ext_flux &
-                                             - 0.5d0 * ARES_new_flux(nh)
-                end if
+          fuss_bm = FUSS_domain%bc(j)%b
+          if (.not. allocated(FUSS_block_owner) .or. &
+              FUSS_block_owner(fuss_bm) == mpi_rank_) then
+            FUSS_domain%bc(j)%ext_flux = FUSS_domain%bc(j)%ext_flux &
+                                       - 0.5d0 * ARES_new_flux(nh)
+          end if
 #else
-                FUSS_domain%bc(j)%ext_flux = FUSS_domain%bc(j)%ext_flux &
-                                           - 0.5d0 * ARES_new_flux(nh)
+          FUSS_domain%bc(j)%ext_flux = FUSS_domain%bc(j)%ext_flux &
+                                     - 0.5d0 * ARES_new_flux(nh)
 #endif
-              end if
-          end select
-        enddo
+        end if
       enddo
-    enddo
-    !$omp end parallel
+      !$omp end parallel do
+    end if
 
+    ! Not guarded by n_own: see the note in Compute_FUSS_Flux.
 #ifdef USE_MPI
-    call exchange_coupling_reverse_flux_ARES(new_flux_nh_arr, FUSS_domain, ARES_domain, level)
+    if (associated(new_flux_nh_arr)) &
+      call exchange_coupling_reverse_flux_ARES(new_flux_nh_arr, FUSS_domain, ARES_domain, level)
 #endif
-
-    deallocate(new_flux_nh_arr)
 
   end subroutine Compute_ARES_Flux
 

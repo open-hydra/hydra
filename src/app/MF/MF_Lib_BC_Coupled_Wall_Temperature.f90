@@ -124,7 +124,7 @@ contains
   end subroutine FUSS_BC_Coupled_Wall_Temperature
 
 
-  subroutine MOSE_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, Blk_MOSE, Is, Js, Ks, Fs, matID_con, Mg, Pg, new_flux, Ovar )
+  subroutine MOSE_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, Blk_MOSE, Is, Js, Ks, Fs, matID_con, Mg, Pg, new_flux, Ovar, k_rough )
     use hydra_Parameters_m, only: guide_
     use MOSE_Advanced_Types_m
     use MOSE_Base_Types_m
@@ -143,6 +143,7 @@ contains
     real(R8), intent(in)                   :: Pg(1,6)
     real(R8), intent(inout)                :: new_flux(nprim)
     real(R8), optional, dimension(8), intent(out) :: Ovar
+    real(R8), optional, intent(in)         :: k_rough     ! sand-grain roughness of the face (absent = smooth)
     ! Local
     integer  :: Dir, Face_im, Face_jm, Face_km, modfm, modfm1, modfm2, modfm3, Ig, Jg, Kg
     real(R8) :: Normal(3), Area, M_loc(3,3), M_con(3,3)
@@ -151,6 +152,10 @@ contains
     real(R8) :: Num_loc, Num_con, Den_loc, Den_con
     real(R8) :: rho, Rgas, mil, kl, Prim(nprim), Prim_wall(nprim), dist, dl, T
     real(R8) :: Tint, T_wall, q_wall, rho_wall, Stress(3), Gradient(nprim,3), Flux(nprim)
+    real(R8) :: kr
+
+    kr = 0d0
+    if ( present(k_rough) ) kr = k_rough
 
     call Compute_Modfm ( Fm, modfm, modfm1, modfm2, modfm3 )
     call Face_Index ( Fm, Dir, Im, Jm, Km, Face_im, Face_jm, Face_km )
@@ -246,7 +251,7 @@ contains
 
     if (model==2)  then
       dl = Blk_MOSE % yn(im,jm,km)
-      call RANS_Set_Wall_Values( mil, Prim_Wall(nt:nprim), dl )
+      call RANS_Set_Wall_Values( mil, Prim(nt:nprim) * rho_wall / rho, Prim_Wall(nt:nprim), dl, kr )
       Gradient(nt:nprim,Dir) = ( Prim(nt:nprim)/rho - Prim_Wall(nt:nprim)/rho_wall ) * modfm3 
     end if
 
