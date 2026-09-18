@@ -56,6 +56,8 @@ fi
 # -------------------------
 # Build directory
 # -------------------------
+cd "$HYDRADIR"
+
 BUILD_DIR="$HYDRADIR/build/$SUFFIX"
 
 log_info "Building hydra-$SUFFIX"
