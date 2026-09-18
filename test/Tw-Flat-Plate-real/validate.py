@@ -123,12 +123,12 @@ if __name__ == "__main__":
     ReL   = g_inf * L / mu_inf     # plate-length Reynolds number
 
     # -- per-case solid conductivity k_s (from each case's atlas.ini) and
-    #    frozen reference wall file in SOLUTION/ (fluid-side converged wall,
+    #    frozen reference wall file in reference/ (solid-side converged wall,
     #    copied from <case>/OUTPUT/hydra-wall.tec) --
     cases = {
-        40:   {"sol": "SOLUTION/ks_kf_40_wall.tec",   "k_s": 10.2746,  "ylim": (310, 395)},
-        400:  {"sol": "SOLUTION/ks_kf_400_wall.tec",  "k_s": 102.746,  "ylim": (365, 395)},
-        4000: {"sol": "SOLUTION/ks_kf_4000_wall.tec", "k_s": 1027.46,  "ylim": (390, 395)},
+        40:   {"sol": "reference/ks_kf_40_wall.tec",   "k_s": 10.2746,  "ylim": (310, 395)},
+        400:  {"sol": "reference/ks_kf_400_wall.tec",  "k_s": 102.746,  "ylim": (365, 395)},
+        4000: {"sol": "reference/ks_kf_4000_wall.tec", "k_s": 1027.46,  "ylim": (390, 395)},
     }
     ks_kf_ratios = [40, 400, 4000]
 
