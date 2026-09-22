@@ -153,6 +153,9 @@ program hydra_program
             FUSS_iter = hydra_obj_sim_param%FUSS_iter(n)
             ARES_iter = hydra_obj_sim_param%ARES_iter(n)
           endif
+          ! The last stage has no upper neighbour: reading N_Coupling(n+1) here would
+          ! step one element past the end of the array.
+          if (n == size(hydra_obj_sim_param%N_Coupling)) exit
           nmin = nmax
           nmax = hydra_obj_sim_param%N_Coupling(n+1)
         enddo
