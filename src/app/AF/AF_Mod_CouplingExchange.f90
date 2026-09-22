@@ -57,6 +57,7 @@ module hydraAF_Mod_CouplingExchange
   public :: own103_FUSS, own103_ARES
   public :: n_F_meta_entries, n_M_meta_entries
   public :: get_F_meta_entry, get_M_meta_entry
+  public :: set_k_wall_ARES, get_k_wall_ARES, get_k_wall_FUSS, sync_k_fluid_wall
 
   ! Coupling stencil size: gc_ ghost cells (normal) + 4 corner cells (tangential)
   ! Matches Tg(6) and Pg(1,6) in Advanced_Types_m for the default gc_=2.
@@ -69,6 +70,12 @@ module hydraAF_Mod_CouplingExchange
   integer, parameter :: TAG_RFLUX_M = 7004  ! reverse flux into FUSS%ext_flux
   integer, parameter :: TAG_META_F   = 7005  ! secondary node coords, ARES -> FUSS
   integer, parameter :: TAG_META_M   = 7006  ! secondary node coords, FUSS -> ARES
+  integer, parameter :: TAG_K_FLUID  = 7007  ! k_l+k_t at the coupled wall, ARES -> FUSS
+
+  !> Flags "the fluid side has not produced a wall conductivity yet": each wall
+  !> routine then falls back to its own local estimate. Negative, so it can never
+  !> be mistaken for a physical conductivity.
+  real(R8), parameter, public :: K_WALL_UNSET = -1.0d0
 
   !> Node coordinates a primary rank needs from the secondary block to build the
   !> coupling metric tensor: 4 nodes per ghost level, 3 components each.
@@ -175,6 +182,21 @@ module hydraAF_Mod_CouplingExchange
     ! and released again as soon as the metrics have been built.
     type(dir_t) :: F_meta_recv, F_meta_send
     type(dir_t) :: M_meta_recv, M_meta_send
+
+    ! TOTAL conductivity OF THE FLUID on the coupled wall FACE, k_l(p,T_wall) + k_t, as
+    ! the ARES-side wall routine evaluates it for its own heat flux. The solid has no
+    ! such thing: this only weighs the fluid side of the interface temperature. Only the
+    ! fluid solver can produce it (k_l is taken at the wall state and k_t comes from the
+    ! turbulence model), so the one value computed there is mirrored onto the FUSS bc
+    ! index space and BOTH wall routines -- and the fluid heat flux itself -- read it
+    ! from here. That is what makes the two one-sided wall fluxes identical by
+    ! construction instead of only when the property tables happen to be flat.
+    ! The ARESbc/FUSSbc suffix is the bc array the entry is indexed by, NOT whose
+    ! conductivity it is. It is lagged by one BC_Coupled_Fluxes call (k_l and k_t both
+    ! depend on Twall, which depends on them): unavoidable in a partitioned coupling,
+    ! and harmless, since the wall coupling is already a fixed-point iteration.
+    real(R8), allocatable :: k_fluid_wall_ARESbc(:)   !< indexed on ARES%nbound, W/(m K)
+    real(R8), allocatable :: k_fluid_wall_FUSSbc(:)   !< indexed on FUSS%nbound, W/(m K)
 
     logical :: built = .false.
   end type level_sched_t
@@ -437,6 +459,11 @@ contains
     allocate(L%partner_of_FUSS(FUSS_domain%nbound)); L%partner_of_FUSS = 0
     allocate(L%partner_of_ARES(ARES_domain%nbound)); L%partner_of_ARES = 0
     call build_partner_indices(FUSS_domain, ARES_domain, L)
+
+    ! Wall fluid-conductivity store (needed in serial too). Starts unset: until the
+    ! fluid side has produced a value each routine uses its own local estimate.
+    allocate(L%k_fluid_wall_ARESbc(ARES_domain%nbound)); L%k_fluid_wall_ARESbc = K_WALL_UNSET
+    allocate(L%k_fluid_wall_FUSSbc(FUSS_domain%nbound)); L%k_fluid_wall_FUSSbc = K_WALL_UNSET
 
     ! Built before the serial/single-rank early returns below: the coupling loops
     ! iterate these lists in every build, MPI or not.
@@ -1116,6 +1143,116 @@ contains
   end subroutine get_M_meta_entry
 
 
+  !---------------------------------------------------------------------------
+  !> Store the wall fluid conductivity (k_l + k_t) computed by the ARES-side wall
+  !> routine for ARES bc entry i. Called from inside the OpenMP loop of
+  !> Compute_ARES_Flux: every entry is written by exactly one thread, so no
+  !> synchronisation is needed.
+  subroutine set_k_wall_ARES(level, i, k_wall)
+    implicit none
+    integer,  intent(in) :: level, i
+    real(R8), intent(in) :: k_wall
+    if (.not. allocated(levels)) return
+    if (level < 1 .or. level > size(levels)) return
+    if (.not. allocated(levels(level)%k_fluid_wall_ARESbc)) return
+    if (i < 1 .or. i > size(levels(level)%k_fluid_wall_ARESbc)) return
+    levels(level)%k_fluid_wall_ARESbc(i) = k_wall
+  end subroutine set_k_wall_ARES
+
+
+  !---------------------------------------------------------------------------
+  !> Wall fluid conductivity for an ARES bc entry (K_WALL_UNSET when unavailable).
+  pure function get_k_wall_ARES(level, i) result(k_wall)
+    integer, intent(in) :: level, i
+    real(R8) :: k_wall
+    k_wall = K_WALL_UNSET
+    if (.not. allocated(levels)) return
+    if (level < 1 .or. level > size(levels)) return
+    if (.not. allocated(levels(level)%k_fluid_wall_ARESbc)) return
+    if (i < 1 .or. i > size(levels(level)%k_fluid_wall_ARESbc)) return
+    k_wall = levels(level)%k_fluid_wall_ARESbc(i)
+  end function get_k_wall_ARES
+
+
+  !---------------------------------------------------------------------------
+  !> Same quantity seen from the FUSS bc index space (filled by sync_k_fluid_wall).
+  pure function get_k_wall_FUSS(level, i) result(k_wall)
+    integer, intent(in) :: level, i
+    real(R8) :: k_wall
+    k_wall = K_WALL_UNSET
+    if (.not. allocated(levels)) return
+    if (level < 1 .or. level > size(levels)) return
+    if (.not. allocated(levels(level)%k_fluid_wall_FUSSbc)) return
+    if (i < 1 .or. i > size(levels(level)%k_fluid_wall_FUSSbc)) return
+    k_wall = levels(level)%k_fluid_wall_FUSSbc(i)
+  end function get_k_wall_FUSS
+
+
+  !---------------------------------------------------------------------------
+  !> Mirror k_fluid_wall_ARESbc onto the partner FUSS entries, so that the
+  !> solid-side wall routine builds its interface temperature with the very same
+  !> fluid conductivity the fluid side uses in Tint and in its own heat flux.
+  !> Local partners are copied directly; remote ones travel on the same rank
+  !> pairing as the ARES->FUSS reverse flux.
+  subroutine sync_k_fluid_wall(FUSS_domain, ARES_domain, level)
+    implicit none
+    type(FUSS_domain_type), intent(in) :: FUSS_domain
+    type(ARES_domain_type), intent(in) :: ARES_domain
+    integer, intent(in) :: level
+    type(level_sched_t), pointer :: L
+    integer :: i, j
+#ifdef USE_MPI
+    integer :: k
+#endif
+
+    if (.not. allocated(levels)) return
+    if (level < 1 .or. level > size(levels)) return
+    L => levels(level)
+    if (.not. allocated(L%k_fluid_wall_ARESbc) .or. .not. allocated(L%k_fluid_wall_FUSSbc)) return
+
+    ! Local-local pairs: straight copy through the partner map.
+    do i = 1, ARES_domain%nbound
+      if (ARES_domain%bc(i)%type /= 103) cycle
+#ifdef USE_MPI
+      if (allocated(ARES_block_owner)) then
+        if (ARES_block_owner(ARES_domain%bc(i)%b) /= mpi_rank_) cycle
+      end if
+#endif
+      j = L%partner_of_ARES(i)
+      if (j < 1) cycle
+#ifdef USE_MPI
+      if (allocated(FUSS_block_owner)) then
+        if (FUSS_block_owner(FUSS_domain%bc(j)%b) /= mpi_rank_) cycle
+      end if
+#endif
+      L%k_fluid_wall_FUSSbc(j) = L%k_fluid_wall_ARESbc(i)
+    end do
+
+#ifdef USE_MPI
+    if (mpi_size_ <= 1) return
+    if (.not. L%built) return
+    if (L%RF_ARES_send%n_entries == 0 .and. L%RF_ARES_recv%n_entries == 0) return
+
+    call post_recvs(L%RF_ARES_recv, TAG_K_FLUID)
+
+    do k = 1, L%RF_ARES_send%n_entries
+      i = L%M_recv_ent(k)%bc_idx
+      L%RF_ARES_send%buf(k) = L%k_fluid_wall_ARESbc(i)
+    end do
+
+    call post_sends(L%RF_ARES_send, TAG_K_FLUID)
+    call wait_all(L%RF_ARES_recv)
+
+    do k = 1, L%RF_ARES_recv%n_entries
+      j = L%RF_ARES_recv_fussbc(k)
+      if (j > 0) L%k_fluid_wall_FUSSbc(j) = L%RF_ARES_recv%buf(k)
+    end do
+
+    call wait_all(L%RF_ARES_send)
+#endif
+  end subroutine sync_k_fluid_wall
+
+
 #ifdef USE_MPI
   !---------------------------------------------------------------------------
   !> Pack the gc_ * NMETA_NODE secondary node coordinates of one entry.
@@ -1345,6 +1482,8 @@ contains
     if (allocated(L%own103_A)) deallocate(L%own103_A)
     if (allocated(L%rflux_F)) deallocate(L%rflux_F)
     if (allocated(L%rflux_A)) deallocate(L%rflux_A)
+    if (allocated(L%k_fluid_wall_ARESbc)) deallocate(L%k_fluid_wall_ARESbc)
+    if (allocated(L%k_fluid_wall_FUSSbc)) deallocate(L%k_fluid_wall_FUSSbc)
     L%n_own103_F = 0
     L%n_own103_A = 0
     call reset_dir(L%F_recv)

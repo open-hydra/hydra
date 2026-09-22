@@ -197,7 +197,8 @@ contains
     use FUSS_Global_m
     use hydraAF_Lib_BC_Coupled_Wall_Temperature, only: FUSS_BC_Coupled_Wall_Temperature, ARES_BC_Coupled_Wall_Temperature
     use hydraAF_Mod_CouplingExchange, only: is_FUSS_bc_local_local, is_ARES_bc_local_local, & 
-                                            get_F_remote_P, get_M_remote_matID
+                                            get_F_remote_P, get_M_remote_matID, &
+                                            get_k_wall_FUSS, get_k_wall_ARES
 #ifdef USE_MPI                                      
     use FUSS_Mod_MPI, only: FUSS_block_owner => block_owner, mpi_rank_, mpi_is_root, mpi_reduce_sum_r8_array
     use ARES_Mod_MPI, only: ARES_block_owner => block_owner
@@ -270,10 +271,13 @@ contains
 #else
               P_con(1:np) = ARES_domain % blk(Bs) % P(1:np, Is, Js, Ks)
 #endif
+              ! Same mirrored wall conductivity the solver used, so the wall file
+              ! reports the temperature and the flux that were actually applied.
               call FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
                                           Is, Js, Ks, Fs, P_con, &
                                           FUSS_domain%bc(i)%Mg(1), FUSS_domain%bc(i)%Tg, &
-                                          FUSS_new_flux, Ovar(6:7) )
+                                          FUSS_new_flux, Ovar(6:7), &
+                                          k_fluid_wall = get_k_wall_FUSS(level, i) )
            
               FUSS_wall_buf(2*(wall_i-1)+1 : 2*wall_i) = Ovar(6:7)
           end select
@@ -364,10 +368,12 @@ contains
 #else
               matID_con = FUSS_domain % blk(Bs) % matID(Is, Js, Ks)
 #endif
+              ! k_fluid_wall only: the store must not be advanced from the I/O path.
               call ARES_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, ARES_domain % blk(Bm), &
                                           Is, Js, Ks, Fs, matID_con, &
                                           ARES_domain%bc(i)%Mg(1), ARES_domain%bc(i)%Pg, &
-                                          ARES_new_flux, Ovar )
+                                          ARES_new_flux, Ovar, &
+                                          k_fluid_wall = get_k_wall_ARES(level, i) )
              
               ARES_wall_buf(7*(wall_i-1)+1 : 7*wall_i) = Ovar(1:7)
 

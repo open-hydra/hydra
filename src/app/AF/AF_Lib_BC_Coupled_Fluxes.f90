@@ -10,7 +10,8 @@ contains
   subroutine Compute_FUSS_Flux ( FUSS_domain, ARES_domain, level )
     use hydraAF_Lib_BC_Coupled_Wall_Temperature, only: FUSS_BC_Coupled_Wall_Temperature
     use hydraAF_Mod_CouplingExchange, only: partner_of_FUSS_bc, own103_FUSS, &
-                                            exchange_coupling_reverse_flux_FUSS
+                                            exchange_coupling_reverse_flux_FUSS, &
+                                            get_k_wall_FUSS
     use FUSS_Advanced_Types_m
     use ARES_Advanced_Types_m
     use ARES_Global_m, only: np, nh
@@ -57,9 +58,12 @@ contains
         ! local, or from the remote cache populated by exchange_coupling_Tg_P.
         call get_secondary_P(ARES_domain, i, Bs, Is, Js, Ks, level, P_con)
 
+        ! k_fluid_wall: total fluid conductivity k_l+k_t on this face, mirrored from
+        ! the ARES side so that both solvers build the same interface temperature.
         call FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
                                     Is, Js, Ks, Fs, P_con, &
-                                    FUSS_domain%bc(i)%Mg(1), FUSS_domain%bc(i)%Tg, FUSS_new_flux )
+                                    FUSS_domain%bc(i)%Mg(1), FUSS_domain%bc(i)%Tg, FUSS_new_flux, &
+                                    k_fluid_wall = get_k_wall_FUSS(level, i) )
         FUSS_domain % bc(i) % ext_flux = FUSS_domain % bc(i) % ext_flux + 0.5d0 * FUSS_new_flux
         new_flux_arr(i) = FUSS_new_flux
 
@@ -98,7 +102,9 @@ contains
   subroutine Compute_ARES_Flux ( FUSS_domain, ARES_domain, level )
     use hydraAF_Lib_BC_Coupled_Wall_Temperature, only: ARES_BC_Coupled_Wall_Temperature
     use hydraAF_Mod_CouplingExchange, only: partner_of_ARES_bc, own103_ARES, &
-                                            exchange_coupling_reverse_flux_ARES
+                                            exchange_coupling_reverse_flux_ARES, &
+                                            get_k_wall_ARES, set_k_wall_ARES, &
+                                            sync_k_fluid_wall, K_WALL_UNSET
     use FUSS_Advanced_Types_m
     use ARES_Advanced_Types_m
     use ARES_Global_m, only: nprim, nh
@@ -115,6 +121,7 @@ contains
     integer  :: Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs
     real(R8) :: ARES_new_flux(nprim)
     real(R8) :: matID_con
+    real(R8) :: k_fluid_wall_new
     integer,  pointer :: own(:)                !< type(103) entries whose Bm this rank owns
     real(R8), pointer :: new_flux_nh_arr(:)    !< per-entry flux for remote FUSS partner update
 
@@ -123,7 +130,7 @@ contains
     if (n_own > 0) then
       !$omp parallel do schedule (static) &
       !$omp private (k, i, j, fuss_bm, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs) &
-      !$omp private (ARES_new_flux, matID_con)
+      !$omp private (ARES_new_flux, matID_con, k_fluid_wall_new)
       do k = 1, n_own
         i   = own(k)
         Bm  = ARES_domain % bc(i) % b
@@ -140,9 +147,17 @@ contains
         call get_secondary_matID(FUSS_domain, ARES_domain, i, Bs, Is, Js, Ks, &
                                  level, matID_con)
 
+        ! k_fluid_wall is the fluid wall conductivity of the previous call, used both
+        ! in Tint and in the heat flux (see the routine header); k_fluid_wall_new is
+        ! the one just evaluated, stored for the next call and handed over to the
+        ! solid side by sync_k_fluid_wall below.
+        k_fluid_wall_new = K_WALL_UNSET
         call ARES_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, ARES_domain % blk(Bm), &
                                     Is, Js, Ks, Fs, matID_con, &
-                                    ARES_domain%bc(i)%Mg(1), ARES_domain%bc(i)%Pg, ARES_new_flux )
+                                    ARES_domain%bc(i)%Mg(1), ARES_domain%bc(i)%Pg, ARES_new_flux, &
+                                    k_fluid_wall = get_k_wall_ARES(level, i), &
+                                    k_fluid_wall_new = k_fluid_wall_new )
+        call set_k_wall_ARES( level, i, k_fluid_wall_new )
         ARES_domain % bc(i) % ext_flux = ARES_domain % bc(i) % ext_flux + 0.5d0 * ARES_new_flux
         new_flux_nh_arr(i) = ARES_new_flux(nh)
 
@@ -169,6 +184,11 @@ contains
     if (associated(new_flux_nh_arr)) &
       call exchange_coupling_reverse_flux_ARES(new_flux_nh_arr, FUSS_domain, ARES_domain, level)
 #endif
+
+    ! Publish the freshly computed wall fluid conductivity to the FUSS entries. Also
+    ! not guarded by n_own, for the same reason: a rank owning no ARES coupling entry
+    ! can still own FUSS blocks that must receive the value.
+    call sync_k_fluid_wall(FUSS_domain, ARES_domain, level)
 
   end subroutine Compute_ARES_Flux
 

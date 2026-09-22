@@ -7,7 +7,30 @@ module hydraAF_Lib_BC_Coupled_Wall_Temperature
   
 contains
 
-  subroutine FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, Blk_FUSS, Is, Js, Ks, Fs, P_con, Mg, Tg, new_flux, Ovar )
+  !>@brief Solid-side coupled wall.
+  !>
+  !> The solid only ever conducts: its conductivity is kappa_loc, from co_Kappa on the
+  !> FUSS cell material, and it is what the heat flux put into the FUSS residual uses.
+  !> The routine also evaluates the FLUID conductivity kappa_con (FLINT tables, from the
+  !> ARES cell state) because the interface temperature Tint is a weighted average of the
+  !> two cell temperatures whose weights are the two conductivities: FUSS must reproduce
+  !> exactly the number ARES computes, or the wall temperature becomes discontinuous.
+  !>
+  !> @param[in] k_fluid_wall  TOTAL conductivity OF THE FLUID on the wall face,
+  !>                     k_l(p,Twall) + k_t, evaluated by the ARES-side routine and
+  !>                     mirrored here by hydraAF_Mod_CouplingExchange. It replaces the
+  !>                     local estimate kappa_con on the fluid side of Tint, and never
+  !>                     touches kappa_loc (solid), which conducts and nothing else.
+  !>                     It must be the very number the fluid heat flux is built with:
+  !>                     Tint is the root of k_s*grad(T_s).n = k_f*grad(T_f).n, so any
+  !>                     difference between the k_f that enters Tint and the one that
+  !>                     multiplies the fluid gradient shows up directly as a mismatch
+  !>                     between the two one-sided wall fluxes. Leaving k_t out costs a
+  !>                     factor (1+k_t/k_l); evaluating k_l at the cell state instead of
+  !>                     at the wall costs the variation of k_l across the first cell.
+  !>                     K_WALL_UNSET (first call, before the fluid side has produced
+  !>                     anything) falls back to kappa_con from the local fluid state.
+  subroutine FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, Blk_FUSS, Is, Js, Ks, Fs, P_con, Mg, Tg, new_flux, Ovar, k_fluid_wall )
     use hydra_Parameters_m, only: guide_
     use FUSS_Advanced_Types_m
     use FUSS_Base_Types_m
@@ -24,12 +47,13 @@ contains
     real(R8), intent(in)                   :: Tg(6)
     real(R8), intent(inout)                :: new_flux
     real(R8), optional, dimension(2), intent(out) :: Ovar
+    real(R8), optional, intent(in)         :: k_fluid_wall
 
     ! Local
     integer  :: Dir, Face_im, Face_jm, Face_km, modfm, modfm1, modfm2, modfm3, Ig, Jg, Kg
     real(R8) :: Normal(3), Area, M_loc(3,3), M_con(3,3)
     real(R8) :: T_loc, T_ip_loc, T_im_loc, T_jp_loc, T_jm_loc, T_kp_loc, T_km_loc, kappa_loc
-    real(R8) :: T_con, kappa_con, h_con
+    real(R8) :: T_con, kappa_con, h_con, kappa_fluid
     real(R8) :: Num_loc, Num_con, Den_loc, Den_con
     real(R8) :: Tint, T_wall, q_wall, T, kappa, Gradient(3), Flux
   
@@ -65,6 +89,15 @@ contains
     h_con = pT2h( p=P_con(np), T=T_con )
     kappa_con = ph2vars ( P_con(np), h_con, k_tab2D )
 
+    ! Conductivity to put on the FLUID side of Tint: the wall value the fluid solver
+    ! actually uses in its heat flux, mirrored here (see the routine header). The local
+    ! kappa_con above, taken at the fluid CELL state and with no turbulent part, is only
+    ! the fallback for the very first call.
+    kappa_fluid = kappa_con
+    if ( present(k_fluid_wall) ) then
+      if ( k_fluid_wall >= 0d0 ) kappa_fluid = k_fluid_wall
+    endif
+
     ! Tint computations
     select case ( Fm )
       case ( 1 : 2 )
@@ -96,7 +129,8 @@ contains
                 + 2.0d0*T_con * dot_product( M_con(3,:), Normal ) * modfm2
     end select
 
-    Tint = (kappa_loc*Num_loc + kappa_con*Num_con) / (kappa_loc*Den_loc + kappa_con*Den_con)
+    Tint = ( kappa_loc*Num_loc + kappa_fluid*Num_con ) &
+         / ( kappa_loc*Den_loc + kappa_fluid*Den_con )
 
     ! Calcolo dei flussi come nel caso di Temperature imposta Tint = Twall
     T_wall = Tint
@@ -139,7 +173,23 @@ contains
   end subroutine FUSS_BC_Coupled_Wall_Temperature
 
 
-  subroutine ARES_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, Blk_ARES, Is, Js, Ks, Fs, matID_con, Mg, Pg, new_flux, Ovar )
+  !>@brief Fluid-side coupled wall.
+  !>
+  !> Here kappa_loc is the fluid conductivity and kappa_con the solid one (co_Kappa on the
+  !> partner FUSS cell material), i.e. the mirror image of the solid-side routine.
+  !>
+  !> @param[in]  k_fluid_wall      total fluid conductivity k_l+k_t on the wall face, used
+  !>                          BOTH to build the interface temperature AND to build the
+  !>                          heat flux. It is the value produced by the PREVIOUS call
+  !>                          (k_l and k_t both depend on Twall, which depends on them):
+  !>                          in a partitioned coupling the solid side can never have
+  !>                          anything fresher, and using the same lagged number on both
+  !>                          sides and in the flux is what makes the two one-sided wall
+  !>                          fluxes identical at every iteration, not just at the fixed
+  !>                          point. K_WALL_UNSET falls back to the local estimate.
+  !> @param[out] k_fluid_wall_new  k_l(p,Twall)+k_t just evaluated on this face, stored for
+  !>                          the next call and mirrored to the FUSS partner entry.
+  subroutine ARES_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, Blk_ARES, Is, Js, Ks, Fs, matID_con, Mg, Pg, new_flux, Ovar, k_fluid_wall, k_fluid_wall_new )
     use hydra_Parameters_m, only: guide_
     use ARES_Advanced_Types_m
     use ARES_Base_Types_m
@@ -160,11 +210,13 @@ contains
     real(R8), intent(in)                   :: Pg(1,6)
     real(R8), intent(inout)                :: new_flux(nprim)
     real(R8), optional, dimension(8), intent(out) :: Ovar
+    real(R8), optional, intent(in)         :: k_fluid_wall
+    real(R8), optional, intent(out)        :: k_fluid_wall_new
     ! Local
     integer  :: Dir, Face_im, Face_jm, Face_km, modfm, modfm1, modfm2, modfm3, Ig, Jg, Kg
     real(R8) :: Normal(3), Area, M_loc(3,3), M_con(3,3)
     real(R8) :: T_loc, T_ip_loc, T_im_loc, T_jp_loc, T_jm_loc, T_kp_loc, T_km_loc, kappa_loc
-    real(R8) :: T_con, kappa_con
+    real(R8) :: T_con, kappa_con, kappa_fluid
     real(R8) :: Num_loc, Num_con, Den_loc, Den_con
     real(R8) :: rho, mil, kl, Prim(nprim), Prim_wall(nprim), dl, T
     real(R8) :: Tint, T_wall, q_wall, rho_wall, Stress(3), Gradient(nprim,3), Flux(nprim)
@@ -209,6 +261,14 @@ contains
     T_con    = Pg(1,1)
     call co_Kappa( matID_con, T_con, kappa_con )
 
+    ! Total fluid conductivity on the wall face, lagged by one call and shared with the
+    ! solid side (see the routine header). kappa_loc, taken at the CELL state and without
+    ! the turbulent part, is only the fallback for the first call.
+    kappa_fluid = kappa_loc
+    if ( present(k_fluid_wall) ) then
+      if ( k_fluid_wall >= 0d0 ) kappa_fluid = k_fluid_wall
+    endif
+
     ! Tint computations
     select case ( Fm )
       case ( 1 : 2 )
@@ -240,7 +300,8 @@ contains
                 + 2.0d0*T_con * dot_product( M_con(3,:), Normal ) * modfm2
     end select
     
-    Tint = (kappa_loc*Num_loc + kappa_con*Num_con) / (kappa_loc*Den_loc + kappa_con*Den_con)
+    Tint = ( kappa_fluid*Num_loc + kappa_con*Num_con ) &
+         / ( kappa_fluid*Den_loc + kappa_con*Den_con )
 
     ! Calcolo dei flussi come nel caso di Temperature imposta Tint = Twall
     T_wall = Tint
@@ -313,10 +374,13 @@ contains
     end if
     kt = mit*cp/(obj_rans%Prt+dPrt)
 
-    ! Fluxes
+    ! Fluxes. The heat flux uses kappa_fluid, i.e. exactly the conductivity Tint was
+    ! built with on both sides: (kl+kt) freshly evaluated here would be a different
+    ! number and the interface would exchange two different powers. The fresh value is
+    ! published through k_fluid_wall_new and becomes kappa_fluid at the next call.
     Flux(np) = 0d0 
     Flux(nu:nw) = Stress * Area
-    Flux(nh) = 0.5d0 * Area * (kl+kt) * dot_product ( Gradient(nh,:), Normal )
+    Flux(nh) = 0.5d0 * Area * kappa_fluid * dot_product ( Gradient(nh,:), Normal )
 
     if (model==2) then
       call RANS_Diffusive_Flux ( flux=Flux(nt:nprim), &
@@ -334,11 +398,12 @@ contains
     new_flux = - 2.0 * Flux * modfm2
 
     ! Wall variables
-    q_wall = kl * dot_product( Gradient(nh,:), Normal )
+    q_wall = kappa_fluid * dot_product( Gradient(nh,:), Normal )
+    if (present(k_fluid_wall_new)) k_fluid_wall_new = kl + kt
     if (present(Ovar)) call Compute_Wall_Properties(stress=Stress, pw=prim(np), Tw=T_wall,          &
                                                     rhow=rho_wall, mu=mil,                          &
                                                     y=Blk_ARES%dl(im,jm,km)%c(dir)*0.5d0,                &
-                                                    qw=(kl+kt) * dot_product ( Gradient(nh,:), Normal ), &
+                                                    qw=q_wall,                                      &
                                                     exit_array=Ovar)
 
   end subroutine ARES_BC_Coupled_Wall_Temperature
