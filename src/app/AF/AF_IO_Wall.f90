@@ -143,6 +143,8 @@ contains
   subroutine Write_Wall_Solution( FUSS_domain, ARES_domain, file, level )
     use Lib_VTK
     use Lib_Tecplot
+    use hydraAF_Lib_Ghost, only: Fill_Coupled_Ghost_Cell
+    use hydraAF_Mod_CouplingExchange, only: exchange_coupling_Tg_P, exchange_coupling_Pg_matID
     use hydra_Parameters_m
     use ARES_Advanced_Types_m
     use FUSS_Advanced_Types_m
@@ -159,14 +161,21 @@ contains
     character(len=clen_) :: format(2)
 
 
+    ! bc%Tg / bc%Pg still hold the stencil of the last BC_Coupled_Fluxes call, which ran
+    ! BEFORE the last solver update: refresh it, so that the wall file is built from the
+    ! current state of both solvers and the two sides of an interface report the same Tw.
+    ! Both exchanges are no-ops in serial and on a single rank; every rank reaches this
+    ! point, so the point-to-point pairing stays matched.
+    call exchange_coupling_Tg_P    ( FUSS_domain, ARES_domain, level )
+    call exchange_coupling_Pg_matID( FUSS_domain, ARES_domain, level )
+    call Fill_Coupled_Ghost_Cell   ( FUSS_domain, ARES_domain, level )
+
     ! Update IOwall variables
     call Extract_Properties_From_BC( FUSS_domain, ARES_domain, level )
 
 
-    ! Only rank 0 writes the consolidated wall output file. In a multi-rank
-    ! run, IOwall(level) currently contains only the local partition's entries;
-    ! a full MPI_Gatherv step is needed as a follow-up to consolidate the data
-    ! before writing. See build_coupling_schedule TODOs.
+    ! Only rank 0 writes the consolidated wall output file: Extract_Properties_From_BC
+    ! has already reduced every rank's contribution onto it.
     if (mpi_is_root) then
       path = 'OUTPUT/'
       call parse(hydra_obj_io%coupling_format,' ', format)
@@ -301,6 +310,10 @@ contains
           bb = bb + 1
 
           do i = lower, upper
+            ! Count exactly the entries the first loop counted: a face flagged as coupled
+            ! may still carry non-103 entries, and taking them in would shift the buffer
+            ! for the whole rest of the block.
+            if (FUSS_domain%bc(i)%type /= 103) cycle
             wall_i = wall_i + 1
             Ovar(6:7) = FUSS_wall_buf(2*(wall_i-1)+1 : 2*wall_i)
 
@@ -398,6 +411,7 @@ contains
           bb = bb + 1
 
           do i = lower, upper
+            if (ARES_domain%bc(i)%type /= 103) cycle
             wall_i = wall_i + 1
             Ovar(1:7) = ARES_wall_buf(7*(wall_i-1)+1 : 7*wall_i)
 
