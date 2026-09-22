@@ -105,9 +105,25 @@ contains
     T = Blk_FUSS % T (Im,Jm,Km)
     call co_Kappa( Blk_FUSS%matID(Im,Jm,Km), T, kappa )
 
-    ! Difference in Across-face direction: symmetry; tangential direction: null
+    ! Wall-normal derivative from the half-cell one-sided difference, tangential ones
+    ! from the cell-centred central differences. Both are needed: Tint above is the root
+    ! of the FULL flux balance k_s*grad(T_s).n = k_f*grad(T_f).n, so a flux built from the
+    ! across-face term alone does not reproduce the balance Tint was built from and the
+    ! two one-sided wall fluxes disagree by the tangential part wherever the grid is not
+    ! orthogonal to the wall. Signs follow the interior scheme (FUSS_Lib_Diffusive).
     Gradient = 0d0
     Gradient(Dir) = ( T - T_wall ) * modfm3
+    select case ( Fm )
+      case ( 1 : 2 )
+        Gradient(2) = 0.5d0 * ( T_jp_loc - T_jm_loc )
+        Gradient(3) = 0.5d0 * ( T_kp_loc - T_km_loc )
+      case ( 3 : 4 )
+        Gradient(1) = 0.5d0 * ( T_ip_loc - T_im_loc )
+        Gradient(3) = 0.5d0 * ( T_kp_loc - T_km_loc )
+      case ( 5 : 6 )
+        Gradient(1) = 0.5d0 * ( T_ip_loc - T_im_loc )
+        Gradient(2) = 0.5d0 * ( T_jp_loc - T_jm_loc )
+    end select
     if (ndir == 2) Gradient(3) = 0.0
     Gradient = matmul ( Gradient, M_loc )
 
@@ -248,9 +264,25 @@ contains
     mil = ph2vars( pressure, h_wall, mi_tab2D )
     kl  = ph2vars( pressure, h_wall, k_tab2D  )
 
-    ! Difference in Across-face direction: symmetry; tangential direction: null
+    ! Across-face direction: symmetry. Tangential direction: null for velocity and for
+    ! the RANS variables, the temperature one is filled just below.
     Gradient(nu:nw,Dir) = Prim(nu:nw) * modfm3                  ! Velocity
     Gradient(nh,Dir) = ( T - T_wall ) * modfm3                  ! Temperature
+    ! Tangential part of the temperature gradient, the counterpart of the terms Tint is
+    ! built with (see the solid-side routine): without it the heat flux is only the
+    ! across-face projection and the two sides of the interface exchange different powers
+    ! on a grid that is not orthogonal to the wall.
+    select case ( Fm )
+      case ( 1 : 2 )
+        Gradient(nh,2) = 0.5d0 * ( T_jp_loc - T_jm_loc )
+        Gradient(nh,3) = 0.5d0 * ( T_kp_loc - T_km_loc )
+      case ( 3 : 4 )
+        Gradient(nh,1) = 0.5d0 * ( T_ip_loc - T_im_loc )
+        Gradient(nh,3) = 0.5d0 * ( T_kp_loc - T_km_loc )
+      case ( 5 : 6 )
+        Gradient(nh,1) = 0.5d0 * ( T_ip_loc - T_im_loc )
+        Gradient(nh,2) = 0.5d0 * ( T_jp_loc - T_jm_loc )
+    end select
 
     if (model==2)  then
       dl = Blk_ARES % yn(im,jm,km)
