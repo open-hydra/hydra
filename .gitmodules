@@ -25,3 +25,10 @@
 [submodule "src/lib/ARES"]
 	path = src/lib/ARES
 	url = https://github.com/open-hydra/ARES.git
+[submodule "src/lib/ICE"]
+	path = src/lib/ICE
+	url = git@github.com:open-hydra/ICE.git
+	update = none
+[submodule "src/lib/IGLOO"]
+	path = src/lib/IGLOO
+	url = https://github.com/open-hydra/IGLOO.git

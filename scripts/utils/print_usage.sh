@@ -54,6 +54,12 @@ print_usage() {
   echo "      Compile an existing build of hydra-MF using CMake presets"
   echo
 
+  echo "figaro build hydra-MI2 --compilers=intel --use-openmp"
+  echo "      Build hydra solver 'MI2' (MOSE + ICE + IGLOO). OpenMP only -- MI2 refuses"
+  echo "      to configure with --use-mpi, because IGLOO needs the full gas field on"
+  echo "      every rank while MOSE partitions over blocks"
+  echo
+
   echo "figaro build MOSE --use-openmp"
   echo "      Build MOSE solver with OpenMP enabled"
   echo
@@ -69,6 +75,7 @@ print_usage() {
   echo -e "${YELLOW}Notes:${NC}"
   echo "  - Each hydra solver is built in its own directory: build/<suffix>"
   echo "  - CMakePresets.json is generated automatically during build"
+  echo "  - hydra executables: MF (MOSE+FUSS), AF (ARES+FUSS), MI2 (MOSE+ICE+IGLOO)"
   
   exit 0
 }

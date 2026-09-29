@@ -29,6 +29,8 @@ Each Hydra solver is an independent library with its own repository, documentati
 | [**FUSS**](https://github.com/open-hydra/FUSS) | Solid heat conduction (steady & transient) | Active | [Docs](https://open-hydra.github.io/FUSS/) |
 | [**GROOT**](https://github.com/open-hydra/GROOT) | Radiative heat transfer | Active | [Docs](https://open-hydra.github.io/GROOT/) |
 | [**ARES**](https://github.com/open-hydra/ARES) | Real fluid dynamics | Active | [Docs](https://open-hydra.github.io/ARES/) |
+| [**ICE**](https://github.com/open-hydra/ICE) | Dispersed condensed phase, Eulerian moment closures | Active | — |
+| [**IGLOO**](https://github.com/open-hydra/IGLOO) | Dispersed condensed phase, Lagrangian parcels | Active | — |
 
 ### Support Libraries
 
@@ -43,12 +45,13 @@ Each Hydra solver is an independent library with its own repository, documentati
 
 ## Coupled Applications
 
-Hydra builds coupled executables where two solvers exchange interface data at run-time.
+Hydra builds coupled executables where two or more solvers exchange data at run-time.
 
 | Executable | Coupling | Use Case |
 |------------|----------|----------|
 | `hydra-MF` | MOSE + FUSS | Conjugate heat transfer: compressible fluid + solid heat conduction |
 | `hydra-AF` | ARES + FUSS | Conjugate heat transfer: real fluid + solid heat conduction |
+| `hydra-MI2` | MOSE + ICE + IGLOO | Two-phase flow: compressible gas + dispersed condensed phase, Eulerian and Lagrangian (OpenMP only) |
 
 ---
 

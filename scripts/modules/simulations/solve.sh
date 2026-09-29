@@ -48,8 +48,16 @@ run_solver() {
 
     hydra*)
       ls INPUT/*phase.txt > filelist.txt 2>/dev/null
+      # CMake writes the master as bin/hydra_<SUFFIX> (underscore); the case-local copy keeps the
+      # figaro name bin/hydra-<SUFFIX> (dash). The lookup used the dash name for both and never found
+      # the master, so `figaro hydra-MI2 solve` could not run (fixed 2026-09-16).
       local="./bin/$solver"
-      [[ "$HYDRADIR/bin/$solver" -nt "$local" ]] && cp "$HYDRADIR/bin/$solver" "$local"
+      master="$HYDRADIR/bin/${solver/-/_}"
+      if [[ ! -f "$master" && ! -f "$local" ]]; then
+        log_error "No executable for $solver: build it first (figaro build $solver ...) -- expected $master"
+        exit 1
+      fi
+      [[ "$master" -nt "$local" ]] && mkdir -p ./bin && cp "$master" "$local"
       [[ "$action" == "solve" ]] && run_generic_solver "$local"
       sleep 3
       rm -f filelist.txt

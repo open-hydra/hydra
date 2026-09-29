@@ -14,3 +14,19 @@ bin
 # Test output files
 error*
 OUTPUT
+
+# Claude Code working files (local only)
+.claude/
+.claude-context/
+plan-bucket/
+CLAUDE.md
+
+# Run artefacts of the test cases and local backups (kept on disk, never committed)
+test/**/OUTPUT.*
+test/**/INPUT.*
+test/**/input.ini.*
+test/**/*.log
+test/**/filelist.txt
+__pycache__/
+test/mi2-checks/orig-*/
+test/mi2-checks/patches/

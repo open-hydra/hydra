@@ -1,9 +1,9 @@
 function(add_fortran_executable_from_dirs TARGET_NAME)
     # Usage:
-    #   add_fortran_executable_from_dirs(name SRCDIRS dir1 dir2 ... LIBS lib1 lib2 ...)
+    #   add_fortran_executable_from_dirs(name SRCDIRS dir1 dir2 ... LIBS lib1 lib2 ... [EXCLUDE file1 file2 ...])
     set(options)
     set(oneValueArgs)
-    set(multiValueArgs SRCDIRS LIBS)
+    set(multiValueArgs SRCDIRS LIBS EXCLUDE)
     cmake_parse_arguments(AFE "${options}" "${oneValueArgs}" "${multiValueArgs}" ${ARGN})
 
     if(NOT AFE_SRCDIRS)
@@ -19,6 +19,11 @@ function(add_fortran_executable_from_dirs TARGET_NAME)
         # which has no Fortran binding.
         file(GLOB DIR_C_SOURCES CONFIGURE_DEPENDS "${DIR}/*.c")
         list(APPEND ALL_SRC_FILES ${DIR_C_SOURCES})
+    endforeach()
+
+    # Leave out the files named in EXCLUDE (file names, matched at the end of the path)
+    foreach(NAME ${AFE_EXCLUDE})
+        list(FILTER ALL_SRC_FILES EXCLUDE REGEX "/${NAME}$")
     endforeach()
 
     if(NOT ALL_SRC_FILES)
@@ -77,4 +82,19 @@ if(EXE_NAME STREQUAL "AF")
             ${CMAKE_SOURCE_DIR}/src/app/common/config
             ${CMAKE_SOURCE_DIR}/src/app/AF
         LIBS FUSSL ARESL FiNeR)
+ENDIF()
+
+# hydra-MI2
+# ORION is listed explicitly: ICEL links it PRIVATE, so type(orion_data) -- which the MI2 coupler
+# declares -- does not arrive transitively.
+# The shared timers are left out: they use FUSS's MPI module, and only MF and AF call them.
+if(EXE_NAME STREQUAL "MI2")
+    add_fortran_executable_from_dirs(
+        hydra_MI2
+        SRCDIRS
+            ${CMAKE_SOURCE_DIR}/src/app/common/base
+            ${CMAKE_SOURCE_DIR}/src/app/common/config
+            ${CMAKE_SOURCE_DIR}/src/app/MI2
+        LIBS MOSEL ICEL IGLOOL ORION FiNeR
+        EXCLUDE Mod_Timers.f90 hydra_cycles.c)
 ENDIF()

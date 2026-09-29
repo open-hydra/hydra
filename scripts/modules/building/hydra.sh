@@ -75,6 +75,13 @@ git submodule update --init src/lib/FUSS
 git submodule update --init src/lib/GROOT
 git submodule update --init src/lib/ARES
 
+# hydra-MI2 only: its two condensed-phase solvers. ICE is a private repository, skipped by a
+# recursive clone (update = none in .gitmodules): it is checked out here, on request.
+if [[ "$SUFFIX" == "MI2" ]]; then
+    git submodule update --init --checkout src/lib/ICE
+    git submodule update --init src/lib/IGLOO
+fi
+
 # -------------------------
 # Configure + build
 # -------------------------
@@ -92,6 +99,13 @@ cmake --build "$BUILD_DIR"
 # -------------------------
 # Write / update CMakePresets.json (SOURCE ROOT)
 # -------------------------
+# cached <build-dir> <variable> <fallback>: the value of a variable in the CMake cache of a build tree
+cached() {
+    local value
+    value=$(grep -m1 "^$2:" "$1/CMakeCache.txt" | cut -d= -f2- || true)
+    echo "${value:-$3}"
+}
+
 write_presets() {
     local presets_file="$HYDRADIR/CMakePresets.json"
 
@@ -115,6 +129,15 @@ write_presets() {
             CC=$(grep '^CMAKE_C_COMPILER:FILEPATH=' "$build_dir/CMakeCache.txt" | cut -d= -f2-)
             CXX=$(grep '^CMAKE_CXX_COMPILER:FILEPATH=' "$build_dir/CMakeCache.txt" | cut -d= -f2-)
 
+            # Each preset carries the options its own build tree was configured with
+            local btype openmp mpi tecio sundials cantera
+            btype=$(cached "$build_dir" CMAKE_BUILD_TYPE "$BUILD_TYPE")
+            openmp=$(cached "$build_dir" USE_OPENMP "$USE_OPENMP")
+            mpi=$(cached "$build_dir" USE_MPI "$USE_MPI")
+            tecio=$(cached "$build_dir" USE_TECIO "$USE_TECIO")
+            sundials=$(cached "$build_dir" USE_SUNDIALS "$USE_SUNDIALS")
+            cantera=$(cached "$build_dir" USE_CANTERA "$USE_CANTERA")
+
             [[ "$first" == true ]] && first=false || echo ","
 
             cat <<EOF
@@ -122,16 +145,16 @@ write_presets() {
       "name": "$solver",
       "binaryDir": "\${sourceDir}/build/$solver",
       "cacheVariables": {
-        "CMAKE_BUILD_TYPE": "$BUILD_TYPE",
+        "CMAKE_BUILD_TYPE": "$btype",
         "CMAKE_Fortran_COMPILER": "$FC",
         "CMAKE_C_COMPILER": "$CC",
         "CMAKE_CXX_COMPILER": "$CXX",
         "EXE_NAME": "$solver",
-        "USE_OPENMP": "$USE_OPENMP",
-        "USE_MPI": "$USE_MPI",
-        "USE_TECIO": "$USE_TECIO",
-        "USE_SUNDIALS": "$USE_SUNDIALS",
-        "USE_CANTERA": "$USE_CANTERA"
+        "USE_OPENMP": "$openmp",
+        "USE_MPI": "$mpi",
+        "USE_TECIO": "$tecio",
+        "USE_SUNDIALS": "$sundials",
+        "USE_CANTERA": "$cantera"
       }
     }
 EOF
