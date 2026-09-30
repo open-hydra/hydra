@@ -1,3 +1,24 @@
+# Converged run (2026-09-30) — ICE to a residual of 1e-10; not the reference
+
+The case as shipped is a SHORT run (3 coupling steps, ICE density residual 3.12e-4, still falling). The same INI with
+`N-coupling = 24` (24 000 MOSE and 7 310 ICE iterations: ICE stops on its `res-threshold` 1e-10 once reached), run with
+the binary of the reference (`test/mi2-checks/bin/hydra_MI2.landed-2026-09-29`, md5 `5e47de85`) at **8 threads**, 184 s.
+ICE's residual falls below 1e-8 at ICE iteration 4 000 and ends at 1.0e-10; the gas density residual ends at 4.3e-13.
+Kept locally as `OUTPUT.converged-2026-09-30/` + `run.converged-2026-09-30.log`.
+
+| | axis RMS / mean / exit M | wall RMS / mean / exit M |
+|---|---|---|
+| **converged, ICE alone** | **0.0498 / −0.0472 / 2.0993** | **0.0285 / −0.0267 / 3.3567** |
+| short run (the reference, 3 coupling steps) | 0.0480 / −0.0068 / 2.2254 | 0.0229 / −0.0215 / 3.3784 |
+| IGLOO alone, `JPL-Lagrangian-20micron` reference | 0.0498 / −0.0479 / 2.0575 | 0.0237 / −0.0217 / 3.3654 |
+| Chang MPL (Chang, Hourng & Chien 1996 Fig. 11) | — / — / 2.112 | — / 3.357 |
+
+Converged, ICE alone matches IGLOO alone on the axis (RMS 0.0498 both, mean −0.0472 against −0.0479), with the exit Mach
+closer to Chang's (2.0993 against 2.0575). The short run's lower axis RMS (0.0480) was the gas still far from its steady
+state (exit M 2.2254), not a better condensed phase. Quote the converged numbers for ICE alone.
+
+---
+
 # Reference state (2026-09-29) — landing on hydra upstream: MOSE 95aeab6, ICE 494668b, ORION a770748
 
 `OUTPUT/` + `run.log`: `bin/hydra_MI2` md5 `638977860a6b1115173d30e999cdf405` (copy `test/mi2-checks/bin/hydra_MI2.E-2026-09-29`; hydra `c3686c0`

@@ -1,3 +1,14 @@
+# Thread counts (2026-09-30)
+
+The binary of 2026-09-30 (`test/mi2-checks/bin/hydra_MI2.G-2026-09-30`, byte-identical outputs to the reference binary)
+run twice at each of 1, 2 and 8 threads on this case: every field file (`gas-field.tec`, IGLOO's Eulerian and source
+fields) is byte-identical across the six runs; the parcel listings (`part-outloc-*`, `part-scatter-*`,
+`part-trajectories-*`) differ only in the order of their rows (identical as sorted lists); the log differs only in the
+line that prints the thread count, so every balance line is the same. The reference is a 1-thread run; any thread count
+reproduces its fields.
+
+---
+
 # Reference state (2026-09-29) — landing on hydra upstream: MOSE 95aeab6, ICE 494668b, ORION a770748
 
 `OUTPUT/` + `run.log`: `bin/hydra_MI2` md5 `638977860a6b1115173d30e999cdf405` (copy `test/mi2-checks/bin/hydra_MI2.E-2026-09-29`; hydra `c3686c0`
