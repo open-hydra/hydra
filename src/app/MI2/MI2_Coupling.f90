@@ -17,6 +17,9 @@ module hydraMI2_Mod_Coupling
   public :: Gas_Total_Energy
   public :: Gas_Mean_Temperature
   public :: Check_ICE_Mass_Channel
+  public :: Gas_Momentum
+  public :: ICE_To_Gas_Totals
+  public :: IGLOO_To_Gas_Totals
 
   !> Under-relaxation store: the previous coupling step's injected residual, per block.
   type, public :: resField
@@ -64,6 +67,94 @@ contains
     enddo
 
   end subroutine Gas_Species_Mass
+
+
+  !> Gas momentum [kg m/s] = SUM_cells rho*u*vol.
+  subroutine Gas_Momentum ( MOSE_domain, mom )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    use MOSE_Global_m,         only: nsc, nu, nw
+    implicit none
+    type(MOSE_domain_type), intent(in)  :: MOSE_domain
+    real(R8),               intent(out) :: mom(3)
+    integer :: b, i, j, k
+
+    mom = 0._R8
+    do b = 1, size(MOSE_domain%blk)
+      do k = 1, MOSE_domain%blk(b)%dim(3)
+      do j = 1, MOSE_domain%blk(b)%dim(2)
+      do i = 1, MOSE_domain%blk(b)%dim(1)
+        mom = mom + sum(MOSE_domain%blk(b)%P(1:nsc,i,j,k)) * MOSE_domain%blk(b)%P(nu:nw,i,j,k) &
+                  * MOSE_domain%blk(b)%vol(i,j,k)
+      enddo; enddo; enddo
+    enddo
+
+  end subroutine Gas_Momentum
+
+
+  !> What ICE's sources hand the gas over the interior cells and the families: force F [N] and energy
+  !  rate Q [W] (-source*vol, as ICExMOSE applies them), and the range of the relaxation time tau [s].
+  subroutine ICE_To_Gas_Totals ( MOSE_domain, ICE_domain, F, Q, taumin, taumax )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    use ICE_Advanced_Types_m,  only: ICE_domain_type
+    use ICE_Global_m,          only: ngroups, nbase
+    implicit none
+    type(MOSE_domain_type), intent(in)  :: MOSE_domain
+    type(ICE_domain_type),  intent(in)  :: ICE_domain
+    real(R8),               intent(out) :: F(3), Q, taumin, taumax
+    integer  :: b, g, i, j, k
+    real(R8) :: vol
+
+    F = 0._R8; Q = 0._R8; taumin = huge(1._R8); taumax = -huge(1._R8)
+    do b = 1, size(MOSE_domain%blk)
+      do g = 1, ngroups
+        do k = 1, MOSE_domain%blk(b)%dim(3)
+        do j = 1, MOSE_domain%blk(b)%dim(2)
+        do i = 1, MOSE_domain%blk(b)%dim(1)
+          vol = MOSE_domain%blk(b)%vol(i,j,k)
+          associate ( cp => ICE_domain%blk(b)%cond_phase(g) )
+            F = F - cp%source(2:4,i,j,k) * vol
+            Q = Q - cp%source(nbase(g)-1,i,j,k) * vol
+            taumin = min(taumin, cp%tau(i,j,k))
+            taumax = max(taumax, cp%tau(i,j,k))
+          end associate
+        enddo; enddo; enddo
+      enddo
+    enddo
+
+  end subroutine ICE_To_Gas_Totals
+
+
+  !> What IGLOO's source-mode rates hand the gas over the interior cells, before under-relaxation:
+  !  force F [N], energy rate Q [W] with the datum correction, mass rate M [kg/s] into the gas species.
+  subroutine IGLOO_To_Gas_Totals ( MOSE_domain, IGLOO, F, Q, M )
+    use MOSE_Advanced_Types_m,  only: MOSE_domain_type
+    use MOSE_Global_m,          only: nsc
+    use IGLOO_module,           only: obj_IGLOO
+    use IGLOO_variables,        only: nm
+    use hydraMI2_Stoichiometry, only: nu_gas => nu, has_stoichiometry, dhDatum
+    implicit none
+    type(MOSE_domain_type), intent(in)  :: MOSE_domain
+    type(obj_IGLOO),        intent(in)  :: IGLOO
+    real(R8),               intent(out) :: F(3), Q, M
+    integer :: b, i, j, k, imat
+
+    F = 0._R8; Q = 0._R8; M = 0._R8
+    do b = 1, size(MOSE_domain%blk)
+      if (.not. allocated(IGLOO%source(b)%sourceMom)) cycle
+      do k = 1, MOSE_domain%blk(b)%dim(3)
+      do j = 1, MOSE_domain%blk(b)%dim(2)
+      do i = 1, MOSE_domain%blk(b)%dim(1)
+        F = F + IGLOO%source(b)%sourceMom(:,i,j,k)
+        Q = Q + IGLOO%source(b)%sourceEn(i,j,k)
+        if (.not. has_stoichiometry) cycle
+        do imat = 1, nm
+          M = M + sum(nu_gas(imat,1:nsc)) * IGLOO%source(b)%sourceMass(imat,i,j,k)
+          Q = Q + dhDatum(imat) * IGLOO%source(b)%sourceMass(imat,i,j,k)
+        enddo
+      enddo; enddo; enddo
+    enddo
+
+  end subroutine IGLOO_To_Gas_Totals
 
 
   !> Accumulate the mass handed to the gas over a coupling step of duration dtBlock:

@@ -20,7 +20,8 @@ program hydra_MI2_program
                                      Accumulate_Injected_Mass, massInjected, Gas_Species_Mass, &
                                      nMassLimited, Accumulate_Injected_Energy, Gas_Total_Energy, &
                                      Gas_Mean_Temperature, energyInjected, energyDatumPart, &
-                                     energyAudited, Check_ICE_Mass_Channel
+                                     energyAudited, Check_ICE_Mass_Channel, &
+                                     Gas_Momentum, ICE_To_Gas_Totals, IGLOO_To_Gas_Totals
   use hydraMI2_Build_Stamp,    only: Print_Build_Stamp
   use Lib_ORION_data,          only: orion_data
 
@@ -63,6 +64,7 @@ program hydra_MI2_program
   !> Coupling mode in force when the sources MOSE is about to consume were produced.
   logical :: IGLOO_src_eulerian = .false.
   integer :: nAuditSkipped      = 0        ! coupling steps whose sources were Eulerian, so not audited
+  real(R8) :: momRep0(3), momRep1(3), enRep0 = 0._R8, enRep1 = 0._R8   ! gas totals around a MOSE block
 
   call Print_Build_Stamp()
 
@@ -195,6 +197,10 @@ program hydra_MI2_program
 
       ! domain clock at block start, for the mass and energy audit
       t_block0 = MOSE_simulation%domain(1)%time
+      if ( hydra_MI2_obj%report ) then
+        call Gas_Momentum    ( MOSE_simulation%domain(1), momRep0 )
+        call Gas_Total_Energy( MOSE_simulation%domain(1), enRep0 )
+      endif
 
       do i_MOSE = 1, hydra_obj_sim_param%MOSE_iter(n_cycle)
         if ( MOSE_obj_sim_param%TODO <= 2 ) then
@@ -211,6 +217,8 @@ program hydra_MI2_program
       elseif ( IGLOO_has_sources ) then
         nAuditSkipped = nAuditSkipped + 1
       endif
+
+      if ( hydra_MI2_obj%report ) call Report_Coupling_Step()
 
       ! --- IGLOO --------------------------------------------------------------
       if ( hydra_MI2_obj%run_IGLOO ) then
@@ -542,6 +550,30 @@ contains
     write(*,*)
 
   end subroutine Report_MI2_Config
+
+
+  !> [MI2-Coupling] report: the MOSE block of this coupling step and what the coupler handed the gas
+  !  during it (the sources in force, before the solves of this step replace them).
+  subroutine Report_Coupling_Step()
+    implicit none
+    real(R8) :: F(3), Q, M, taumin, taumax
+
+    call Gas_Momentum    ( MOSE_simulation%domain(1), momRep1 )
+    call Gas_Total_Energy( MOSE_simulation%domain(1), enRep1 )
+    write(*,'(A,I0,A,I0,2(A,ES24.16))') ' [MI2-report] cycle ', n_cycle, ' step ', n_couple, &
+                                         ' t0 ', t_block0, ' t1 ', MOSE_simulation%domain(1)%time
+    write(*,'(A,6ES24.16)') ' [MI2-report] gas-momentum', momRep0, momRep1
+    write(*,'(A,2ES24.16)') ' [MI2-report] gas-energy', enRep0, enRep1
+    if ( hydra_MI2_obj%run_ICE .and. ICE_has_sources ) then
+      call ICE_To_Gas_Totals( MOSE_simulation%domain(1), ICE_simulation%domain(1), F, Q, taumin, taumax )
+      write(*,'(A,6ES24.16)') ' [MI2-report] ice-to-gas', F, Q, taumin, taumax
+    endif
+    if ( hydra_MI2_obj%run_IGLOO .and. IGLOO_has_sources .and. .not. IGLOO_src_eulerian ) then
+      call IGLOO_To_Gas_Totals( MOSE_simulation%domain(1), IGLOO, F, Q, M )
+      write(*,'(A,5ES24.16)') ' [MI2-report] igloo-to-gas', F, Q, M
+    endif
+
+  end subroutine Report_Coupling_Step
 
 
   !> What actually got built, after setup.

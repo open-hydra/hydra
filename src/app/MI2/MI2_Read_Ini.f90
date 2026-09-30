@@ -38,7 +38,25 @@ contains
 
     call Normalize_MI2_Params()
 
+    call Read_Coupling_Report(fini)
+
   end subroutine Read_Inifile_MI2
+
+
+  !> [MI2-Coupling] report = true prints, at every coupling step, what the coupler hands the gas.
+  subroutine Read_Coupling_Report(fini)
+    use Finer,                   only: file_ini
+    use hydraMI2_Config_Types_m, only: hydra_MI2_obj
+    implicit none
+    type(file_ini), intent(inout) :: fini
+    logical :: on
+    integer :: error
+
+    on = .false.
+    call fini%get(section_name='MI2-Coupling', option_name='report', val=on, error=error)
+    hydra_MI2_obj%report = (error == 0) .and. on
+
+  end subroutine Read_Coupling_Report
 
 
   !> Hot re-read of input.ini: refreshes the values of the registered keys (sizes are not
