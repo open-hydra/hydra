@@ -21,7 +21,8 @@ program hydra_MI2_program
                                      nMassLimited, Accumulate_Injected_Energy, Gas_Total_Energy, &
                                      Gas_Mean_Temperature, energyInjected, energyDatumPart, &
                                      energyAudited, Check_ICE_Mass_Channel, &
-                                     Gas_Momentum, ICE_To_Gas_Totals, IGLOO_To_Gas_Totals
+                                     Gas_Momentum, ICE_To_Gas_Totals, IGLOO_To_Gas_Totals, &
+                                     mdotHanded, nHanded
   use hydraMI2_Build_Stamp,    only: Print_Build_Stamp
   use Lib_ORION_data,          only: orion_data
 
@@ -235,6 +236,8 @@ program hydra_MI2_program
 
           ! gas state in, then solve
           call MOSExIGLOO( MOSE_simulation%domain(1), IGLOO )
+          if ( hydra_MI2_obj%report ) write(*,'(A,ES24.16,I10)') ' [MI2-report] igloo-inlet-mdot', &
+                                                                 mdotHanded, nHanded
 
           call IGLOO%solve()
 

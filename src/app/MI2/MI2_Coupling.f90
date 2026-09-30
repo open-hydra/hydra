@@ -44,6 +44,10 @@ module hydraMI2_Mod_Coupling
   !> Latch: the Check_ICE_Mass_Channel warning is printed once.
   logical, private :: ICE_mass_channel_reported = .false.
 
+  !> Inflow mass flow MOSExIGLOO handed IGLOO at its last call [kg/s], and the number of face records.
+  real(R8), public :: mdotHanded = 0._R8
+  integer,  public :: nHanded    = 0
+
 contains
 
   !> Mass of each gas species in the domain [kg] = SUM_cells rho_s*vol.
@@ -546,7 +550,7 @@ contains
   end subroutine Gas_Field_For_IGLOO
 
   !> Push the MOSE gas state (interior only: IGLOO rebuilds its own ghost ring in solve) into
-  !  IGLOO's gasblock and re-impose the injection mass flow mdotGas on the boundary faces, every
+  !  IGLOO's gasblock and re-impose the gas inflow mass flow mdotGas [kg/s] on the inlet faces, every
   !  sweep. Opens its own parallel region.
   subroutine MOSExIGLOO ( MOSE_domain, IGLOO )
     use MOSE_Advanced_Types_m, only: MOSE_domain_type
@@ -559,8 +563,12 @@ contains
     integer  :: b, i, j, k, f, m, n, lower, upper
     integer  :: i0, i1, j0, j1, k0, k1, ni, nj, nk
     real(R8) :: rhoi(nsc), vel(3), rho, R, gam, T, mu, kappa
+    real(R8) :: mSum
+    integer  :: nSum
 
     upper = 0
+    mdotHanded = 0._R8
+    nHanded    = 0
     do b = 1, size(MOSE_domain%blk)
 
       ! mesh-consistency check (not the copy range): the gasblock, ghost ring included under
@@ -603,19 +611,35 @@ contains
       !$OMP END PARALLEL
       end associate
 
-      ! injection mass flow on the boundary faces (MOSE_domain%bc is flat over blocks and faces)
+      ! gas inflow mass flow on the inlet faces (MOSE_domain%bc is flat over blocks and faces);
+      ! other records carry no mass flow and leave IGLOO's value alone
       do f = 1, 6
         lower = upper + 1
         upper = upper + MOSE_domain%n_bf(b,f)
+        mSum = 0._R8; nSum = 0
         !$OMP PARALLEL DEFAULT(SHARED), PRIVATE(i,m,n)
-        !$OMP DO
+        !$OMP DO REDUCTION(+:mSum,nSum)
         do i = lower, upper
           call IGLOO%geoblock(b)%ijk2fmn ( MOSE_domain%bc(i)%i, MOSE_domain%bc(i)%j, &
                                            MOSE_domain%bc(i)%k, f, m, n )
-          if (m>0 .and. n>0) IGLOO%geoblock(b)%face(f)%cell(m,n)%mdotGas = MOSE_domain%bc(i)%mdot
+          if (m<=0 .or. n<=0) cycle
+          associate ( cell => IGLOO%geoblock(b)%face(f)%cell(m,n) )
+            select case (MOSE_domain%bc(i)%type)
+            case (401, 402, 405, 406, 407)   ! mdot is the face mass flow MOSE computes [kg/s]
+              cell%mdotGas = MOSE_domain%bc(i)%mdot
+            case (403, 404, 420)             ! mdot is the prescribed mass flux [kg/(s m2)]
+              cell%mdotGas = MOSE_domain%bc(i)%mdot * cell%area
+            case default
+              cycle
+            end select
+            mSum = mSum + cell%mdotGas
+            nSum = nSum + 1
+          end associate
         enddo
         !$OMP END DO
         !$OMP END PARALLEL
+        mdotHanded = mdotHanded + mSum
+        nHanded    = nHanded + nSum
       enddo
 
     enddo
