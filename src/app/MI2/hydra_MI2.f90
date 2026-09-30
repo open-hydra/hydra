@@ -21,6 +21,7 @@ program hydra_MI2_program
                                      nMassLimited, Accumulate_Injected_Energy, Gas_Total_Energy, &
                                      Gas_Mean_Temperature, energyInjected, energyDatumPart, &
                                      energyAudited, Check_ICE_Mass_Channel
+  use hydraMI2_Build_Stamp,    only: Print_Build_Stamp
   use Lib_ORION_data,          only: orion_data
 
   use MOSE_Advanced_Types_m, only: MOSE_simulation_type, MOSE_domain_type
@@ -62,6 +63,8 @@ program hydra_MI2_program
   !> Coupling mode in force when the sources MOSE is about to consume were produced.
   logical :: IGLOO_src_eulerian = .false.
   integer :: nAuditSkipped      = 0        ! coupling steps whose sources were Eulerian, so not audited
+
+  call Print_Build_Stamp()
 
 #if defined (_OPENMP)
   !$omp parallel

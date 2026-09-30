@@ -97,4 +97,13 @@ if(EXE_NAME STREQUAL "MI2")
             ${CMAKE_SOURCE_DIR}/src/app/MI2
         LIBS MOSEL ICEL IGLOOL ORION FiNeR
         EXCLUDE Mod_Timers.f90 hydra_cycles.c)
+
+    # The commit of each repository the executable is built from, written again at every build
+    set(MI2_STAMP ${CMAKE_BINARY_DIR}/generated/MI2_Build_Stamp.f90)
+    set(MI2_STAMP_CMD ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${MI2_STAMP}
+                      -P ${CMAKE_SOURCE_DIR}/src/app/MI2/MI2_Build_Stamp.cmake)
+    execute_process(COMMAND ${MI2_STAMP_CMD})
+    add_custom_target(hydra_MI2_stamp COMMAND ${MI2_STAMP_CMD} BYPRODUCTS ${MI2_STAMP} VERBATIM)
+    target_sources(hydra_MI2 PRIVATE ${MI2_STAMP})
+    add_dependencies(hydra_MI2 hydra_MI2_stamp)
 ENDIF()
