@@ -69,6 +69,14 @@ git submodule update --init lib/ORION
 git submodule update --init lib/OSLO
 git submodule update --init lib/FLINT
 git submodule update --init --recursive lib/third_party/FiNeR
+# FiNeR no longer tracks its five dependencies, yet its CMakeLists adds them: populate them
+# from the last FiNeR commit that pinned them (v2.0.6, cfc9194), then return to the pin.
+if [[ ! -f lib/third_party/FiNeR/src/third_party/PENF/CMakeLists.txt ]]; then
+    ( cd lib/third_party/FiNeR && pin=$(git rev-parse HEAD) \
+      && git checkout -q cfc9194 \
+      && git submodule update --init --recursive \
+      && git checkout -q "$pin" )
+fi
 
 git submodule update --init src/lib/MOSE
 git submodule update --init src/lib/FUSS
