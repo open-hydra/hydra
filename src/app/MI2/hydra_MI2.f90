@@ -27,11 +27,12 @@ program hydra_MI2_program
   use Lib_ORION_data,          only: orion_data
 
   use MOSE_Advanced_Types_m, only: MOSE_simulation_type, MOSE_domain_type
-  use MOSE_Config_Types_m,   only: MOSE_obj_sim_param => obj_sim_param, MOSE_obj_io => obj_io
+  use MOSE_Config_Types_m,   only: MOSE_obj_sim_param => obj_sim_param, MOSE_obj_io => obj_io, &
+                                   MOSE_obj_time_scheme => obj_time_scheme
   use MOSE_Procedures_m,     only: MOSE_type
 
   use ICE_Advanced_Types_m,  only: ICE_simulation_type
-  use ICE_Config_Types_m,    only: ICE_obj_sim_param => obj_sim_param
+  use ICE_Config_Types_m,    only: ICE_obj_sim_param => obj_sim_param, ICE_obj_time_scheme => obj_time_scheme
   use ICE_Procedures_m,      only: ICE_type
 
   use IGLOO_module,          only: obj_IGLOO
@@ -164,6 +165,8 @@ program hydra_MI2_program
   end block
 
   call Report_Setup()
+
+  call Check_Time_Accuracy()
 
   ! ---------------------------------------------------------------------------
   ! Coupling cycles
@@ -553,6 +556,26 @@ contains
     write(*,*)
 
   end subroutine Report_MI2_Config
+
+
+  !> Refuse a cycle that advances MOSE and ICE together while either is time-accurate: the two
+  !  solvers do not share a time step, so their physical times would part.
+  subroutine Check_Time_Accuracy()
+    implicit none
+    integer :: c
+
+    if ( .not. hydra_MI2_obj%run_ICE ) return
+    if ( .not. (MOSE_obj_time_scheme%time_accurate .or. ICE_obj_time_scheme%time_accurate) ) return
+    do c = 1, size(hydra_obj_sim_param%MOSE_iter)
+      if ( hydra_obj_sim_param%MOSE_iter(c) > 0 .and. hydra_MI2_obj%ICE_iter(c) > 0 ) then
+        write(*,'(A,I0,A)') '[ERROR] [MI2] cycle ', c, ' advances MOSE and ICE together with time-accurate on:'
+        write(*,'(A)')      '        they do not share a time step, so their physical times would part. Advance'
+        write(*,'(A)')      '        them in separate cycles, or set time-accurate = false in [MOSE-Numerics] and [ICE-Numerics].'
+        error stop 1
+      endif
+    enddo
+
+  end subroutine Check_Time_Accuracy
 
 
   !> [MI2-Coupling] report: the MOSE block of this coupling step and what the coupler handed the gas
