@@ -7,6 +7,7 @@
 #              the remaining 49 iterations of that step are skipped), so cycle 1 = 1 + 50 + 50.
 #              step 1 -> first of the cycle; step 2 -> 151/100 == 101/100, silent; step 3 -> 201/100 > 1.
 #  inert  : evap-box-ta as shipped -> no notice, OUTPUT byte-identical to the case's reference OUTPUT/
+#   usage: p2_frozen_source_check.sh [scratch-root] [exe]   (REF=<OUTPUT dir of the reference run> for the byte check)
 set -u
 T=${1:-${MI2_SCRATCH:-/tmp/mi2-checks-${USER:-$(id -un)}}/P2}
 H=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
@@ -22,7 +23,7 @@ ko() { fail=$((fail+1)); echo "FAIL  $1"; }
 d=$T/frozen; rm -rf "$d"; mkdir -p "$d"; cp -rp "$S/INPUT" "$S/MESH" "$S/input.ini" "$d/"
 sed -i -e 's/^N-coupling *=.*/N-coupling    = 3 3/' -e 's/^MOSE-iter *=.*/MOSE-iter     = 50 50/' \
        -e 's/^IGLOO-iter *=.*/IGLOO-iter    = 1 0/' -e 's/^shell-diter *=.*/shell-diter   = 100/' "$d/input.ini"
-"$RUN" "$d" "$d/run" 1 "$d/run.log" > /dev/null 2>&1; rc=$?
+"$RUN" "$d" "$d/run" 1 "$d/run.log" "$EXE" > /dev/null 2>&1; rc=$?
 n=$(grep -c "IGLOO source FROZEN" "$d/run.log")
 steps=$(grep -o "\[cycle [0-9]*, step [0-9]*, MOSE iter [0-9]*\]" "$d/run.log" | tr '\n' ' ')
 echo "  frozen notices: $n  at: $steps  (exit=$rc)"
@@ -34,7 +35,7 @@ echo "  injected total with a frozen cycle: $inj"
 
 # --- inert ---
 d=$T/inert; rm -rf "$d"
-"$RUN" "$S" "$d" 1 "$T/inert.log" > /dev/null 2>&1; rc=$?
+"$RUN" "$S" "$d" 1 "$T/inert.log" "$EXE" > /dev/null 2>&1; rc=$?
 if grep -q "FROZEN" "$T/inert.log"; then ko "no notice when nothing is frozen"; else ok "no notice when nothing is frozen"; fi
 REF=${REF:-$S/OUTPUT}   # the case's maintained reference run (1 thread)
 if [ -d "$REF" ]; then
