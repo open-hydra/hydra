@@ -33,13 +33,18 @@ contains
         call parse(stringa(1),'/',substringa)
         open(newunit=u, file=filename, status="old")
         read(u,'(A)',iostat=ios) type
-        if (index(type,'solid')>0) then
+        ! 'solid-bulk' (and the legacy bare 'solid') -> FUSS; a '*-dispersed' phase belongs to hydra-MI2
+        if (index(type,'solid')>0 .and. index(type,'dispersed')==0) then
           FUSS_phase_prefix = trim(substringa(2))//'-'
         elseif (index(type,'ideal-gas')>0) then
           MOSE_phase_prefix = trim(substringa(2))//'-'
+        elseif (index(type,'dispersed')>0) then
+          write(*,'(A)') '[ERROR] [MF] '//trim(filename)//' is a DISPERSED phase: hydra-MF has no '// &
+                         'dispersed-phase solver (use hydra-MI2)'
+          error stop 1
         else
-          write(*,*) 'Error: unknown phase type'
-          stop
+          write(*,'(A)') '[ERROR] [MF] unknown phase type on line 1 of '//trim(filename)//': "'//trim(type)//'"'
+          error stop 1
         endif
         close(u)
     endif

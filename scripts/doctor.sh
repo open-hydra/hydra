@@ -65,6 +65,30 @@ require_file "$HYDRADIR/CMakeLists.txt" && log_success "CMakeLists.txt found" ||
 require_dir "$HYDRADIR/build" && log_success "build/ directory exists" || log_warn "build/ directory missing (will be created on build)"
 
 # -------------------------
+# Submodules
+# -------------------------
+# Driven off .gitmodules rather than a hardcoded list, so a solver added later (ICE was) shows up
+# here without editing this script. "populated" means the working tree is actually checked out --
+# a registered-but-empty submodule is the usual cause of a confusing configure-time failure.
+echo
+echo "Submodule checks"
+if require_file "$HYDRADIR/.gitmodules"; then
+    while read -r sub_path; do
+        [[ -n "$sub_path" ]] || continue
+        only=""
+        [[ "$sub_path" == "src/lib/ICE" || "$sub_path" == "src/lib/IGLOO" ]] && only=" (needed by hydra-MI2 only)"
+        # a directory that holds nothing but the .git link is not checked out
+        if [[ -n "$(ls -A "$HYDRADIR/$sub_path" 2>/dev/null | grep -v '^\.git$')" ]]; then
+            log_success "$sub_path populated"
+        else
+            log_warn "$sub_path registered but EMPTY$only (run: figaro submodule update $(basename "$sub_path"))"
+        fi
+    done < <(git -C "$HYDRADIR" config --file .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null | awk '{print $2}')
+else
+    log_warn ".gitmodules not found -- cannot check submodules"
+fi
+
+# -------------------------
 # Tools
 # -------------------------
 echo

@@ -2,14 +2,16 @@
 
 _figaro_completions()
 {
-  local cur prev opts subsolvers solvers atlas_opt
+  local cur prev opts subsolvers solvers hydras atlas_opt
   COMPREPLY=()
   cur="${COMP_WORDS[COMP_CWORD]}"
   prev="${COMP_WORDS[COMP_CWORD-1]}"
 
-  opts="doctor submodule clean compile build kill ATLAS MOSE FUSS GROOT ARES hydra-MF hydra-AF"
+  opts="doctor submodule clean compile build kill ATLAS MOSE FUSS GROOT ARES hydra-MF hydra-AF hydra-MI2"
   subsolvers="MOSE FUSS GROOT ARES"
-  progs="ATLAS GRIB MOSE FUSS GROOT ARES hydra-MF hydra-AF"
+  # `build` also takes the hydra executables themselves (figaro build hydra-MI2 ...)
+  hydras="hydra-MF hydra-AF hydra-MI2"
+  progs="ATLAS GRIB MOSE FUSS GROOT ARES hydra-MF hydra-AF hydra-MI2"
   atlas_opt="GPB ICB BCB import"
   git_opts="update delete"
 
@@ -27,7 +29,7 @@ _figaro_completions()
       return 0
       ;;
     build)
-      COMPREPLY=( $(compgen -W "${subsolvers}" -- ${cur}) )
+      COMPREPLY=( $(compgen -W "${subsolvers} ${hydras}" -- ${cur}) )
       return 0
       ;;
     ATLAS)

@@ -45,6 +45,33 @@ ELSEIF(EXE_NAME STREQUAL "AF")
     add_subdirectory(lib/FLINT/)
     add_subdirectory(src/lib/ARES/)
     add_subdirectory(src/app)
+ELSEIF(EXE_NAME STREQUAL "MI2")
+    # MOSE (Eulerian gas) + ICE (Eulerian condensed) + IGLOO (Lagrangian).
+    #
+    # MPI is refused at CONFIGURE time, deliberately and permanently -- not deferred work.
+    # MOSE decomposes over blocks (is_local_block) while IGLOO requires the FULL gas field
+    # replicated identically on every rank (see src/lib/IGLOO/src/lib/obj_IGLOO.f90 setup_static),
+    # so a block-partitioned MOSExIGLOO would silently integrate particles through holes.
+    # ICE partitions its own blocks under USE_MPI, but nothing makes its decomposition
+    # match MOSE's, and IGLOO's requirement above stands regardless. Refusing to configure
+    # beats linking a wrong binary.
+    IF(USE_MPI)
+        message(FATAL_ERROR
+            "hydra-MI2 does not support MPI. MOSE partitions over blocks but IGLOO requires the "
+            "full gas field on every rank. "
+            "Rebuild without --use-mpi.")
+    ENDIF()
+
+    add_subdirectory(lib/ORION)
+    add_subdirectory(lib/third_party/FiNeR/)
+    # OSLO is required by IGLOO (target OSLO) and pulled in early by FLINT; add it once here so
+    # both see the same target rather than each trying to add_subdirectory it.
+    add_subdirectory(lib/OSLO/)
+    add_subdirectory(lib/FLINT/)
+    add_subdirectory(src/lib/MOSE/)
+    add_subdirectory(src/lib/ICE/)
+    add_subdirectory(src/lib/IGLOO/)
+    add_subdirectory(src/app)
 ELSE()
-    message(FATAL_ERROR "EXE_NAME not set correctly. Choose from: MF, AF")
+    message(FATAL_ERROR "EXE_NAME not set correctly. Choose from: MF, AF, MI2")
 ENDIF()

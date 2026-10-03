@@ -27,19 +27,25 @@ if [ $# -eq 1 ]; then
 else
     if [[ "$2" == "ATLAS" || "$2" == "GRIB" ]]; then
         arg="utils/$2"
-    elif [[ "$2" == "MOSE" || "$2" == "FUSS" || "$2" == "GROOT" || "$2" == "ARES" ]]; then
+    elif [[ "$2" == "MOSE" || "$2" == "FUSS" || "$2" == "GROOT" || "$2" == "ARES" || "$2" == "ICE" || "$2" == "IGLOO" ]]; then
         arg="src/lib/$2"
     else
         arg="lib/$2"
     fi
 fi
 
+# ICE is skipped by a plain update (update = none in .gitmodules): asked by name, it is checked out.
+# Without a name the update covers every submodule.
+target=()
+[[ -n "$arg" ]] && target=("$arg")
+[[ "$arg" == "src/lib/ICE" ]] && target=(--checkout "$arg")
+
 case "$1" in
     update)
         if [ "$remote" = true ]; then
-            git submodule update --init --remote "$arg"
+            git submodule update --init --remote ${target[@]+"${target[@]}"}
         else
-            git submodule update --init "$arg"
+            git submodule update --init ${target[@]+"${target[@]}"}
         fi
         ;;
 
