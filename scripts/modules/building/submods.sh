@@ -16,6 +16,10 @@ fi
 
 cd $HYDRADIR/$where/$PROG || log_error "PROG $PROG not found."
 
+# The solver is handed hydra's FiNeR: make sure its dependencies are there
+source "$SCRIPT_DIR/utils/finer_deps.sh"
+fill_finer_deps "$HYDRADIR"
+
 # Execute the install script with 'build' argument
 log_info "Building $PROG"
 log_info "Passing jurisdiction to install.sh in $HYDRADIR/$where/$PROG"
