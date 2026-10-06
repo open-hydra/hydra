@@ -16,9 +16,12 @@ fi
 
 cd $HYDRADIR/$where/$PROG || log_error "PROG $PROG not found."
 
-# The solver is handed hydra's FiNeR: make sure its dependencies are there
-source "$SCRIPT_DIR/utils/finer_deps.sh"
-fill_finer_deps "$HYDRADIR"
+# The solvers are handed hydra's FiNeR: make sure its dependencies are there. ATLAS builds with its own
+# pinned FiNeR, the one its CI tests, so hydra's FiNeR can move ahead of ATLAS's pointer.
+if [[ $PROG != "ATLAS" ]]; then
+  source "$SCRIPT_DIR/utils/finer_deps.sh"
+  fill_finer_deps "$HYDRADIR"
+fi
 
 # Execute the install script with 'build' argument
 log_info "Building $PROG"
@@ -26,7 +29,6 @@ log_info "Passing jurisdiction to install.sh in $HYDRADIR/$where/$PROG"
 echo
 if [[ $PROG == "ATLAS" ]]; then
   ./install.sh build --include-orion=$HYDRADIR/lib/ORION \
-                    --include-finer=$HYDRADIR/lib/third_party/FiNeR \
                   "${@:2}"
 else
   ./install.sh build --include-orion=$HYDRADIR/lib/ORION \
