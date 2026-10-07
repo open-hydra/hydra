@@ -119,12 +119,9 @@ the last sweep checkable and the lifetimes exact:
 - `[MOSE-IO] sol-diter = 267` writes `gas-field.tec` at iteration 801, the one the last sweep sampled: 267 divides
   the run's 801 MOSE iterations (`sol-diter = 1` gives the same file).
 
-The proof that they are output-only (every scatter, source and Eulerian file byte-identical to the run without them,
-the exit and trajectory rows identical in their columns) is in `REFERENCE-STATE.md`.
-
 ## Measured
 
-All runs at 1 thread. The stored baselines, their binaries and inputs are listed in `REFERENCE-STATE.md`.
+All runs at 1 thread.
 
 **The stored baseline** (`OUTPUT/`: Psat column, output keys, scatter files from `hydra_MI2` `137de966`, IGLOO with the
 scatter fix): every check passes, every check gated on both sweeps.

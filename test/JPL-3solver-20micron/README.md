@@ -13,8 +13,7 @@ Since both phases are mirrored at the axis (2026-09-26) the two bc files are byt
 its own file (`[ICE-Parameters] phase`, `[IGLOO-General] phase`); that routing is gated by
 `test/mi2-checks/p1_routing_checks.sh`. Since 2026-09-18 every input is generated from `input.ini` by `test/mi2-checks/regen_case.sh <case> <scratch> GPB BCB ICB
 [--install]` with ATLAS `main` (`76cd8a3` or later carries the per-phase BC payloads, the `modeling` token and the
-axis override `<phase>-type = symmetry`); the hand-copied files of 2026-09-16 are history. Reference numbers and
-their provenance: `REFERENCE-STATE.md`.
+axis override `<phase>-type = symmetry`); the hand-copied files of 2026-09-16 are history.
 
 Run: `figaro hydra-MI2 -p 4 solve` (≈ 15 min). Compare: `python3 jpl_compare.py`.
 Full double loading instead: set `krho` back to `0.30000E+00` in both bc files and restore `partE-ic.tec`
