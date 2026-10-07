@@ -29,7 +29,7 @@ import sys, re
 p = sys.argv[1]; txt = open(p).read()
 hdr_end = txt.index('\n', txt.index('VARLOCATION')) + 1
 head, body = txt[:hdr_end], txt[hdr_end:]
-names = re.findall(r'"([^"]+)"', re.search(r'VARIABLES\s*=\s*(.*)', head).group(1))
+names = [t.strip('"') for t in re.findall(r'"[^"]+"|[^\s,]+', re.search(r'VARIABLES\s*=\s*(.*)', head).group(1))]
 z = re.search(r'I\s*=\s*(\d+).*?J\s*=\s*(\d+).*?K\s*=\s*(\d+)', head, re.S); I, J, K = map(int, z.groups())
 nn, nc = I*J*K, (I-1)*(J-1)*(K-1)
 toks = body.split()

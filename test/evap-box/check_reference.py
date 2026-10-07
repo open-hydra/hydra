@@ -99,7 +99,7 @@ def read_columns_table(path):
         if not line:
             continue
         if line.upper().startswith("VARIABLES"):
-            names = re.findall(r'"([^"]+)"', line)
+            names = [t.strip('"') for t in re.findall(r'"[^"]+"|[^\s,]+', line.split("=", 1)[1])]
             continue
         if line.upper().startswith("ZONE"):
             if cur:
