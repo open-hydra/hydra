@@ -97,7 +97,7 @@ else:
     tend = re.findall(r'^MOSE \| Iter =\s*(\d+) \| Time = (\S+)', txt, re.M)
     print('  field %s at t=%s (last MOSE line: iter %s, t=%s)'
           % (field, t.group(1) if t else '?', tend[-1][0] if tend else '?', tend[-1][1] if tend else '?'))
-    check('"mi_tilde"' in head, 'the gas field carries the SA variable mi_tilde (nprim > np)')
+    check('mi_tilde' in re.sub(r'[",]', ' ', head.split('=', 1)[1]).split(), 'the gas field carries the SA variable mi_tilde (nprim > np)')
     d = read_cc(field)
     cellvars = [k for k in d if k not in ('x', 'y', 'z')]
     nonfinite = [k for k in cellvars if not np.isfinite(d[k]).all()]

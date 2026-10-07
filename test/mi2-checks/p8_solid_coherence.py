@@ -232,7 +232,7 @@ def read_block(path):
     I, J, K = (int(re.search(r'\b%s\s*=\s*(\d+)' % a, header, re.IGNORECASE).group(1)) for a in 'IJK')
     vals = [float(t) for t in body.split()]
     nn, nc = I * J * K, (I - 1) * (J - 1) * max(1, K - 1)
-    names = re.findall(r'"([^"]*)"', head)[3:]
+    names = [t.strip('"') for t in re.findall(r'"[^"]*"|[^\s,]+', re.search(r'VARIABLES\s*=\s*(.*)', head).group(1))][3:]
     return names, [vals[3 * nn + v * nc: 3 * nn + (v + 1) * nc] for v in range((len(vals) - 3 * nn) // nc)]
 
 

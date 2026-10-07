@@ -6,7 +6,7 @@ import numpy as np
 
 def read_cc(path):
     txt = open(path).read()
-    names = re.findall(r'"([^"]+)"', re.search(r'VARIABLES\s*=\s*(.*)', txt).group(1))
+    names = [t.strip('"') for t in re.findall(r'"[^"]+"|[^\s,]+', re.search(r'VARIABLES\s*=\s*(.*)', txt).group(1))]
     z = re.search(r'ZONE.*?I\s*=\s*(\d+).*?J\s*=\s*(\d+).*?K\s*=\s*(\d+)', txt, re.S)
     I, J, K = map(int, z.groups())
     body = txt[z.end():]; body = body[body.index('\n') + 1:]

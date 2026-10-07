@@ -37,7 +37,8 @@ python3 -c "import sys; sys.exit(0 if abs(float('$GTXT') - $G) <= 1e-12 * $G els
 
 mk() {  # mk <name> <N-coupling> -> scratch copy of the case with the short schedule and the coupling report
   local d=$T/$1; rm -rf "$d"; mkdir -p "$d"; cp -rp "$S/INPUT" "$S/MESH" "$S/input.ini" "$d/"
-  sed -i -e "s/^N-coupling *=.*/N-coupling    = $2/" -e "s/^MOSE-iter *=.*/MOSE-iter     = $MOSE_ITER/" "$d/input.ini"
+  sed -i -e "s/^N-coupling *=.*/N-coupling    = $2/" -e "s/^MOSE-iter *=.*/MOSE-iter     = $MOSE_ITER/" \
+         -e "s/^sol-diter *=.*/sol-diter     = $MOSE_ITER/" -e "s/^shell-diter *=.*/shell-diter   = 1/" "$d/input.ini"
   if grep -q '^\[MI2-Coupling\]' "$d/input.ini"; then sed -i '/^\[MI2-Coupling\]/a report = true' "$d/input.ini"
   else printf '\n[MI2-Coupling]\nreport = true\n' >> "$d/input.ini"; fi
   echo "$d"; }
