@@ -563,7 +563,7 @@ contains
     integer  :: b, i, j, k, f, m, n, lower, upper
     integer  :: i0, i1, j0, j1, k0, k1, ni, nj, nk
     real(R8) :: rhoi(nsc), vel(3), rho, R, gam, T, mu, kappa
-    real(R8) :: mSum
+    real(R8) :: mSum, mdot
     integer  :: nSum
 
     upper = 0
@@ -617,24 +617,23 @@ contains
         lower = upper + 1
         upper = upper + MOSE_domain%n_bf(b,f)
         mSum = 0._R8; nSum = 0
-        !$OMP PARALLEL DEFAULT(SHARED), PRIVATE(i,m,n)
+        !$OMP PARALLEL DEFAULT(SHARED), PRIVATE(i,m,n,mdot)
         !$OMP DO REDUCTION(+:mSum,nSum)
         do i = lower, upper
           call IGLOO%geoblock(b)%ijk2fmn ( MOSE_domain%bc(i)%i, MOSE_domain%bc(i)%j, &
                                            MOSE_domain%bc(i)%k, f, m, n )
           if (m<=0 .or. n<=0) cycle
-          associate ( cell => IGLOO%geoblock(b)%face(f)%cell(m,n) )
-            select case (MOSE_domain%bc(i)%type)
-            case (401, 402, 405, 406, 407)   ! mdot is the face mass flow MOSE computes [kg/s]
-              cell%mdotGas = MOSE_domain%bc(i)%mdot
-            case (403, 404, 420)             ! mdot is the prescribed mass flux [kg/(s m2)]
-              cell%mdotGas = MOSE_domain%bc(i)%mdot * cell%area
-            case default
-              cycle
-            end select
-            mSum = mSum + cell%mdotGas
-            nSum = nSum + 1
-          end associate
+          select case (MOSE_domain%bc(i)%type)
+          case (401, 402, 405, 406, 407)   ! mdot is the face mass flow MOSE computes [kg/s]
+            mdot = MOSE_domain%bc(i)%mdot
+          case (403, 404, 420)             ! mdot is the prescribed mass flux [kg/(s m2)]
+            mdot = MOSE_domain%bc(i)%mdot * IGLOO%geoblock(b)%face(f)%cell(m,n)%area
+          case default
+            cycle
+          end select
+          IGLOO%geoblock(b)%face(f)%cell(m,n)%mdotGas = mdot
+          mSum = mSum + mdot
+          nSum = nSum + 1
         enddo
         !$OMP END DO
         !$OMP END PARALLEL

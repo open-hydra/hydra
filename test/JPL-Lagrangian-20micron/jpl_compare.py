@@ -1,97 +1,140 @@
 #!/usr/bin/env python3
-"""Centreline / wall Mach of a hydra-MI2 JPL run vs Chang (1980).
+"""Axis and wall Mach number of a JPL nozzle run vs Chang (1980).
 
-Kept next to the session report because $CLAUDE_JOB_DIR/tmp is cleaned between sessions and this
-script was lost once already.
+Usage:
+    jpl_compare.py [FIELD ...] [--ref JPL_chang.dat] [--xmin 0.2] [--plot]
 
-Conventions re-used from the Phase-8 analysis (recorded in auto-memory), NOT re-derived:
-  * gas-field.tec vars: x y z rho(1) u v w p T g R mil kl   (g = gamma, R = 287.04)
-    x,y,z are NODAL (I x J x K); the other 10 are CELLCENTERED ((I-1) x (J-1) x (K-1)).
-    A uniform-shape parser silently produces garbage -- this bit me once (exit Mach 142738).
-  * M = |v| / sqrt(g*R*T)
-  * abscissa X = (x - x_throat)/D*, x_throat = 0.064207 m, r* = 0.02033740 m, D* = 2*r*
-  * for dp = 20 micron the comparand is "Chang MPL Axis" (MPL = 20um, MPS = 2um)
-  * j = 0 is the axis cell row, j = J-2 the wall row; each row has its OWN x (curved mesh) --
-    never reuse the axis row's x for another row.
+FIELD defaults to OUTPUT/gas-field.tec next to this script; with several fields, each one is
+reported. For every field, the axis (first cell row) is compared with "Chang MPL Axis" and the wall
+(last cell row) with "Chang MPL Wall" (MPL = the 20 micron particles), over X > xmin:
 
-Validation (reproduce before trusting a new number):
-  pre-dual-fix  OUTPUT.axisfix-dfce11c -> exit M 2.9085, axis RMS 0.4350, axis mean +0.3596
-  post-dual-fix OUTPUT                 -> exit M 2.0890, axis RMS 0.0944, axis mean -0.0650
+    M = |u| / sqrt(g R T)          X = (x - x_throat) / D*
+
+Each cell row has its own x (the mesh is curved), taken at the cell centre of the k = 0 face.
 """
-import sys
+import argparse
+import functools
 import re
+import sys
+from pathlib import Path
+
 import numpy as np
 
-X_THROAT = 0.064207
-D_STAR = 2.0 * 0.02033740
+# Find ORION's Python reader even when it is not installed in the active environment
+HERE = Path(__file__).resolve().parent
+for parent in [HERE, *HERE.parents]:
+    candidate = parent / "lib" / "ORION" / "src" / "python"
+    if candidate.exists():
+        sys.path.insert(0, str(candidate))
+        break
+
+try:
+    from ORION import read_TEC
+except ModuleNotFoundError:
+    raise ModuleNotFoundError(
+        "ORION package not found. Run 'conda activate base' or install ORION in the current Python environment."
+    )
+
+X_THROAT = 0.064207              # throat abscissa [m]
+D_STAR   = 2.0 * 0.02033740      # throat diameter [m]
+ROWS = {'axis': (0, 'Chang MPL Axis'), 'wall': (-1, 'Chang MPL Wall')}
 
 
-def read_gas_field(path):
-    lines = open(path).read().splitlines()
-    hdr = lines[1]
-    I = int(re.search(r'I\s*=\s*(\d+)', hdr).group(1))
-    J = int(re.search(r'J\s*=\s*(\d+)', hdr).group(1))
-    K = int(re.search(r'K\s*=\s*(\d+)', hdr).group(1))
-    vals = np.array([float(t) for t in lines[2:] if t.strip()])
-
-    n_nod = I * J * K
-    n_cel = (I - 1) * (J - 1) * max(K - 1, 1)
-    off = 0
-    nodal = []
-    for _ in range(3):                                   # x, y, z
-        nodal.append(vals[off:off + n_nod].reshape(K, J, I))
-        off += n_nod
-    cell = []
-    for _ in range(10):                                  # rho u v w p T g R mil kl
-        cell.append(vals[off:off + n_cel].reshape(max(K - 1, 1), J - 1, I - 1))
-        off += n_cel
-    assert off == vals.size, f'leftover {vals.size - off} values'
-    return nodal, cell, (I, J, K)
+@functools.lru_cache(maxsize=None)
+def load_field(path):
+    """Block 1 of a MOSE field: nodal (x, y) and the cell-centred variables, by name."""
+    xb, yb, _, vb, names = read_TEC(str(path))
+    var = dict(zip(names[3:], vb[0]))
+    return xb[0], yb[0], var
 
 
-def centreline(path, jcell=0):
-    (xn, yn, zn), c, (I, J, K) = read_gas_field(path)
-    xc = 0.25 * (xn[0, jcell, :-1] + xn[0, jcell, 1:] +
-                 xn[0, jcell + 1, :-1] + xn[0, jcell + 1, 1:])
-    u, v, w = c[1][0, jcell], c[2][0, jcell], c[3][0, jcell]
-    T, g, R = c[5][0, jcell], c[6][0, jcell], c[7][0, jcell]
-    M = np.sqrt(u * u + v * v + w * w) / np.sqrt(g * R * T)
+def mach_row(path, jcell):
+    """X and Mach number along cell row jcell (0 = axis, -1 = wall)."""
+    xn, _, var = load_field(path)
+    j = jcell % var['T'].shape[1]
+    xc = 0.25 * (xn[:-1, j, 0] + xn[1:, j, 0] + xn[:-1, j + 1, 0] + xn[1:, j + 1, 0])
+    u, v, w = (var[k][:, j, 0] for k in ('u', 'v', 'w'))
+    M = np.sqrt(u * u + v * v + w * w) / np.sqrt(var['g'][:, j, 0] * var['R'][:, j, 0] * var['T'][:, j, 0])
     return (xc - X_THROAT) / D_STAR, M
 
 
+@functools.lru_cache(maxsize=None)
 def chang_zone(path, name):
-    lines = open(path).read().splitlines()
-    for i, ln in enumerate(lines):
-        if f'ZONE T="{name}"' in ln:
+    """(X, M) of one zone of the reference file (1-D zones, BLOCK packing: all X, then all M)."""
+    lines = Path(path).read_text().splitlines()
+    for i, line in enumerate(lines):
+        if f'ZONE T="{name}"' in line:
             n = int(re.search(r'I\s*=\s*(\d+)', lines[i + 1]).group(1))
             vals = []
-            for ln2 in lines[i + 2:]:
-                for t in ln2.split():
-                    try:
-                        vals.append(float(t))
-                    except ValueError:
-                        pass
+            for line2 in lines[i + 2:]:
+                try:
+                    vals += [float(t) for t in line2.split()]
+                except ValueError:
+                    continue
                 if len(vals) >= 2 * n:
                     break
-            vals = np.array(vals[:2 * n])
-            return vals[:n], vals[n:]                     # BLOCK packing: X then M
-    raise KeyError(name)
+            return np.array(vals[:n]), np.array(vals[n:2 * n])
+    raise KeyError(f'zone "{name}" not in {path}')
 
 
-def report(run, ref, label, zone='Chang MPL Axis', jcell=0):
-    X, M = centreline(run, jcell)
+def compare(field, ref, zone, jcell, xmin=0.2):
+    """Exit Mach, RMS and mean of (run - reference) over X > xmin."""
+    X, M = mach_row(field, jcell)
     xr, mr = chang_zone(ref, zone)
-    sel = X > 0.2
+    sel = X > xmin
     d = M[sel] - np.interp(X[sel], xr, mr)
-    rms, mean = float(np.sqrt((d ** 2).mean())), float(d.mean())
+    return float(M[-1]), float(np.sqrt((d ** 2).mean())), float(d.mean()), float(mr[-1])
+
+
+def report(run, ref, label, zone='Chang MPL Axis', jcell=0, xmin=0.2):
+    """Print and return (exit Mach, RMS, mean) for one row (kept for compare_3solver.py)."""
+    exit_m, rms, mean, ref_exit = compare(run, ref, zone, jcell, xmin)
     print(f'{label}')
-    print(f'   exit-plane Mach : {M[-1]:.4f}    (ref exit {mr[-1]:.3f})')
-    print(f'   vs {zone}, X>0.2 : RMS {rms:.4f}   mean {mean:+.4f}')
-    return float(M[-1]), rms, mean
+    print(f'   exit-plane Mach : {exit_m:.4f}    (ref exit {ref_exit:.3f})')
+    print(f'   vs {zone}, X>{xmin:g} : RMS {rms:.4f}   mean {mean:+.4f}')
+    return exit_m, rms, mean
+
+
+def plot(fields, ref):
+    import matplotlib.pyplot as plt
+    fig, ax = plt.subplots(figsize=(10, 5))
+    for row, (jcell, zone) in ROWS.items():
+        xr, mr = chang_zone(ref, zone)
+        ax.plot(xr, mr, 'o', markersize=4, alpha=0.7, label=zone)
+        for f in fields:
+            X, M = mach_row(f, jcell)
+            ax.plot(X, M, linewidth=2, label=f'{f} ({row})' if len(fields) > 1 else row)
+    ax.set_xlabel('(x - x*) / D*')
+    ax.set_ylabel('Mach')
+    ax.grid(True)
+    ax.legend()
+    plt.tight_layout()
+    plt.show()
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
+    parser.add_argument('fields', nargs='*', default=[str(HERE / 'OUTPUT' / 'gas-field.tec')],
+                        help='MOSE gas field(s) (default: OUTPUT/gas-field.tec next to this script)')
+    parser.add_argument('--ref', default=str(HERE / 'JPL_chang.dat'), help='Chang (1980) reference curves')
+    parser.add_argument('--xmin', type=float, default=0.2, help='compare over X > xmin (default 0.2)')
+    parser.add_argument('--plot', action='store_true', help='plot Mach vs X with the reference')
+    args = parser.parse_args()
+
+    for f in args.fields:
+        if not Path(f).is_file():
+            sys.exit(f'{f}: not found (is sol-diter set in [MOSE-IO]?)')
+
+    for f in args.fields:
+        print(f'{f}  (X > {args.xmin:g})')
+        print(f'   {"row":<5} {"exit M":>7} {"ref":>6} {"RMS":>7} {"mean":>8}')
+        for row, (jcell, zone) in ROWS.items():
+            exit_m, rms, mean, ref_exit = compare(f, args.ref, zone, jcell, args.xmin)
+            print(f'   {row:<5} {exit_m:7.4f} {ref_exit:6.3f} {rms:7.4f} {mean:+8.4f}')
+
+    if args.plot:
+        plot(args.fields, args.ref)
 
 
 if __name__ == '__main__':
-    report(sys.argv[1], sys.argv[2],
-           sys.argv[3] if len(sys.argv) > 3 else sys.argv[1],
-           zone=sys.argv[4] if len(sys.argv) > 4 else 'Chang MPL Axis',
-           jcell=int(sys.argv[5]) if len(sys.argv) > 5 else 0)
+    main()

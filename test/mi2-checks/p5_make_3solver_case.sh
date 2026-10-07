@@ -102,7 +102,7 @@ files were copied by hand from the two single-phase cases (2026-09-16); ATLAS ca
 writes per-phase BC payloads (plan A1) and the `modeling` token (A4) — the f3/f4 patches of `partL-bc.txt`
 are still not ATLAS-expressible.
 
-Run: `figaro hydra-MI2 -p 4 solve` (≈ 15 min). Compare: `python3 jpl_compare.py OUTPUT/gas-field.tec JPL_chang.dat`.
+Run: `figaro hydra-MI2 -p 4 solve` (≈ 15 min). Compare: `python3 jpl_compare.py`.
 Full double loading instead: set `krho` back to `0.30000E+00` in both bc files and restore `partE-ic.tec`
 from `../JPL-Eulerian-20micron/INPUT/part-ic.tec`.
 EOF
