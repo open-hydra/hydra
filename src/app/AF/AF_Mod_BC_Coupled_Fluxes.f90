@@ -10,6 +10,7 @@ contains
   subroutine BC_Coupled_Fluxes ( FUSS_domain, ARES_domain, level )
     use hydraAF_Lib_Ghost
     use hydraAF_Lib_BC_Coupled_Fluxes
+    use hydraAF_Lib_Coupling_Segments, only: Compute_Coupling_Segment_Fluxes
     use hydraAF_Mod_CouplingExchange, only: exchange_coupling_Tg_P, exchange_coupling_Pg_matID
     use FUSS_Advanced_Types_m
     use ARES_Advanced_Types_m
@@ -37,6 +38,9 @@ contains
 
     ! Compute ARES Flux
     call Compute_ARES_Flux ( FUSS_domain, ARES_domain, level )
+
+    ! Type 104 (chimera coupling): segments of the non-conforming interface, exchanged as in 103
+    call Compute_Coupling_Segment_Fluxes ( FUSS_domain, ARES_domain, level )
 
   end subroutine BC_Coupled_Fluxes
 

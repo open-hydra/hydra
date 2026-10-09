@@ -10,6 +10,7 @@ program hydra_program
   use hydraMF_IO_Wall
   use hydraMF_Lib_Metrics,           only: Setup_Coupled_Metrics
   use hydraMF_Lib_Ghost,             only: Fill_Coupled_Ghost_Cell
+  use hydraMF_Lib_Coupling_Segments, only: Check_Chimera_Coupling_Donors, Setup_Coupling_Segments
   use hydraMF_Mod_dt,                only: Fix_Global_dt
   use hydraMF_Mod_BC_Coupled_Fluxes, only: BC_Coupled_Fluxes
   use FUSS_Advanced_Types_m, only: FUSS_simulation_type
@@ -115,6 +116,9 @@ program hydra_program
       ! the partner_of_* indices even in serial.
       call build_coupling_schedule( FUSS_simulation%domain(m), MOSE_simulation%domain(m), m )
       call Setup_Coupled_Metrics( FUSS_simulation%domain(m), MOSE_simulation%domain(m), m )
+      ! Type 104 is serial only for now: stop before any donor is read
+      call Check_Chimera_Coupling_Donors( FUSS_simulation%domain(m), MOSE_simulation%domain(m), m )
+      call Setup_Coupling_Segments( FUSS_simulation%domain(m), MOSE_simulation%domain(m), m )
       call Fill_Coupled_Ghost_Cell( FUSS_simulation%domain(m), MOSE_simulation%domain(m), m )
     enddo
   endif

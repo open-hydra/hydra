@@ -196,7 +196,8 @@ contains
     use FUSS_Advanced_Types_m
     use FUSS_Global_m
     use hydraMF_Lib_BC_Coupled_Wall_Temperature, only: FUSS_BC_Coupled_Wall_Temperature, MOSE_BC_Coupled_Wall_Temperature
-    use hydraMF_Mod_CouplingExchange, only: is_FUSS_bc_local_local, is_MOSE_bc_local_local, & 
+    use hydraMF_Lib_Coupling_Segments, only: Segment_Wall_Output_FUSS, Segment_Wall_Output_MOSE
+    use hydraMF_Mod_CouplingExchange, only: is_FUSS_bc_local_local, is_MOSE_bc_local_local, &
                                             get_F_remote_P, get_M_remote_matID
 #ifdef USE_MPI                                      
     use FUSS_Mod_MPI, only: FUSS_block_owner => block_owner, mpi_rank_, mpi_is_root, mpi_reduce_sum_r8_array
@@ -233,12 +234,16 @@ contains
         lower = upper + 1                        ! Update lower bound
         upper = upper + FUSS_domain % n_bf(b,f)  ! Upper bound: add number of cells on face f of block b
 
+        ! wall_i indexes every entry of the coupling faces, as in the gather below:
+        ! a 104 face may hold entries of other BC types
+        if (.not. FUSS_obj_io_bc%coupling_flag(b,f)) cycle
+
         do i = lower, upper
+          wall_i = wall_i + 1
           Ovar = 0d0
           select case ( FUSS_domain % bc(i) % type )
             case (103)
               Bm  = FUSS_domain % bc(i) % b
-              wall_i = wall_i + 1
 #ifdef USE_MPI
               ! Skip entries whose FUSS primary block is not on this rank.
               if (allocated(FUSS_block_owner)) then
@@ -275,6 +280,19 @@ contains
                                           FUSS_domain%bc(i)%Mg(1), FUSS_domain%bc(i)%Tg, &
                                           FUSS_new_flux, Ovar(6:7) )
            
+              FUSS_wall_buf(2*(wall_i-1)+1 : 2*wall_i) = Ovar(6:7)
+
+            case (104)
+              Bm  = FUSS_domain % bc(i) % b
+#ifdef USE_MPI
+              if (allocated(FUSS_block_owner)) then
+                if (FUSS_block_owner(Bm) /= mpi_rank_) cycle
+              end if
+#endif
+
+              ! 104: the segments of the face, averaged by area (hydraMF_Lib_Coupling_Segments)
+              call Segment_Wall_Output_FUSS ( FUSS_domain, MOSE_domain, level, i, Ovar(6:7) )
+
               FUSS_wall_buf(2*(wall_i-1)+1 : 2*wall_i) = Ovar(6:7)
           end select
         enddo
@@ -333,12 +351,16 @@ contains
         lower = upper + 1                        ! Update lower bound
         upper = upper + MOSE_domain % n_bf(b,f)  ! Upper bound: add number of cells on face f of block b
 
+        ! wall_i indexes every entry of the coupling faces, as in the gather below:
+        ! a 104 face may hold entries of other BC types
+        if (.not. MOSE_obj_io_bc%coupling_flag(b,f)) cycle
+
         do i = lower, upper
+          wall_i = wall_i + 1
           Ovar = 0d0
           select case ( MOSE_domain % bc(i) % type )
             case (103)
               Bm  = MOSE_domain % bc(i) % b
-              wall_i = wall_i + 1
 #ifdef USE_MPI
               ! Skip entries whose MOSE primary block is not on this rank.
               if (allocated(MOSE_block_owner)) then
@@ -370,6 +392,19 @@ contains
                                           MOSE_new_flux, Ovar, &
                                           k_rough = MOSE_domain%bc(i)%k_rough )
              
+              MOSE_wall_buf(7*(wall_i-1)+1 : 7*wall_i) = Ovar(1:7)
+
+            case (104)
+              Bm  = MOSE_domain % bc(i) % b
+#ifdef USE_MPI
+              if (allocated(MOSE_block_owner)) then
+                if (MOSE_block_owner(Bm) /= mpi_rank_) cycle
+              end if
+#endif
+
+              ! 104: the segments of the face, averaged by area (hydraMF_Lib_Coupling_Segments)
+              call Segment_Wall_Output_MOSE ( FUSS_domain, MOSE_domain, level, i, Ovar )
+
               MOSE_wall_buf(7*(wall_i-1)+1 : 7*wall_i) = Ovar(1:7)
 
           end select

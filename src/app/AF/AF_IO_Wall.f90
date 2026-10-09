@@ -205,7 +205,8 @@ contains
     use FUSS_Advanced_Types_m
     use FUSS_Global_m
     use hydraAF_Lib_BC_Coupled_Wall_Temperature, only: FUSS_BC_Coupled_Wall_Temperature, ARES_BC_Coupled_Wall_Temperature
-    use hydraAF_Mod_CouplingExchange, only: is_FUSS_bc_local_local, is_ARES_bc_local_local, & 
+    use hydraAF_Lib_Coupling_Segments, only: Segment_Wall_Output_FUSS, Segment_Wall_Output_ARES
+    use hydraAF_Mod_CouplingExchange, only: is_FUSS_bc_local_local, is_ARES_bc_local_local, &
                                             get_F_remote_P, get_M_remote_matID, &
                                             get_k_wall_FUSS, get_k_wall_ARES
 #ifdef USE_MPI                                      
@@ -289,6 +290,20 @@ contains
                                           k_fluid_wall = get_k_wall_FUSS(level, i) )
            
               FUSS_wall_buf(2*(wall_i-1)+1 : 2*wall_i) = Ovar(6:7)
+
+            case (104)
+              Bm  = FUSS_domain % bc(i) % b
+              wall_i = wall_i + 1
+#ifdef USE_MPI
+              if (allocated(FUSS_block_owner)) then
+                if (FUSS_block_owner(Bm) /= mpi_rank_) cycle
+              end if
+#endif
+
+              ! 104: the segments of the face, averaged by area (hydraAF_Lib_Coupling_Segments)
+              call Segment_Wall_Output_FUSS ( FUSS_domain, ARES_domain, level, i, Ovar(6:7) )
+
+              FUSS_wall_buf(2*(wall_i-1)+1 : 2*wall_i) = Ovar(6:7)
           end select
         enddo
 
@@ -311,9 +326,9 @@ contains
 
           do i = lower, upper
             ! Count exactly the entries the first loop counted: a face flagged as coupled
-            ! may still carry non-103 entries, and taking them in would shift the buffer
+            ! may still carry non-103/104 entries, and taking them in would shift the buffer
             ! for the whole rest of the block.
-            if (FUSS_domain%bc(i)%type /= 103) cycle
+            if (FUSS_domain%bc(i)%type /= 103 .and. FUSS_domain%bc(i)%type /= 104) cycle
             wall_i = wall_i + 1
             Ovar(6:7) = FUSS_wall_buf(2*(wall_i-1)+1 : 2*wall_i)
 
@@ -390,6 +405,20 @@ contains
              
               ARES_wall_buf(7*(wall_i-1)+1 : 7*wall_i) = Ovar(1:7)
 
+            case (104)
+              Bm  = ARES_domain % bc(i) % b
+              wall_i = wall_i + 1
+#ifdef USE_MPI
+              if (allocated(ARES_block_owner)) then
+                if (ARES_block_owner(Bm) /= mpi_rank_) cycle
+              end if
+#endif
+
+              ! 104: the segments of the face, averaged by area (hydraAF_Lib_Coupling_Segments)
+              call Segment_Wall_Output_ARES ( FUSS_domain, ARES_domain, level, i, Ovar )
+
+              ARES_wall_buf(7*(wall_i-1)+1 : 7*wall_i) = Ovar(1:7)
+
           end select
         enddo
 
@@ -411,7 +440,7 @@ contains
           bb = bb + 1
 
           do i = lower, upper
-            if (ARES_domain%bc(i)%type /= 103) cycle
+            if (ARES_domain%bc(i)%type /= 103 .and. ARES_domain%bc(i)%type /= 104) cycle
             wall_i = wall_i + 1
             Ovar(1:7) = ARES_wall_buf(7*(wall_i-1)+1 : 7*wall_i)
 
