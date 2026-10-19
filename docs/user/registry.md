@@ -9,6 +9,7 @@ Core coupling-loop controls.
 | `N-coupling` | `1000000000` | Number of coupling iterations (array supported) |
 | `FUSS-iter` | `1` | Number of FUSS iterations per coupling step (array supported) |
 | `MOSE-iter` | `1` | Number of MOSE iterations per coupling step (array supported) |
+| `ARES-iter` | `1` | Number of ARES iterations per coupling step (array supported, `hydra-AF`) |
 | `time-accurate` | `false` | Enables synchronized time-accurate mode |
 | `time-threshold` | `1e30` | Maximum simulation time |
 | `iter-threshold` | `1000000000` | Maximum total iteration threshold |
