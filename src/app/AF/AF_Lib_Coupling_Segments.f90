@@ -14,13 +14,19 @@
 !>    at the previous call (kS, one per segment).
 !> On conforming faces there is one segment per face and the scheme is 103.
 !>
+!> MPI: every rank builds the same, whole segment list, from the face geometry
+!> summed over the ranks, and evaluates only the segments of the faces whose
+!> block it owns. FUSS and ARES partition their blocks independently, so the two
+!> faces of a segment can live on different ranks: then the partner cell state
+!> (Update_Partners) and the two flux estimates, with kS, (Exchange_Estimates)
+!> cross between the two owner ranks. With both faces on one rank the partner
+!> cell is read in place, as in serial.
+!>
 !> Still to come:
 !>  - partner metric: only the normal distance of the partner cell centre is
 !>    used, exact when the mesh is orthogonal at the interface; the partner
 !>    tangential terms are dropped. The full metric, oriented as
 !>    Setup_Coupled_Metrics does for 103, is the next step.
-!>  - MPI: partner cells are read in place, so 104 runs serial
-!>    (Check_Chimera_Coupling_Donors).
 module hydraAF_Lib_Coupling_Segments
   use iso_fortran_env, only: I4 => int32, R8 => real64
   use FUSS_Advanced_Types_m
@@ -28,10 +34,22 @@ module hydraAF_Lib_Coupling_Segments
 
   implicit none
   private
-  public :: Check_Chimera_Coupling_Donors, Setup_Coupling_Segments, Compute_Coupling_Segment_Fluxes
+  public :: Setup_Coupling_Segments, Compute_Coupling_Segment_Fluxes, Update_Coupling_Segment_Partners
   public :: Segment_Wall_Output_FUSS, Segment_Wall_Output_ARES
 
   integer, parameter :: max_levels = 16
+  integer, parameter :: NGEO = 20                ! reals of one face geometry, packed for the sum over the ranks
+  integer, parameter :: NXF  = 2                 ! FUSS partner state of a segment: T, matID
+  integer, parameter :: TAG_SEG_STATE = 7104     ! MPI tags, apart from the 103 ones (7001-7007)
+  integer, parameter :: TAG_SEG_FLUX  = 7105
+
+  !> Segments split between this rank and one other rank, in increasing order
+  type :: peer_type
+    integer :: rank = -1
+    integer,  allocatable :: sFA(:)              ! FUSS face on this rank, ARES face on the other
+    integer,  allocatable :: sAF(:)              ! ARES face on this rank, FUSS face on the other
+    real(R8), allocatable :: sbuf(:), rbuf(:)    ! message to / from the other rank
+  end type peer_type
 
   !> Segments of the 104 interface of one multigrid level
   type :: segment_set_type
@@ -48,6 +66,14 @@ module hydraAF_Lib_Coupling_Segments
     real(R8), allocatable :: qF(:)               ! FUSS estimate of the energy flux through the segment
     real(R8), allocatable :: fA(:,:)             ! ARES estimate of the fluxes through the segment (nprim, ns)
     real(R8), allocatable :: kS(:)               ! fluid wall conductivity k_l+k_t of the segment, lagged by one call
+    ! MPI: the lists above are the same on every rank, each rank works on its own faces
+    integer,  allocatable :: oF(:), oA(:)        ! rank owning the FUSS / ARES face of the segment
+    integer :: nmyF = 0, nmyA = 0                ! 104 faces of each solver on this rank
+    integer,  allocatable :: myF(:), myA(:)      ! their 104 face numbers
+    real(R8), allocatable :: xA(:,:)             ! ARES partner cell, as the FUSS face sees it: T, P(1:np) (1+np, ns)
+    real(R8), allocatable :: xF(:,:)             ! FUSS partner cell, as the ARES face sees it: T, matID (NXF, ns)
+    integer :: npeer = 0                         ! ranks this one shares segments with
+    type(peer_type), allocatable :: peer(:)
   end type segment_set_type
 
   type(segment_set_type), target, save :: segs(max_levels)
@@ -67,64 +93,16 @@ module hydraAF_Lib_Coupling_Segments
 
 contains
 
-  !> Type 104 has no cross-rank exchange yet: the coupling reads the partner cells
-  !> of the other solver in place, so every donor of an entry whose block this
-  !> rank owns must belong to this rank too. Run once per level at setup, before
-  !> Setup_Coupling_Segments; always satisfied in serial.
-  subroutine Check_Chimera_Coupling_Donors ( FUSS_domain, ARES_domain, level )
-    use FUSS_Mod_MPI, only: FUSS_is_local_block => is_local_block, mpi_abort_all
-    use ARES_Mod_MPI, only: ARES_is_local_block => is_local_block
-    implicit none
-    type(FUSS_domain_type), intent(in) :: FUSS_domain
-    type(ARES_domain_type), intent(in) :: ARES_domain
-    integer, intent(in)                :: level
-    ! Local
-    integer :: ii, i, c, n_remote
-    character(len=256) :: msg
-
-    ! Entries with at least one donor on another rank: FUSS entries read ARES
-    ! donors, ARES entries read FUSS donors
-    n_remote = 0
-    do ii = 1, FUSS_domain % n_local_bc
-      i = FUSS_domain % local_bc_idx(ii)
-      if (FUSS_domain % bc(i) % type /= 104) cycle
-      do c = 1, sum ( FUSS_domain % bc(i) % ni )
-        if (.not. ARES_is_local_block ( FUSS_domain % bc(i) % donorID(c,1) )) then
-          n_remote = n_remote + 1
-          exit
-        endif
-      enddo
-    enddo
-    do ii = 1, ARES_domain % n_local_bc
-      i = ARES_domain % local_bc_idx(ii)
-      if (ARES_domain % bc(i) % type /= 104) cycle
-      do c = 1, sum ( ARES_domain % bc(i) % ni )
-        if (.not. FUSS_is_local_block ( ARES_domain % bc(i) % donorID(c,1) )) then
-          n_remote = n_remote + 1
-          exit
-        endif
-      enddo
-    enddo
-
-    if (n_remote > 0) then
-      write(msg,'(I0,A,I0,A)') n_remote, ' coupled chimera (104) entries in the level-', level, &
-        ' BC files have donors on another MPI rank. BC 104 does not exchange donors between '// &
-        'ranks yet: run it serial.'
-      call mpi_abort_all(trim(msg))
-    endif
-
-  end subroutine Check_Chimera_Coupling_Donors
-
-
   !> Build the segments of the 104 interface of one level, once at setup.
   !> The partner faces of a FUSS 104 face are searched among the ARES cells that
   !> ATLAS lists as donors of its first ghost row (the ARES cells next to the
   !> interface overlap that ghost cell); an ARES 104 face of such a cell makes a
   !> segment when it looks at the FUSS face, lies on the same surface and the
   !> two faces overlap. Every 104 face must end up with at least one segment.
+  !> Collective under MPI: every rank calls it and builds the same segments.
   subroutine Setup_Coupling_Segments ( FUSS_domain, ARES_domain, level )
-    use ARES_Global_m, only: nprim
-    use FUSS_Mod_MPI,  only: mpi_is_root, mpi_abort_all
+    use ARES_Global_m, only: nprim, np
+    use FUSS_Mod_MPI,  only: mpi_is_root, mpi_abort_all, mpi_rank_, mpi_allreduce_sum_r8_array
     use hydraAF_Mod_CouplingExchange, only: K_WALL_UNSET
     implicit none
     type(FUSS_domain_type), intent(in) :: FUSS_domain
@@ -135,7 +113,7 @@ contains
     type(face_geo_type), allocatable :: gF(:), gA(:)
     type(int_grid_type), allocatable :: head(:)
     integer,  allocatable :: next(:), found(:), pos(:)
-    real(R8), allocatable :: covF(:), covA(:)
+    real(R8), allocatable :: covF(:), covA(:), gbuf(:)
     integer  :: i, j, e, m, c, sg, nfound, Bs, Is, Js, Ks
     character(len=256) :: msg
 
@@ -180,13 +158,26 @@ contains
 
 
     ! Calcolo metria e geometria delle facce con 104
-    allocate ( gF(set%nF), gA(set%nA) )
+    ! Each rank computes the faces of the blocks it owns (under MPI the other ranks
+    ! may have freed their mesh) and the sum over the ranks gives all of them to all
+    allocate ( gF(set%nF), gA(set%nA), gbuf(NGEO*(set%nF+set%nA)) )
+    gbuf = 0d0
     do e = 1, set%nF
-      gF(e) = FUSS_Face_Geometry ( FUSS_domain, set%eF(e) )
+      if (FUSS_Owner ( FUSS_domain % bc(set%eF(e)) % b ) /= mpi_rank_) cycle
+      call Pack_Geo ( FUSS_Face_Geometry ( FUSS_domain, set%eF(e) ), gbuf(NGEO*(e-1)+1 : NGEO*e) )
     enddo
     do e = 1, set%nA
-      gA(e) = ARES_Face_Geometry ( ARES_domain, set%eA(e) )
+      if (ARES_Owner ( ARES_domain % bc(set%eA(e)) % b ) /= mpi_rank_) cycle
+      call Pack_Geo ( ARES_Face_Geometry ( ARES_domain, set%eA(e) ), gbuf(NGEO*(set%nF+e-1)+1 : NGEO*(set%nF+e)) )
     enddo
+    call mpi_allreduce_sum_r8_array ( gbuf, size(gbuf) )
+    do e = 1, set%nF
+      gF(e) = Unpack_Geo ( gbuf(NGEO*(e-1)+1 : NGEO*e) )
+    enddo
+    do e = 1, set%nA
+      gA(e) = Unpack_Geo ( gbuf(NGEO*(set%nF+e-1)+1 : NGEO*(set%nF+e)) )
+    enddo
+    deallocate ( gbuf )
 
     ! ARES cell -> its 104 faces (up to 6), as a linked list per block
     allocate ( head(ARES_domain%nb), next(set%nA) )
@@ -277,10 +268,16 @@ contains
     endif
 
     allocate ( set%qF(set%ns), set%fA(nprim, set%ns), set%kS(set%ns) )
+    allocate ( set%xA(1+np, set%ns), set%xF(NXF, set%ns) )
     set%qF = 0d0
     set%fA = 0d0
     ! No fluid wall conductivity yet: both wall routines fall back to their local estimate
     set%kS = K_WALL_UNSET
+    set%xA = 0d0
+    set%xF = 0d0
+
+    ! Ranks of the two faces of every segment, and what this rank shares with the others
+    call Setup_Ranks ( set, FUSS_domain, ARES_domain, 1+np )
     set%ready = .true.
 
     if (mpi_is_root) then
@@ -288,6 +285,9 @@ contains
                                          ' ARES faces, ', set%ns, ' segments'
       write(*,'(A,2F10.6,A,2F10.6)') '   coverage of the faces by their segments: FUSS', minval(covF), maxval(covF), &
                                      '   ARES', minval(covA), maxval(covA)
+      if (any(set%oF /= set%oA)) then
+        write(*,'(A,I0,A)') '   ', count(set%oF /= set%oA), ' segments have their two faces on different MPI ranks'
+      endif
       if (max(maxval(gF%ortho), maxval(gA%ortho)) > 1d-3) then
         write(*,'(A,ES9.2,A)') '   WARNING: the mesh is not orthogonal at the 104 interface (tangential/normal metric ', &
           max(maxval(gF%ortho), maxval(gA%ortho)), '): this version neglects the partner tangential terms.'
@@ -328,12 +328,88 @@ contains
   end subroutine Setup_Coupling_Segments
 
 
+  !> Ranks of the two faces of every segment, the 104 faces of this rank and the
+  !> segments it shares with each other rank. nxa is the size of the ARES partner
+  !> state; the buffers are sized for the partner states, the larger exchange.
+  subroutine Setup_Ranks ( set, FUSS_domain, ARES_domain, nxa )
+    use FUSS_Mod_MPI, only: mpi_rank_, mpi_size_
+    implicit none
+    type(segment_set_type), intent(inout) :: set
+    type(FUSS_domain_type), intent(in)    :: FUSS_domain
+    type(ARES_domain_type), intent(in)    :: ARES_domain
+    integer, intent(in)                   :: nxa
+    ! Local
+    integer, allocatable :: nFA(:), nAF(:), slot(:)
+    integer :: sg, e, p, r
+
+    allocate ( set%oF(set%ns), set%oA(set%ns) )
+    do sg = 1, set%ns
+      set%oF(sg) = FUSS_Owner ( FUSS_domain % bc(set%sF(sg)) % b )
+      set%oA(sg) = ARES_Owner ( ARES_domain % bc(set%sA(sg)) % b )
+    enddo
+
+    ! 104 faces whose block this rank owns
+    allocate ( set%myF(set%nF), set%myA(set%nA) )
+    set%nmyF = 0
+    do e = 1, set%nF
+      if (FUSS_Owner ( FUSS_domain % bc(set%eF(e)) % b ) /= mpi_rank_) cycle
+      set%nmyF = set%nmyF + 1
+      set%myF(set%nmyF) = e
+    enddo
+    set%nmyA = 0
+    do e = 1, set%nA
+      if (ARES_Owner ( ARES_domain % bc(set%eA(e)) % b ) /= mpi_rank_) cycle
+      set%nmyA = set%nmyA + 1
+      set%myA(set%nmyA) = e
+    enddo
+
+    ! Segments with one face here and the other on rank r
+    allocate ( nFA(0:mpi_size_-1), nAF(0:mpi_size_-1), slot(0:mpi_size_-1) )
+    nFA = 0
+    nAF = 0
+    do sg = 1, set%ns
+      if (set%oF(sg) == set%oA(sg)) cycle
+      if (set%oF(sg) == mpi_rank_) nFA(set%oA(sg)) = nFA(set%oA(sg)) + 1
+      if (set%oA(sg) == mpi_rank_) nAF(set%oF(sg)) = nAF(set%oF(sg)) + 1
+    enddo
+    set%npeer = count ( nFA + nAF > 0 )
+    allocate ( set%peer(set%npeer) )
+    slot = 0
+    p = 0
+    do r = 0, mpi_size_ - 1
+      if (nFA(r) + nAF(r) == 0) cycle
+      p = p + 1
+      slot(r) = p
+      set%peer(p)%rank = r
+      allocate ( set%peer(p)%sFA(nFA(r)), set%peer(p)%sAF(nAF(r)) )
+      allocate ( set%peer(p)%sbuf(NXF*nFA(r) + nxa*nAF(r)), set%peer(p)%rbuf(nxa*nFA(r) + NXF*nAF(r)) )
+    enddo
+    nFA = 0
+    nAF = 0
+    do sg = 1, set%ns
+      if (set%oF(sg) == set%oA(sg)) cycle
+      if (set%oF(sg) == mpi_rank_) then
+        r = set%oA(sg)
+        nFA(r) = nFA(r) + 1
+        set%peer(slot(r))%sFA(nFA(r)) = sg
+      endif
+      if (set%oA(sg) == mpi_rank_) then
+        r = set%oF(sg)
+        nAF(r) = nAF(r) + 1
+        set%peer(slot(r))%sAF(nAF(r)) = sg
+      endif
+    enddo
+
+  end subroutine Setup_Ranks
+
+
   !> Coupled fluxes of the 104 faces. On every segment the FUSS and ARES estimates
   !> come from the 103 routines with the partner cell; each face then takes,
   !> summed over its segments, 0.5*own - 0.5*partner energy flux, as the 103 pair
   !> of faces does. As in Compute_FUSS_Flux / Compute_ARES_Flux, the FUSS side
   !> reads the fluid wall conductivity of the previous call and the ARES side
   !> reads the same value, then stores the one it has just evaluated.
+  !> Each rank works on the faces it owns. Collective under MPI.
   subroutine Compute_Coupling_Segment_Fluxes ( FUSS_domain, ARES_domain, level )
     use ARES_Global_m, only: nprim, nh
     use hydraAF_Mod_CouplingExchange, only: K_WALL_UNSET
@@ -343,19 +419,23 @@ contains
     integer, intent(in)                   :: level
     ! Local
     type(segment_set_type), pointer :: set
-    integer  :: e, k, sg
+    integer  :: m, e, k, sg
     real(R8) :: flux, fluxv(nprim), acc, accv(nprim), accE, wsum, k_new
 
     if (level > max_levels) return
     set => segs(level)
     if (.not. set%ready) return
 
+    ! Partner cell of every segment of the faces of this rank
+    call Update_Partners ( set, FUSS_domain, ARES_domain )
+
     ! FUSS estimate on every segment; a face owns its segments, so one face per thread
-    !$omp parallel do schedule (dynamic, 16) private(e, k, sg, flux)
-    do e = 1, set%nF
+    !$omp parallel do schedule (dynamic, 16) private(m, e, k, sg, flux)
+    do m = 1, set%nmyF
+      e = set%myF(m)
       do k = set%pF(e), set%pF(e+1) - 1
         sg = set%lF(k)
-        call Eval_FUSS_Segment ( set, sg, FUSS_domain, ARES_domain, flux )
+        call Eval_FUSS_Segment ( set, sg, FUSS_domain, flux )
         set%qF(sg) = flux * set%wF(sg)
       enddo
     enddo
@@ -363,21 +443,27 @@ contains
 
     ! ARES estimate on every segment (the ARES routine also sets the RANS ghost of its
     ! face), then the fresh wall conductivity of the segment for the next call
-    !$omp parallel do schedule (dynamic, 16) private(e, k, sg, fluxv, k_new)
-    do e = 1, set%nA
+    !$omp parallel do schedule (dynamic, 16) private(m, e, k, sg, fluxv, k_new)
+    do m = 1, set%nmyA
+      e = set%myA(m)
       do k = set%pA(e), set%pA(e+1) - 1
         sg = set%lA(k)
         k_new = K_WALL_UNSET
-        call Eval_ARES_Segment ( set, sg, FUSS_domain, ARES_domain, fluxv, k_new = k_new )
+        call Eval_ARES_Segment ( set, sg, ARES_domain, fluxv, k_new = k_new )
         set%fA(:,sg) = fluxv * set%wA(sg)
         set%kS(sg) = k_new
       enddo
     enddo
     !$omp end parallel do
 
+    ! Segments split between two ranks: each side gets the estimate of the other,
+    ! the FUSS side also the fresh kS for the next call
+    call Exchange_Estimates ( set )
+
     ! Exchange as in 103, segment by segment: what one side takes, the other gives
-    !$omp parallel do schedule (static) private(e, k, sg, acc)
-    do e = 1, set%nF
+    !$omp parallel do schedule (static) private(m, e, k, sg, acc)
+    do m = 1, set%nmyF
+      e = set%myF(m)
       acc = 0d0
       do k = set%pF(e), set%pF(e+1) - 1
         sg = set%lF(k)
@@ -387,8 +473,9 @@ contains
     enddo
     !$omp end parallel do
 
-    !$omp parallel do schedule (static) private(e, k, sg, accv, accE, wsum)
-    do e = 1, set%nA
+    !$omp parallel do schedule (static) private(m, e, k, sg, accv, accE, wsum)
+    do m = 1, set%nmyA
+      e = set%myA(m)
       accv = 0d0
       accE = 0d0
       wsum = 0d0
@@ -409,11 +496,26 @@ contains
   end subroutine Compute_Coupling_Segment_Fluxes
 
 
-  !> Wall output of a FUSS 104 face: (Tw, qw) of its segments, averaged by area
-  subroutine Segment_Wall_Output_FUSS ( FUSS_domain, ARES_domain, level, i, Ovar )
+  !> Fresh partner cells of the segments of one level, for the wall output.
+  !> Collective under MPI: every rank calls it.
+  subroutine Update_Coupling_Segment_Partners ( FUSS_domain, ARES_domain, level )
+    implicit none
+    type(FUSS_domain_type), intent(in) :: FUSS_domain
+    type(ARES_domain_type), intent(in) :: ARES_domain
+    integer, intent(in)                :: level
+
+    if (level > max_levels) return
+    if (.not. segs(level)%ready) return
+    call Update_Partners ( segs(level), FUSS_domain, ARES_domain )
+
+  end subroutine Update_Coupling_Segment_Partners
+
+
+  !> Wall output of a FUSS 104 face of this rank: (Tw, qw) of its segments,
+  !> averaged by area, with the partner cells of the last Update_Partners
+  subroutine Segment_Wall_Output_FUSS ( FUSS_domain, level, i, Ovar )
     implicit none
     type(FUSS_domain_type), intent(inout) :: FUSS_domain
-    type(ARES_domain_type), intent(in)    :: ARES_domain
     integer, intent(in)                   :: level, i
     real(R8), intent(out)                 :: Ovar(2)
     ! Local
@@ -431,7 +533,7 @@ contains
     wsum = 0d0
     do k = set%pF(e), set%pF(e+1) - 1
       sg = set%lF(k)
-      call Eval_FUSS_Segment ( set, sg, FUSS_domain, ARES_domain, flux, O )
+      call Eval_FUSS_Segment ( set, sg, FUSS_domain, flux, O )
       Ovar = Ovar + set%wF(sg) * O
       wsum = wsum + set%wF(sg)
     enddo
@@ -440,12 +542,12 @@ contains
   end subroutine Segment_Wall_Output_FUSS
 
 
-  !> Wall output of an ARES 104 face: the wall variables of its segments, averaged
-  !> by area. The stored wall conductivity is read, not advanced, as in AF_IO_Wall.
-  subroutine Segment_Wall_Output_ARES ( FUSS_domain, ARES_domain, level, j, Ovar )
+  !> Wall output of an ARES 104 face of this rank: the wall variables of its
+  !> segments, averaged by area, with the partner cells of the last Update_Partners.
+  !> The stored wall conductivity is read, not advanced, as in AF_IO_Wall.
+  subroutine Segment_Wall_Output_ARES ( ARES_domain, level, j, Ovar )
     use ARES_Global_m, only: nprim
     implicit none
-    type(FUSS_domain_type), intent(in)    :: FUSS_domain
     type(ARES_domain_type), intent(inout) :: ARES_domain
     integer, intent(in)                   :: level, j
     real(R8), intent(out)                 :: Ovar(8)
@@ -464,7 +566,7 @@ contains
     wsum = 0d0
     do k = set%pA(e), set%pA(e+1) - 1
       sg = set%lA(k)
-      call Eval_ARES_Segment ( set, sg, FUSS_domain, ARES_domain, fluxv, O )
+      call Eval_ARES_Segment ( set, sg, ARES_domain, fluxv, O )
       Ovar = Ovar + set%wA(sg) * O
       wsum = wsum + set%wA(sg)
     enddo
@@ -474,38 +576,31 @@ contains
 
 
   !> FUSS side of segment sg: the 103 routine with the ARES cell of the segment as
-  !> partner. new_flux is the flux through the whole FUSS face, as in 103.
-  subroutine Eval_FUSS_Segment ( set, sg, FUSS_domain, ARES_domain, new_flux, Ovar )
+  !> partner (its state in xA). new_flux is the flux through the whole FUSS face, as in 103.
+  subroutine Eval_FUSS_Segment ( set, sg, FUSS_domain, new_flux, Ovar )
     use hydraAF_Lib_BC_Coupled_Wall_Temperature, only: FUSS_BC_Coupled_Wall_Temperature
-    use ARES_Global_m, only: np, nh
-    use FLINT_Lib_Thermodynamic
+    use ARES_Global_m, only: np
     implicit none
     type(segment_set_type), intent(in)    :: set
     integer, intent(in)                   :: sg
     type(FUSS_domain_type), intent(inout) :: FUSS_domain
-    type(ARES_domain_type), intent(in)    :: ARES_domain
     real(R8), intent(out)                 :: new_flux
     real(R8), optional, intent(out)       :: Ovar(2)
     ! Local
-    integer  :: i, j, Bm, Im, Jm, Km, Fm, dir, Bs, Is, Js, Ks
+    integer  :: i, Bm, Im, Jm, Km, Fm, dir
     real(R8) :: P_con(np), Tg(6)
     type(FUSS_tensor_3D_type) :: Mcon
 
     i  = set%sF(sg)
-    j  = set%sA(sg)
     Bm = FUSS_domain % bc(i) % b
     Im = FUSS_domain % bc(i) % i
     Jm = FUSS_domain % bc(i) % j
     Km = FUSS_domain % bc(i) % k
     Fm = FUSS_domain % bc(i) % f
-    Bs = ARES_domain % bc(j) % b
-    Is = ARES_domain % bc(j) % i
-    Js = ARES_domain % bc(j) % j
-    Ks = ARES_domain % bc(j) % k
 
     ! Partner: the ARES cell that owns the other face of the segment
-    P_con = ARES_domain % blk(Bs) % P (1:np,Is,Js,Ks)
-    Tg = ph2vars( ARES_domain%blk(Bs)%P(np,Is,Js,Ks), ARES_domain%blk(Bs)%P(nh,Is,Js,Ks), T_tab )
+    Tg    = set%xA(1,sg)
+    P_con = set%xA(2:1+np,sg)
 
     ! Partner metric, normal distance only: the normal row of the own cell rescaled
     ! so that the routine sees the partner cell centre at dA; tangential rows zero
@@ -521,39 +616,34 @@ contains
 
 
   !> ARES side of segment sg: the 103 routine with the FUSS cell of the segment as
-  !> partner. new_flux is the flux through the whole ARES face, as in 103; k_new is
-  !> the fluid wall conductivity the routine has just evaluated on the segment.
-  subroutine Eval_ARES_Segment ( set, sg, FUSS_domain, ARES_domain, new_flux, Ovar, k_new )
+  !> partner (its state in xF). new_flux is the flux through the whole ARES face, as
+  !> in 103; k_new is the fluid wall conductivity the routine has just evaluated on
+  !> the segment.
+  subroutine Eval_ARES_Segment ( set, sg, ARES_domain, new_flux, Ovar, k_new )
     use hydraAF_Lib_BC_Coupled_Wall_Temperature, only: ARES_BC_Coupled_Wall_Temperature
     use ARES_Global_m, only: nprim
     implicit none
     type(segment_set_type), intent(in)    :: set
     integer, intent(in)                   :: sg
-    type(FUSS_domain_type), intent(in)    :: FUSS_domain
     type(ARES_domain_type), intent(inout) :: ARES_domain
     real(R8), intent(out)                 :: new_flux(nprim)
     real(R8), optional, intent(out)       :: Ovar(8)
     real(R8), optional, intent(out)       :: k_new
     ! Local
-    integer  :: i, j, Bm, Im, Jm, Km, Fm, dir, Bs, Is, Js, Ks
+    integer  :: j, Bm, Im, Jm, Km, Fm, dir
     real(R8) :: Pg(1,6), matID_con
     type(ARES_tensor_3D_type) :: Mcon
 
     j  = set%sA(sg)
-    i  = set%sF(sg)
     Bm = ARES_domain % bc(j) % b
     Im = ARES_domain % bc(j) % i
     Jm = ARES_domain % bc(j) % j
     Km = ARES_domain % bc(j) % k
     Fm = ARES_domain % bc(j) % f
-    Bs = FUSS_domain % bc(i) % b
-    Is = FUSS_domain % bc(i) % i
-    Js = FUSS_domain % bc(i) % j
-    Ks = FUSS_domain % bc(i) % k
 
     ! Partner: the FUSS cell that owns the other face of the segment
-    Pg = FUSS_domain % blk(Bs) % T (Is,Js,Ks)
-    matID_con = FUSS_domain % blk(Bs) % matID (Is,Js,Ks)
+    Pg        = set%xF(1,sg)
+    matID_con = set%xF(2,sg)
 
     ! Partner metric, normal distance only (see Eval_FUSS_Segment)
     dir = (Fm+1)/2
@@ -565,6 +655,226 @@ contains
                                            k_fluid_wall = set%kS(sg), k_fluid_wall_new = k_new )
 
   end subroutine Eval_ARES_Segment
+
+
+  !> Partner cell of every segment of the faces of this rank: a FUSS face reads
+  !> T and P(1:np) of the ARES cell (xA), an ARES face T and matID of the FUSS cell
+  !> (xF). The rank that owns the partner cell reads it: in place when both faces
+  !> of the segment are here, and sends it over when they are not.
+  subroutine Update_Partners ( set, FUSS_domain, ARES_domain )
+    use ARES_Global_m, only: np
+    implicit none
+    type(segment_set_type), intent(inout) :: set
+    type(FUSS_domain_type), intent(in)    :: FUSS_domain
+    type(ARES_domain_type), intent(in)    :: ARES_domain
+    ! Local
+    integer :: m, e, k, sg, p, n, nxa
+
+    nxa = 1 + np
+
+    ! Both faces on this rank
+    !$omp parallel do schedule (dynamic, 16) private(m, e, k, sg)
+    do m = 1, set%nmyF
+      e = set%myF(m)
+      do k = set%pF(e), set%pF(e+1) - 1
+        sg = set%lF(k)
+        if (set%oA(sg) /= set%oF(sg)) cycle
+        call ARES_State ( ARES_domain, set%sA(sg), set%xA(:,sg) )
+        call FUSS_State ( FUSS_domain, set%sF(sg), set%xF(:,sg) )
+      enddo
+    enddo
+    !$omp end parallel do
+
+    if (set%npeer == 0) return
+
+    ! Faces on two ranks: each side sends the state of its own cell
+    do p = 1, set%npeer
+      associate ( pr => set%peer(p) )
+        n = 0
+        do k = 1, size(pr%sFA)
+          call FUSS_State ( FUSS_domain, set%sF(pr%sFA(k)), pr%sbuf(n+1:n+NXF) )
+          n = n + NXF
+        enddo
+        do k = 1, size(pr%sAF)
+          call ARES_State ( ARES_domain, set%sA(pr%sAF(k)), pr%sbuf(n+1:n+nxa) )
+          n = n + nxa
+        enddo
+      end associate
+    enddo
+
+    call Exchange ( set, NXF, nxa, TAG_SEG_STATE )
+
+    do p = 1, set%npeer
+      associate ( pr => set%peer(p) )
+        n = 0
+        do k = 1, size(pr%sAF)
+          set%xF(:,pr%sAF(k)) = pr%rbuf(n+1:n+NXF)
+          n = n + NXF
+        enddo
+        do k = 1, size(pr%sFA)
+          set%xA(:,pr%sFA(k)) = pr%rbuf(n+1:n+nxa)
+          n = n + nxa
+        enddo
+      end associate
+    enddo
+
+  end subroutine Update_Partners
+
+
+  !> The estimate of the other side, for the segments split between two ranks:
+  !> the FUSS face gets the ARES energy flux fA(nh) and the fresh kS, the ARES
+  !> face the FUSS flux qF
+  subroutine Exchange_Estimates ( set )
+    use ARES_Global_m, only: nh
+    implicit none
+    type(segment_set_type), intent(inout) :: set
+    ! Local
+    integer :: p, k, n
+
+    if (set%npeer == 0) return
+
+    do p = 1, set%npeer
+      associate ( pr => set%peer(p) )
+        do k = 1, size(pr%sFA)
+          pr%sbuf(k) = set%qF(pr%sFA(k))
+        enddo
+        n = size(pr%sFA)
+        do k = 1, size(pr%sAF)
+          pr%sbuf(n+1) = set%fA(nh,pr%sAF(k))
+          pr%sbuf(n+2) = set%kS(pr%sAF(k))
+          n = n + 2
+        enddo
+      end associate
+    enddo
+
+    call Exchange ( set, 1, 2, TAG_SEG_FLUX )
+
+    do p = 1, set%npeer
+      associate ( pr => set%peer(p) )
+        do k = 1, size(pr%sAF)
+          set%qF(pr%sAF(k)) = pr%rbuf(k)
+        enddo
+        n = size(pr%sAF)
+        do k = 1, size(pr%sFA)
+          set%fA(nh,pr%sFA(k)) = pr%rbuf(n+1)
+          set%kS(pr%sFA(k))    = pr%rbuf(n+2)
+          n = n + 2
+        enddo
+      end associate
+    enddo
+
+  end subroutine Exchange_Estimates
+
+
+  !> Swap the packed buffers with every rank that shares segments with this one.
+  !> The message from rank a to rank b carries first the segments with the FUSS
+  !> face on a and the ARES face on b (sFA on a, sAF on b), then those with the
+  !> ARES face on a and the FUSS face on b (sAF on a, sFA on b): nf reals per
+  !> segment for what a FUSS face sends, na for what an ARES face sends. Both ranks
+  !> list the segments in increasing order, so the two sides line up.
+  subroutine Exchange ( set, nf, na, tag )
+#ifdef USE_MPI
+    use mpi
+    use FUSS_Mod_MPI,     only: check_mpi_error
+    use hydra_Mod_Timers, only: timer_xchg_begin, timer_xchg_end
+#endif
+    implicit none
+    type(segment_set_type), intent(inout) :: set
+    integer, intent(in)                   :: nf, na, tag
+#ifdef USE_MPI
+    ! Local
+    integer :: p, cnt, ierr
+    integer, allocatable :: req(:)
+
+    if (set%npeer == 0) return
+    allocate ( req(2*set%npeer) )
+
+    call timer_xchg_begin()
+    do p = 1, set%npeer
+      cnt = nf * size(set%peer(p)%sAF) + na * size(set%peer(p)%sFA)
+      call MPI_IRECV ( set%peer(p)%rbuf, cnt, MPI_DOUBLE_PRECISION, set%peer(p)%rank, tag, &
+                       MPI_COMM_WORLD, req(p), ierr )
+      call check_mpi_error ( ierr )
+    enddo
+    do p = 1, set%npeer
+      cnt = nf * size(set%peer(p)%sFA) + na * size(set%peer(p)%sAF)
+      call MPI_ISEND ( set%peer(p)%sbuf, cnt, MPI_DOUBLE_PRECISION, set%peer(p)%rank, tag, &
+                       MPI_COMM_WORLD, req(set%npeer+p), ierr )
+      call check_mpi_error ( ierr )
+    enddo
+    call MPI_WAITALL ( 2*set%npeer, req, MPI_STATUSES_IGNORE, ierr )
+    call check_mpi_error ( ierr )
+    call timer_xchg_end()
+#else
+    ! Serial: no other rank, npeer is always 0
+    if (set%npeer > 0 .and. nf + na + tag < 0) return
+#endif
+
+  end subroutine Exchange
+
+
+  !> State of the ARES cell of 104 face j, as the FUSS side reads it: T, P(1:np)
+  subroutine ARES_State ( ARES_domain, j, x )
+    use ARES_Global_m, only: np, nh
+    use FLINT_Lib_Thermodynamic, only: ph2vars, T_tab
+    implicit none
+    type(ARES_domain_type), intent(in) :: ARES_domain
+    integer, intent(in)                :: j
+    real(R8), intent(out)              :: x(:)
+    ! Local
+    integer :: b, ic, jc, kc
+
+    b  = ARES_domain % bc(j) % b
+    ic = ARES_domain % bc(j) % i
+    jc = ARES_domain % bc(j) % j
+    kc = ARES_domain % bc(j) % k
+    x(1)      = ph2vars( ARES_domain%blk(b)%P(np,ic,jc,kc), ARES_domain%blk(b)%P(nh,ic,jc,kc), T_tab )
+    x(2:1+np) = ARES_domain % blk(b) % P (1:np,ic,jc,kc)
+
+  end subroutine ARES_State
+
+
+  !> State of the FUSS cell of 104 face i, as the ARES side reads it: T, matID
+  subroutine FUSS_State ( FUSS_domain, i, x )
+    implicit none
+    type(FUSS_domain_type), intent(in) :: FUSS_domain
+    integer, intent(in)                :: i
+    real(R8), intent(out)              :: x(:)
+    ! Local
+    integer :: b, ic, jc, kc
+
+    b  = FUSS_domain % bc(i) % b
+    ic = FUSS_domain % bc(i) % i
+    jc = FUSS_domain % bc(i) % j
+    kc = FUSS_domain % bc(i) % k
+    x(1) = FUSS_domain % blk(b) % T     (ic,jc,kc)
+    x(2) = FUSS_domain % blk(b) % matID (ic,jc,kc)
+
+  end subroutine FUSS_State
+
+
+  !> Rank owning FUSS block b; this rank when the blocks are not partitioned (serial)
+  integer function FUSS_Owner ( b ) result ( r )
+    use FUSS_Mod_MPI, only: block_owner, mpi_rank_
+    implicit none
+    integer, intent(in) :: b
+
+    r = mpi_rank_
+    if (allocated(block_owner)) r = block_owner(b)
+
+  end function FUSS_Owner
+
+
+  !> Rank owning ARES block b; this rank when the blocks are not partitioned (serial)
+  integer function ARES_Owner ( b ) result ( r )
+    use ARES_Mod_MPI, only: block_owner, mpi_rank_
+    implicit none
+    integer, intent(in) :: b
+
+    r = mpi_rank_
+    if (allocated(block_owner)) r = block_owner(b)
+
+  end function ARES_Owner
 
 
   function FUSS_Face_Geometry ( domain, i ) result ( geo )
@@ -676,6 +986,35 @@ contains
     geo%ortho = max ( abs(dot_product(M(t1,:), N)), abs(dot_product(M(t2,:), N)) ) / mn ! indice non ortogonalità
 
   end function Face_Geometry
+
+
+  !> A face geometry as NGEO reals, for the sum over the ranks
+  pure subroutine Pack_Geo ( geo, buf )
+    implicit none
+    type(face_geo_type), intent(in) :: geo
+    real(R8), intent(out)           :: buf(NGEO)
+
+    buf(1:12)  = reshape ( geo%p, [12] )
+    buf(13:15) = geo%c
+    buf(16:18) = geo%n
+    buf(19)    = geo%d
+    buf(20)    = geo%ortho
+
+  end subroutine Pack_Geo
+
+
+  pure function Unpack_Geo ( buf ) result ( geo )
+    implicit none
+    real(R8), intent(in) :: buf(NGEO)
+    type(face_geo_type)  :: geo
+
+    geo%p     = reshape ( buf(1:12), [3,4] )
+    geo%c     = buf(13:15)
+    geo%n     = buf(16:18)
+    geo%d     = buf(19)
+    geo%ortho = buf(20)
+
+  end function Unpack_Geo
 
 
   !> Area of the overlap of two convex quads pa and pb, both projected on the plane
@@ -790,6 +1129,9 @@ contains
     set%ns = 0
     set%nF = 0
     set%nA = 0
+    set%nmyF = 0
+    set%nmyA = 0
+    set%npeer = 0
     if (allocated(set%sF))   deallocate ( set%sF, set%sA, set%wF, set%wA, set%dF, set%dA )
     if (allocated(set%eF))   deallocate ( set%eF )
     if (allocated(set%eA))   deallocate ( set%eA )
@@ -800,6 +1142,10 @@ contains
     if (allocated(set%qF))   deallocate ( set%qF )
     if (allocated(set%fA))   deallocate ( set%fA )
     if (allocated(set%kS))   deallocate ( set%kS )
+    if (allocated(set%oF))   deallocate ( set%oF, set%oA )
+    if (allocated(set%myF))  deallocate ( set%myF, set%myA )
+    if (allocated(set%xA))   deallocate ( set%xA, set%xF )
+    if (allocated(set%peer)) deallocate ( set%peer )
 
   end subroutine Reset_Set
 

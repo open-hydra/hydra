@@ -205,7 +205,8 @@ contains
     use FUSS_Advanced_Types_m
     use FUSS_Global_m
     use hydraAF_Lib_BC_Coupled_Wall_Temperature, only: FUSS_BC_Coupled_Wall_Temperature, ARES_BC_Coupled_Wall_Temperature
-    use hydraAF_Lib_Coupling_Segments, only: Segment_Wall_Output_FUSS, Segment_Wall_Output_ARES
+    use hydraAF_Lib_Coupling_Segments, only: Segment_Wall_Output_FUSS, Segment_Wall_Output_ARES, &
+                                             Update_Coupling_Segment_Partners
     use hydraAF_Mod_CouplingExchange, only: is_FUSS_bc_local_local, is_ARES_bc_local_local, &
                                             get_F_remote_P, get_M_remote_matID, &
                                             get_k_wall_FUSS, get_k_wall_ARES
@@ -225,7 +226,10 @@ contains
     real(R8) :: FUSS_new_flux, ARES_new_flux(nprim)
     real(R8) :: P_con(np), matID_con
     real(R8), pointer :: p_remote(:)
-     
+
+    ! 104: current partner cells for the segments, also across ranks (collective)
+    call Update_Coupling_Segment_Partners ( FUSS_domain, ARES_domain, level )
+
     ! FUSS
     n_wall_total = 0
     do b = 1, FUSS_domain%nb
@@ -301,7 +305,7 @@ contains
 #endif
 
               ! 104: the segments of the face, averaged by area (hydraAF_Lib_Coupling_Segments)
-              call Segment_Wall_Output_FUSS ( FUSS_domain, ARES_domain, level, i, Ovar(6:7) )
+              call Segment_Wall_Output_FUSS ( FUSS_domain, level, i, Ovar(6:7) )
 
               FUSS_wall_buf(2*(wall_i-1)+1 : 2*wall_i) = Ovar(6:7)
           end select
@@ -415,7 +419,7 @@ contains
 #endif
 
               ! 104: the segments of the face, averaged by area (hydraAF_Lib_Coupling_Segments)
-              call Segment_Wall_Output_ARES ( FUSS_domain, ARES_domain, level, i, Ovar )
+              call Segment_Wall_Output_ARES ( ARES_domain, level, i, Ovar )
 
               ARES_wall_buf(7*(wall_i-1)+1 : 7*wall_i) = Ovar(1:7)
 
