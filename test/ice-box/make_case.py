@@ -9,8 +9,9 @@ the oracle of check.py follows from input.ini alone. Run it after every regenera
     make_case.py [case-dir]        default: the directory of this script
 
 It reads <case-dir>/input.ini ([GPB-Phase2] rho, [ICB-Block1] dp, [ice-box] up), rewrites
-the up_11 and np_11 columns of <case-dir>/INPUT/part-ic.tec in ATLAS's own number format
-(every other line is kept byte for byte), and prints what it wrote. Idempotent."""
+the up_11 and np_11 columns of <case-dir>/INPUT/part-ic.tec in the number format of the file
+(ATLAS's, its digits read from the first value line; every other line is kept byte for byte),
+and prints what it wrote. Idempotent."""
 import configparser
 import math
 import os
@@ -25,14 +26,22 @@ def read_ini(path):
     return cfg
 
 
-def fmt(v):
-    """ATLAS ICB's number format: ' 0.ddddddddddddddd' + 'E' + signed 3-digit exponent."""
+def fmt(v, nd):
+    """ATLAS ICB's number format: ' 0.' + nd significant digits + 'E' + signed 3-digit exponent."""
     if v == 0.0:
-        return ' 0.000000000000000E+000'
-    s = '%.14E' % abs(v)                       # d.dddddddddddddd E+ee  (15 significant digits)
+        return ' 0.' + '0' * nd + 'E+000'
+    s = '%.*E' % (nd - 1, abs(v))              # d.ddd...E+ee, nd significant digits
     mant, ex = s.split('E')
     digits = mant[0] + mant[2:]
     return ('-' if v < 0 else ' ') + '0.' + digits + 'E%+04d' % (int(ex) + 1)
+
+
+def digits_of(line):
+    """Significant digits of a value line written by ATLAS (' 0.ddd...E+eee', the sign in place of the blank)."""
+    m = re.match(r'^[ -]0\.(\d+)E[+-]\d{3}$', line)
+    if not m:
+        sys.exit('[make_case] not an ATLAS value line: %r' % line)
+    return len(m.group(1))
 
 
 def main():
@@ -59,13 +68,14 @@ def main():
     if len(lines) < first:
         sys.exit('[make_case] %s: %d lines, %d expected' % (tec, len(lines), first))
 
+    nd = digits_of(lines[2])
     rho_p = [float(lines[start['rp_11'] + c]) for c in range(nc)]
     rp = 0.5 * dp
     vol = 4.0 / 3.0 * math.pi * rp ** 3
     n_p = [r / (rho_mat * vol) for r in rho_p]
     for c in range(nc):
-        lines[start['up_11'] + c] = fmt(up)
-        lines[start['np_11'] + c] = fmt(n_p[c])
+        lines[start['up_11'] + c] = fmt(up, nd)
+        lines[start['np_11'] + c] = fmt(n_p[c], nd)
     open(tec, 'w').write('\n'.join(lines))
 
     # what ICE will see: its radius from (rho_p, n_p, rho_mat) against dp/2
@@ -73,9 +83,9 @@ def main():
     err = max(abs(x - rp) / rp for x in rp_ice)
     print('[make_case] %s: %d cells' % (os.path.relpath(tec, case), nc))
     print('[make_case]   rho_p %.15e .. %.15e kg/m3 (ATLAS, kept)' % (min(rho_p), max(rho_p)))
-    print('[make_case]   up_11 set to %s m/s' % fmt(up).strip())
+    print('[make_case]   up_11 set to %s m/s' % fmt(up, nd).strip())
     print('[make_case]   np_11 set to rho_p / (rho_mat 4/3 pi rp^3): %s .. %s 1/m3  (rho_mat %g, rp %g)'
-          % (fmt(min(n_p)).strip(), fmt(max(n_p)).strip(), rho_mat, rp))
+          % (fmt(min(n_p), nd).strip(), fmt(max(n_p), nd).strip(), rho_mat, rp))
     print('[make_case]   ICE radius from (rho_p, n_p, rho_mat): worst |R_p - dp/2| / (dp/2) = %.2e' % err)
 
 
