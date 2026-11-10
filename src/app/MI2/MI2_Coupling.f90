@@ -556,7 +556,7 @@ contains
   !  sweep. Opens its own parallel region.
   subroutine MOSExIGLOO ( MOSE_domain, IGLOO )
     use MOSE_Advanced_Types_m, only: MOSE_domain_type
-    use MOSE_Global_m,         only: nsc, gc
+    use MOSE_Global_m,         only: nsc, gc, MOSE_phase_prefix
     use IGLOO_module,          only: obj_IGLOO
     implicit none
     type(MOSE_domain_type), intent(in)    :: MOSE_domain
@@ -618,6 +618,14 @@ contains
       do f = 1, 6
         lower = upper + 1
         upper = upper + MOSE_domain%n_bf(b,f)
+        ! the walk takes the next n_bf(b,f) records as those of block b, face f: MOSE keeps them in the order of its file
+        do i = lower, upper
+          if (MOSE_domain%bc(i)%b == b .and. MOSE_domain%bc(i)%f == f) cycle
+          write(*,'(A,I0,3A,I0,A,I0,A,I0,A,I0,A)') ' [ERROR] MI2: record ', i, ' of INPUT/', trim(MOSE_phase_prefix), &
+            'bc.txt is of block ', MOSE_domain%bc(i)%b, ' face ', MOSE_domain%bc(i)%f, ' where the coupler expects block ', &
+            b, ' face ', f, ': the gas boundary records must be grouped by block, then by face (1 to 6), in that order'
+          error stop 1
+        enddo
         ! the record of a grain applied as an inlet holds the reference mass flux of its burning law, not the flow of
         ! the face: particles injected in proportion to the gas mass flow cannot sit on it
         if (any(MOSE_domain%bc(lower:upper)%srm_inflow)) then
