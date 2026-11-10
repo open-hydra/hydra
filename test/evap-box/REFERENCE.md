@@ -53,8 +53,8 @@ The independent parts:
 - an exact bracketed solve of the LK fixed point, against IGLOO's damped Picard iteration;
 - face crossings located by bisection;
 - the gas state rebuilt from `INPUT/gas-{phase.txt,thermo.dat,transport.dat}` as the gas solver builds it: FLINT
-  R_u 8314.51, integer-kelvin tables, Wilke mixing. For the initial gas (pure N2, T 350.000 K) this gives
-  ρ 0.975410 kg/m³, μ 2.027840e-5 Pa s, k 0.0292834 W/m/K, γ 1.398781, Pr 0.7209.
+  R_u 8314.46261815324, integer-kelvin tables, Wilke mixing. For the initial gas (pure N2, T 350.000 K) this gives
+  ρ 0.975415 kg/m³, μ 2.027840e-5 Pa s, k 0.0292834 W/m/K, γ 1.398777, Pr 0.7209.
 
 Convergence of the reference: the lifetime moves by 6.5e-11 s from rtol 1e-10 to 1e-12.
 

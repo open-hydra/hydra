@@ -44,8 +44,8 @@ test/mi2-checks/p13_rans_slot_check.sh [scratch-root] [exe]                # run
 
 | check | bound | on the current sources (1 thread) |
 |---|---|---|
-| R1 mass balance, species 1 | rel.err <= 1e-12, injected >= 5e-9 kg | 6.638e-16, 7.476478e-9 kg |
-| R2 energy bookkeeping | rel.err <= 1e-7, handed >= 1e-2 J | 1.988e-8, -0.1181 J |
+| R1 mass balance, species 1 | rel.err <= 1e-12, injected >= 5e-9 kg | 2.213e-16, 7.476499e-9 kg |
+| R2 energy bookkeeping | rel.err <= 1e-7, handed >= 1e-2 J | 2.236e-8, -0.1181 J |
 | R3 SA variable (last field, iteration 1000) | finite, within 5 % of `mi_t` everywhere; `mut/mil` in [0.1, 0.4] | -8.2e-4 .. +6.1e-3; 0.199 .. 0.210 |
 | R4 log hygiene, RANS setup | exit 0, `GAME OVER`, no error markers; `Navier-Stokes`, `Turbulent, SA`; `rhoNuTilde` in the field | pass |
 
