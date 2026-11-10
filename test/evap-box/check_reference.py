@@ -49,7 +49,7 @@ import sys
 import numpy as np
 
 RU_IGLOO = 8314.46        # IGLOO's universal gas constant (Lib_Evaporation, IO)
-RU_FLINT = 8314.51        # the gas solver's (FLINT Lib_ThermoTransport)
+RU_FLINT = 8314.46261815324   # the gas solver's (FLINT Lib_ThermoTransport: the exact SI value)
 PATM = 101325.0
 XS_CAP = 1.0e-12
 M_BURN = 1.0e-15          # IGLOO burnout mass [kg]
