@@ -56,7 +56,7 @@ RU_FLINT = 8314.46261815324   # the gas solver's (FLINT Lib_ThermoTransport: the
 PATM = 101325.0
 XS_CAP = 1.0e-12
 M_BURN = 1.0e-15          # IGLOO burnout mass [kg]
-TRAJ_SAMPLE = 100         # [IGLOO-General] fsample-traj default: scatter points per stream over L_box/v_inj
+TRAJ_SAMPLE = 100         # IGLOO's default of [IGLOO-General] fsample-traj: scatter points per stream over L_box/v_inj
 PHI = 0.6180339887498949  # scatter phase offset per ID
 
 # ------------------------------------------------------------------ tolerances (measured floors, REFERENCE.md)
@@ -143,11 +143,15 @@ def read_tec_block(path):
 
 
 def read_particles(path):
-    """IGLOO trajectory/scatter (10 or 11 columns) or outloc (9 or 10 columns) rows by ID, file order kept."""
-    rows = {}
+    """IGLOO trajectory, scatter or outloc rows by ID, file order kept, and {name: column} of the file's variables=
+    line: the ID (and the exit time t) are found by name, so further columns (bc, d_p, weight) do not matter."""
+    rows, cols = {}, {}
     if not os.path.exists(path):
-        return rows
+        return rows, cols
     for raw in open(path):
+        if raw.lstrip().lower().startswith("variables"):
+            cols = {n: i for i, n in enumerate(re.findall(r'"([^"]*)"', raw))}
+            continue
         c = raw.split()
         if len(c) < 9 or not c[0][0] in "0123456789-":
             continue
@@ -155,9 +159,9 @@ def read_particles(path):
             v = [float(t) for t in c]
         except ValueError:
             continue
-        idcol = 9 if len(c) in (10, 11) and "outloc" not in os.path.basename(path) else 8
+        idcol = cols.get("ID", 9 if len(c) in (10, 11) and "outloc" not in os.path.basename(path) else 8)
         rows.setdefault(int(v[idcol]), []).append(v)
-    return rows
+    return rows, cols
 
 
 # ------------------------------------------------------------------ gas properties (FLINT's evaluation)
@@ -213,22 +217,42 @@ class GasTables:
 class Droplet:
     def __init__(self, ini, phase_tokens, props, psat_mode, interface):
         prop = ini.get("IGLOO-Properties", {})
-        self.Lv = float(prop["Lv"])
-        self.Mv = float(prop["Mv"])
+        names, zones = props
+        tab = zones[0]
+        col = {n: i for i, n in enumerate(names)}
+        self.tmin = int(round(tab[0, 0]))
+        # L_v and M_v as IGLOO takes them: the [IGLOO-Properties] value, else the table's Lv and Mv columns when their
+        # first row is non-zero; a value given both ways is refused, as IGLOO refuses it. L_v(T) at the droplet
+        # temperature, its value at 298.15 K in the Clausius-Clapeyron constant
+        self.lv_tab = None
+        ini_v = {key: float(prop.get(key, "0")) for key in ("Lv", "Mv")}
+        for key in ("Lv", "Mv"):
+            if ini_v[key] != 0.0 and key in col and np.any(tab[:, col[key]] != 0.0):
+                raise SystemExit("[FAIL] %s given both in [IGLOO-Properties] and as a column of the properties table "
+                                 "(IGLOO refuses it)" % key)
+        if ini_v["Lv"] != 0.0:
+            self.Lv = ini_v["Lv"]
+        elif "Lv" in col and tab[0, col["Lv"]] != 0.0:
+            self.lv_tab = tab[:, col["Lv"]]
+            self.Lv = self.table_at(self.lv_tab, 298.15)
+        else:
+            raise SystemExit("[FAIL] no latent heat: neither [IGLOO-Properties] Lv nor an Lv column in the table")
+        if ini_v["Mv"] != 0.0:
+            self.Mv = ini_v["Mv"]
+        elif "Mv" in col and tab[0, col["Mv"]] != 0.0:
+            self.Mv = float(tab[0, col["Mv"]])
+        else:
+            raise SystemExit("[FAIL] no vapour molar mass: neither [IGLOO-Properties] Mv nor an Mv column in the table")
         tb = prop.get("boiling-temperature", prop.get("Tboil"))
         self.Tboil = float(tb)
         self.Le = float(prop.get("Le", "1.0"))
         self.Yinf = float(prop.get("Yinf", "0.0"))
         self.alphaE = float(phase_tokens.get("alpha-e", "1.0"))
         self.lvmv = self.Lv * self.Mv / RU_IGLOO
-        names, zones = props
-        tab = zones[0]
-        col = {n: i for i, n in enumerate(names)}
         self.rho_l = tab[0, col["Density"]]
         self.cp_l = tab[0, col["Cp"]]
         if np.ptp(tab[:, col["Density"]]) != 0.0 or np.ptp(tab[:, col["Cp"]]) != 0.0:
             raise SystemExit("[FAIL] the reference assumes constant liquid cp and density (the case's table)")
-        self.tmin = int(round(tab[0, 0]))
         hcol = col["Enthalpy_abs"] if "Enthalpy_abs" in col else col["Enthalpy"]
         self.hoff = tab[0, hcol] - self.cp_l * tab[0, 0]      # IGLOO: hOff = h(Tmin) - cp*Tmin
         self.psat_tab = tab[:, col["Psat"]] if "Psat" in col else None
@@ -247,16 +271,23 @@ class Droplet:
         if models.get("blowing", "none") != "none":
             raise SystemExit("[FAIL] the reference implements blowing = none")
 
+    def table_at(self, tab, T):
+        """A table column at T, linear between the integer-kelvin rows (IGLOO's tableValue)."""
+        lo, hi = self.tmin, self.tmin + len(tab) - 1
+        tc = min(max(T, float(lo)), float(hi))
+        if tc >= hi:
+            return tab[-1]
+        i = int(tc)
+        a = tab[i - lo]
+        return a + (tab[i + 1 - lo] - a) * (tc - i)
+
+    def lv(self, T):
+        return self.Lv if self.lv_tab is None else self.table_at(self.lv_tab, T)
+
     def psat(self, T):
         if self.psat_mode == "cc":
             return PATM * math.exp(-self.lvmv * (1.0 / T - 1.0 / self.Tboil))
-        lo, hi = self.tmin, self.tmin + len(self.psat_tab) - 1
-        tc = min(max(T, float(lo)), float(hi))
-        if tc >= hi:
-            return self.psat_tab[-1]
-        i = int(tc)
-        a = self.psat_tab[i - lo]
-        return a + (self.psat_tab[i + 1 - lo] - a) * (tc - i)
+        return self.table_at(self.psat_tab, T)
 
     def mdot(self, gas, T, d, Re):
         rho_g, _, _, _, Tg, mu, k, gam, R = gas
@@ -333,10 +364,10 @@ class Droplet:
         nu = 2.0 + 0.6 * math.sqrt(Re) * pr ** (1.0 / 3.0)
         md = self.mdot(gas, T, d, Re)
         q = nu * k * math.pi * d * (Tg - T)
-        return np.array([u, v, fac * du, fac * dv, (q + md * self.Lv) / (m * self.cp_l), md])
+        return np.array([u, v, fac * du, fac * dv, (q + md * self.lv(T)) / (m * self.cp_l), md])
 
     def t_quasi_steady(self, gas, d, u=0.0, v=0.0):
-        """T at which pi d k Nu (Tg - T) + mdot(T) Lv = 0 (the wet-bulb balance at diameter d, slip from u, v)."""
+        """T at which pi d k Nu (Tg - T) + mdot(T) Lv(T) = 0 (the wet-bulb balance at diameter d, slip from u, v)."""
         rho_g, ug, vg, _, Tg, mu, k, gam, R = gas
         slip = math.hypot(ug - u, vg - v)
         Re = rho_g * slip * d / mu
@@ -344,7 +375,7 @@ class Droplet:
         nu = 2.0 + 0.6 * math.sqrt(Re) * pr ** (1.0 / 3.0)
 
         def f(T):
-            return nu * k * math.pi * d * (Tg - T) + self.mdot(gas, T, d, Re) * self.Lv
+            return nu * k * math.pi * d * (Tg - T) + self.mdot(gas, T, d, Re) * self.lv(T)
 
         lo, hi = 200.0, Tg
         for _ in range(200):
@@ -603,9 +634,9 @@ def box_length(run):
 def check_sweep(rep, run, drop, field, sweep_tag, streams, dt_q, gated, label):
     """Per-stream comparison of one sweep's IGLOO output with the reference integration."""
     out = os.path.join(run, "OUTPUT")
-    scat = read_particles(os.path.join(out, "part-scatter-A%s.dat" % sweep_tag))
-    exits = read_particles(os.path.join(out, "part-outloc-A%s.dat" % sweep_tag))
-    trajrows = read_particles(os.path.join(out, "part-trajectories-A%s.dat" % sweep_tag))
+    scat, _ = read_particles(os.path.join(out, "part-scatter-A%s.dat" % sweep_tag))
+    exits, ecol = read_particles(os.path.join(out, "part-outloc-A%s.dat" % sweep_tag))
+    trajrows, _ = read_particles(os.path.join(out, "part-trajectories-A%s.dat" % sweep_tag))
     print("\n== %s (%s)%s" % ("sweep 0" if not sweep_tag else sweep_tag.strip("-"), label,
                               "" if gated else " -- per-stream checks informational"))
     results = {}
@@ -674,9 +705,10 @@ def check_sweep(rep, run, drop, field, sweep_tag, streams, dt_q, gated, label):
         text = "stream %d: exit (%.6f, %.6f) vs (%.6f, %.6f); %s; %d samples (expect %d or %d)" % (
             sid, e[0], e[1], s_end[0], s_end[1], tdesc, len(rows), n_expect - 1, n_expect)
         okt = True
-        if len(e) >= 10:                                     # out-time: the exit time is printed
-            okt = t_lo * (1 - TOL["t_exit"]) <= e[9] <= t_hi * (1 + TOL["t_exit"])
-            text += "; exit time %.8e s vs %s" % (e[9], "%.8e" % t_lo if t_lo == t_hi else "[%.8e, %.8e]" % (t_lo, t_hi))
+        if "t" in ecol:                                      # out-time: the exit time is printed
+            et = e[ecol["t"]]
+            okt = t_lo * (1 - TOL["t_exit"]) <= et <= t_hi * (1 + TOL["t_exit"])
+            text += "; exit time %.8e s vs %s" % (et, "%.8e" % t_lo if t_lo == t_hi else "[%.8e, %.8e]" % (t_lo, t_hi))
         rep.check("E", dx <= F_HALF + 1e-6 and okT and okn and okt, text, gated)
         if tplat:
             print("        plateau: T %.4f..%.4f K over d %.2f..%.2f um; reference lifetime %.8e s, x-stop %.6f m"
@@ -764,7 +796,7 @@ def check_coupler(rep, run, inp, log, gated):
     names, f, _ = read_tec_block(os.path.join(run, "OUTPUT", "gas-field.tec"))
     vol = cell_volumes(f, names)
     _, g, _ = read_tec_block(os.path.join(inp, "gas-ic.tec"))
-    ric = [float(g[n].flat[0]) for n in g if n.startswith("rho")]
+    ric = [float(g[n].flat[0]) for n in g if re.match(r"rho\d+$", n)]   # the partial densities (not rhoNuTilde)
     ok, parts = True, []
     for isp, inj, gained in rows:
         field = float(((f["rho(%d)" % isp] - ric[isp - 1]) * vol).sum())
@@ -828,7 +860,11 @@ def main():
         streams.append((i + 1, np.array([xs[i], ys[i], ups[i], vps[i], t0s[i], m0]), mds[i]))
     ncoup = int(ini.get("HYDRA-Parameters", {}).get("N-coupling", "1"))
     vref = sum(math.sqrt(s[1][2] ** 2 + s[1][3] ** 2) for s in streams) / n
-    dt_q = box_length(run) / vref / TRAJ_SAMPLE
+    # the scatter quantum: fsample-traj of the INI the run read, IGLOO's default when it is absent
+    run_ini = os.path.join(run, "input.ini")
+    nsample = int((read_ini(run_ini) if os.path.exists(run_ini) else ini).get("IGLOO-General", {}).get(
+        "fsample-traj", TRAJ_SAMPLE))
+    dt_q = box_length(run) / vref / nsample
     rep = Report()
     print("evap-box reference: %s   p_sat %s   interface %s" % (os.path.abspath(run), drop.psat_mode,
                                                                    "LK" if drop.lk else "VLE"))
@@ -838,7 +874,7 @@ def main():
         if k == 0:
             _, f, _ = read_tec_block(os.path.join(inp, "gas-ic.tec"))
             names = list(f.keys())
-            rn = [nm for nm in names if nm.startswith("rho")]
+            rn = [nm for nm in names if re.match(r"rho\d+$", nm)]   # the partial densities (not rhoNuTilde)
             st = tables.state([float(f[nm].flat[0]) for nm in rn], float(f["u"].flat[0]), float(f["v"].flat[0]),
                               float(f["w"].flat[0]), float(f["p"].flat[0]))
             for nm in names[3:]:
