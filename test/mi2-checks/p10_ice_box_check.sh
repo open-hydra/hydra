@@ -27,9 +27,9 @@ echo "  exe: $EXE ($(md5sum < "$EXE" | cut -c1-8))"
 echo "  exit=$rc  $(grep -m1 '^# wall' "$log")"
 [ $rc = 0 ] && ok "run exits 0" || ko "run exit=$rc"
 grep -q "GAME OVER" "$log" && ok "GAME OVER printed" || ko "no GAME OVER"
-bad=$(grep -c -e '\[ERROR\]' -e ' FAIL' -e 'Non-physical state' -e 'Integration failed at' -e 'NaN or p<0 detected' -e 'ABORT:' "$log")
+bad=$(grep -c -e '\[ERROR\]' -e ' FAIL' -e 'on-physical state' -e 'Integration failed at' -e 'p<0 detected' -e 'ABORT:' "$log")
 if [ "$bad" = 0 ]; then ok "log clean"; else
-  ko "log has $bad error line(s): $(grep -m1 -e '\[ERROR\]' -e ' FAIL' -e 'Non-physical state' -e 'Integration failed at' -e 'NaN or p<0 detected' -e 'ABORT:' "$log")"; fi
+  ko "log has $bad error line(s): $(grep -m1 -e '\[ERROR\]' -e ' FAIL' -e 'on-physical state' -e 'Integration failed at' -e 'p<0 detected' -e 'ABORT:' "$log")"; fi
 grep -q "NO LONGER ZERO" "$log" && ko "the ICE mass-channel warning fired" || ok "ICE mass-channel warning absent"
 grep -q "advances MOSE and ICE together" "$log" && ko "the case's own schedule was refused" \
                                                || ok "the case's own schedule (ICE alone, then MOSE alone) is accepted"

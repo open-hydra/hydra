@@ -16,7 +16,7 @@
 #             the same 3 % flux check.
 # Every run: GAME OVER, none of the failure signatures, exit 0, parcels injected in every sweep.
 # Without the area factor the report holds g x n (1/mean(area) = 1.1e6 too large) or is absent, and the second
-# MOSE block dies with 'NaN or p<0 detected'. The numeric checks are in p11_mass_flux_inlet.py.
+# MOSE block dies with 'NaN or p<0 detected' ('NaN, infinity or p<0 detected' from a later MOSE). The numeric checks are in p11_mass_flux_inlet.py.
 #   usage: p11_mass_flux_inlet_check.sh [scratch-root] [exe]
 set -u
 export LC_ALL=C
@@ -49,9 +49,9 @@ to403() {  # to403 <gas-bc.txt in> <out>: face-1 records 401 -> 403, payload fie
         printf "%8d%8d%8d%8d%8d%8d\n",$1,$2,$3,$4,$5,$6; next }
       print }' "$1" > "$2"; }
 hygiene() {  # hygiene <name> <log> <exit> <sweeps>
-  local bad; bad=$(grep -c -e '\[ERROR\]' -e ' FAIL' -e 'Non-physical state' -e 'Integration failed at' -e 'NaN or p<0 detected' -e 'ABORT:' "$2")
+  local bad; bad=$(grep -c -e '\[ERROR\]' -e ' FAIL' -e 'on-physical state' -e 'Integration failed at' -e 'p<0 detected' -e 'ABORT:' "$2")
   if [ "$3" = 0 ] && grep -q 'GAME OVER' "$2" && [ "$bad" = 0 ]; then ok "$1: clean run (GAME OVER, no failure signature, exit 0)"
-  else ko "$1: run not clean (exit=$3, GAME OVER $(grep -c 'GAME OVER' "$2"), failure signatures $bad: $(grep -o -e 'Integration failed at' -e 'NaN or p<0 detected' -e 'Non-physical state' -e '\[ERROR\]' -e 'ABORT:' "$2" | sort -u | tr '\n' ' '))"; fi
+  else ko "$1: run not clean (exit=$3, GAME OVER $(grep -c 'GAME OVER' "$2"), failure signatures $bad: $(grep -o -e 'Integration failed at' -e 'p<0 detected' -e 'on-physical state' -e '\[ERROR\]' -e 'ABORT:' "$2" | sort -u | tr '\n' ' '))"; fi
   local np; np=$(grep 'number of particles' "$2" | awk '{print $NF}' | tr '\n' ' ')
   if [ "$(grep -c 'number of particles' "$2")" = "$4" ] && ! echo " $np" | grep -q ' 0 '; then ok "$1: parcels injected in every sweep ($np)"
   else ko "$1: parcels per sweep: $np (expected $4 sweeps, all > 0)"; fi

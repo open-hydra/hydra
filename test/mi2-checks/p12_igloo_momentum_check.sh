@@ -35,7 +35,7 @@ d=$T/run; rm -rf "$d"
 echo "  run: exit=$rc  $(grep -o 'wall=[0-9.]* s' "$T/run.log")"
 [ $rc = 0 ] && ok "run exits 0" || ko "run exit=$rc"
 grep -q "GAME OVER" "$T/run.log" && ok "run reaches GAME OVER" || ko "no GAME OVER in the log"
-bad=$(grep -c -e '\[ERROR\]' -e ' FAIL' -e 'Non-physical state' -e 'Integration failed at' -e 'NaN or p<0 detected' \
+bad=$(grep -c -e '\[ERROR\]' -e ' FAIL' -e 'on-physical state' -e 'Integration failed at' -e 'p<0 detected' \
               -e 'ABORT:' -e 'stuck in cell' -e 'no net progress' -e 'hit outer maxIter' "$T/run.log")
 [ "$bad" = 0 ] && ok "log clean (no error, failure or parcel-abort line)" || ko "log has $bad error/abort line(s)"
 n=$(grep -c "Stop condition : time-end" "$T/run.log")

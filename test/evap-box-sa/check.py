@@ -19,7 +19,11 @@ EN_MIN      = 1e-2      # J handed to the gas (evap-box-ta: 0.236)
 SA_DEV      = 5e-2      # |mi_tilde/mi_tilde0 - 1| everywhere: production and the injection-cell density change
                         # move it by at most 3.5 % here (measured on the reference run: +1.2 % / -0.16 %)
 MUT_RATIO   = (0.1, 0.4)  # mit/mil: the far-field SA state chi about 3 gives 0.21 (reference run 0.199-0.221)
-BAD = ['[ERROR]', ' FAIL', 'Non-physical state', 'Integration failed at', 'NaN or p<0 detected', 'ABORT:']
+BAD = ['[ERROR]', ' FAIL', 'on-physical state', 'Integration failed at', 'p<0 detected', 'ABORT:']
+# The same three quantities under the names of either generation of MOSE and ATLAS.
+SA_NAMES  = ('mi_tilde', 'rhoNuTilde')   # the SA variable in MOSE's field
+SA_IC     = ('mi_t', 'rhoNuTilde')       # the SA variable in ATLAS's initial field
+MUT_NAMES = ('mit', 'mut')               # the eddy viscosity in MOSE's field
 
 npass = nfail = 0
 
@@ -97,25 +101,28 @@ else:
     tend = re.findall(r'^MOSE \| Iter =\s*(\d+) \| Time = (\S+)', txt, re.M)
     print('  field %s at t=%s (last MOSE line: iter %s, t=%s)'
           % (field, t.group(1) if t else '?', tend[-1][0] if tend else '?', tend[-1][1] if tend else '?'))
-    check('mi_tilde' in re.sub(r'[",]', ' ', head.split('=', 1)[1]).split(), 'the gas field carries the SA variable mi_tilde (nprim > np)')
+    names = re.sub(r'[",]', ' ', head.split('=', 1)[1]).split()
+    sa = next((n for n in SA_NAMES if n in names), SA_NAMES[0])
+    check(sa in names, 'the gas field carries the SA variable %s (nprim > np)' % sa)
     d = read_cc(field)
     cellvars = [k for k in d if k not in ('x', 'y', 'z')]
     nonfinite = [k for k in cellvars if not np.isfinite(d[k]).all()]
     check(not nonfinite, 'every field variable finite everywhere (non-finite: %s)' % nonfinite)
-    if 'mi_tilde' in d and not nonfinite:
+    if sa in d and not nonfinite:
         name0, mt0 = read_ic_last_var(os.path.join(inp, 'gas-ic.tec'))
-        mt0 = mt0.reshape(d['mi_tilde'].shape)
-        dev = d['mi_tilde'] / mt0 - 1.0
+        mt0 = mt0.reshape(d[sa].shape)
+        dev = d[sa] / mt0 - 1.0
         k, j, i = np.unravel_index(np.argmax(np.abs(dev)), dev.shape)
-        check(name0 == 'mi_t' and np.abs(dev).max() <= SA_DEV,
+        check(name0 in SA_IC and np.abs(dev).max() <= SA_DEV,
               'SA variable within %.0f %% of its initial value everywhere: min %.3e, max %.3e (largest at cell i=%d j=%d k=%d)'
               % (100 * SA_DEV, dev.min(), dev.max(), i + 1, j + 1, k + 1))
-        if 'mit' in d and 'mil' in d:
-            r = d['mit'] / d['mil']
+        mut = next((n for n in MUT_NAMES if n in d), MUT_NAMES[0])
+        if mut in d and 'mil' in d:
+            r = d[mut] / d['mil']
             check(MUT_RATIO[0] <= r.min() and r.max() <= MUT_RATIO[1],
-                  'eddy viscosity ratio mit/mil in [%.2f, %.2f]: min %.4f, max %.4f' % (MUT_RATIO + (r.min(), r.max())))
+                  'eddy viscosity ratio %s/mil in [%.2f, %.2f]: min %.4f, max %.4f' % ((mut,) + MUT_RATIO + (r.min(), r.max())))
         else:
-            ko('mit/mil not in the field (sol-variables must hold transport)')
+            ko('%s/mil not in the field (sol-variables must hold transport)' % mut)
 
 print('== %d passed, %d failed' % (npass, nfail))
 sys.exit(0 if nfail == 0 else 1)

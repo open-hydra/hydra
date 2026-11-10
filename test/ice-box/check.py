@@ -86,6 +86,7 @@ def read_tec(path):
     I, J, K = (int(v) for v in z.groups())
     body = txt[z.end():]
     body = body[body.index('\n') + 1:]
+    body = body.split('DATASETAUXDATA', 1)[0]     # the auxiliary data a solver appends after the zone are not field values
     vals = np.array([float(v) for v in re.findall(r'[-+]?\d*\.?\d+(?:[EeDd][-+]?\d+)?', body.replace('D', 'E'))])
     nn, nc = I * J * K, (I - 1) * (J - 1) * (K - 1)
     out, p = {}, 0

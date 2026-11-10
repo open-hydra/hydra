@@ -126,7 +126,9 @@ def read_tec_block(path):
     zone = lines[zi]
     ni, nj, nk = (int(re.search(r"\b%s=(\d+)" % c, zone).group(1)) for c in "IJK")
     nn, nc = ni * nj * nk, (ni - 1) * (nj - 1) * max(nk - 1, 1)
-    vals = np.array(" ".join(lines[zi + 1:]).split(), dtype=float)
+    # the zone's values end at the auxiliary data a solver appends after them
+    zend = next((i for i in range(zi + 1, len(lines)) if lines[i].lstrip().startswith("DATASETAUXDATA")), len(lines))
+    vals = np.array(" ".join(lines[zi + 1:zend]).split(), dtype=float)
     out, pos = {}, 0
     for n, name in enumerate(names):
         cnt = nn if n < 3 else nc
@@ -777,7 +779,8 @@ def main():
         elif k == ncoup - 1:
             gf = os.path.join(run, "OUTPUT", "gas-field.tec")
             field = CellGas(tables, gf)
-            it_file = float(re.search(r"SOLUTIONTIME=\s*([-+0-9.EeDd]+)", open(gf).read(2000)).group(1).replace("D", "E"))
+            # a steady field carries its iteration as the solution time, negative when ORION prints the sign
+            it_file = abs(float(re.search(r"SOLUTIONTIME=\s*([-+0-9.EeDd]+)", open(gf).read(2000)).group(1).replace("D", "E")))
             hist = [l.split() for l in open(os.path.join(run, "OUTPUT", "gas-residual-history.dat")) if l.strip()]
             it_last = int(hist[-1][0])
             gated = int(round(it_file)) == it_last

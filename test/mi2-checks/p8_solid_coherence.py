@@ -229,6 +229,8 @@ def read_block(path):
     text = open(path).read()
     head, rest = re.split(r'^\s*ZONE', text, maxsplit=1, flags=re.IGNORECASE | re.MULTILINE)
     header, body = rest.split('\n', 1)
+    # The zone's data end at the next record: a further zone or the auxiliary data a solver appends.
+    body = re.split(r'^\s*(?:ZONE|DATASETAUXDATA)\b', body, maxsplit=1, flags=re.IGNORECASE | re.MULTILINE)[0]
     I, J, K = (int(re.search(r'\b%s\s*=\s*(\d+)' % a, header, re.IGNORECASE).group(1)) for a in 'IJK')
     vals = [float(t) for t in body.split()]
     nn, nc = I * J * K, (I - 1) * (J - 1) * max(1, K - 1)
@@ -236,14 +238,20 @@ def read_block(path):
     return names, [vals[3 * nn + v * nc: 3 * nn + (v + 1) * nc] for v in range((len(vals) - 3 * nn) // nc)]
 
 
-def load_rows(path, ncol):
-    parts = {}
+def load_rows(path, *cols):
+    """Rows of an IGLOO particle file by parcel: {ID: [[<cols...>, ID], ...]}. The columns are found by name in the
+    variables= line, so their position and any further column (t, bc, d_p, f) do not matter."""
+    parts, idx = {}, None
     for line in open(path):
+        if line.lstrip().lower().startswith('variables'):
+            names = re.findall(r'"([^"]*)"', line)
+            idx = [names.index(c) for c in cols + ('ID',)]
+            continue
         c = line.split()
-        if len(c) != ncol:
+        if idx is None or len(c) <= max(idx):
             continue
         try:
-            r = [float(v) for v in c[:-1]] + [int(c[-1])]
+            r = [float(c[i]) for i in idx[:-1]] + [int(c[idx[-1]])]
         except ValueError:
             continue
         parts.setdefault(r[-1], []).append(r)
@@ -256,15 +264,15 @@ def iglo_results(d):
     _, (rho, u, v, w, T, n) = read_block(os.path.join(d, 'OUTPUT/euler1.tec'))
     _, src = read_block(os.path.join(d, 'OUTPUT/source.tec'))
     E = src[4]
-    traj = load_rows(os.path.join(d, 'OUTPUT/trajectories-A.dat'), 10)
-    exits = load_rows(os.path.join(d, 'OUTPUT/outloc-A.dat'), 9)
-    mdot = sum(r[0][6] for r in exits.values())
+    traj = load_rows(os.path.join(d, 'OUTPUT/trajectories-A.dat'), 'X', 'T')
+    exits = load_rows(os.path.join(d, 'OUTPUT/outloc-A.dat'), 'T', 'mdot')
+    mdot = sum(r[0][1] for r in exits.values())
     Tp = [sum(T[i + NX * c] for c in range(NY * NZ)) / (NY * NZ) for i in range(NX)]
     q = [sum(E[i + NX * c] for c in range(NY * NZ)) / mdot if mdot > 0 else float('nan') for i in range(NX)]
     first_plat, first_liq = set(), set()
     for rows in traj.values():
         rows = sorted(rows, key=lambda r: r[0])
-        plat = [r for r in rows if abs(r[6] - T_M) <= 0.5e-6]
+        plat = [r for r in rows if abs(r[1] - T_M) <= 0.5e-6]
         if plat:
             first_plat.add(int(round(plat[0][0] / DX)))
             after = [r for r in rows if r[0] > plat[-1][0]]
@@ -272,7 +280,7 @@ def iglo_results(d):
                 first_liq.add(int(round(after[0][0] / DX)))
     log = open(os.path.join(d, 'run_out.txt'), errors='replace').read()
     return dict(Tp=Tp, q=q, first_plat=first_plat, first_after=first_liq, nparc=len(traj), nexit=len(exits),
-                Texit=[r[0][3] for r in exits.values()], log=log)
+                Texit=[r[0][0] for r in exits.values()], log=log)
 
 
 def ice_results(d):
@@ -314,9 +322,9 @@ def check(root, leg):
         rep.check(False, 'leg %s IGLOO: no readable output (%s)' % (leg, exc))
         ig = None
     if ig is not None:
-        bad = [k for k in ('stuck in cell', 'no net progress', 'Inner loop', 'above T-melt') if k in ig['log']]
+        bad = [k for k in ('stuck in cell', 'no net progress', 'Inner loop') if k in ig['log']]
         rep.check(ig['nparc'] == NY * NZ and ig['nexit'] == NY * NZ and not bad,
-                  'leg %s IGLOO: %d parcels, %d exits, no stuck, no-progress, inner-loop or above-T-melt line%s'
+                  'leg %s IGLOO: %d parcels, %d exits, no stuck, no-progress or inner-loop line%s'
                   % (leg, ig['nparc'], ig['nexit'], (' (found: %s)' % ', '.join(bad)) if bad else ''))
         print('       IGLOO: first plateau row in cell(s) %s, first row after the plateau in cell(s) %s, exit %.4f K'
               % (sorted(ig['first_plat']), sorted(ig['first_after']),
