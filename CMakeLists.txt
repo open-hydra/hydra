@@ -16,7 +16,40 @@ OPTION(USE_OPENMP "Use OpenMP for parallelization" ON)
 # This INCLUDE statement executes code that sets the compile flags for DEBUG,
 # RELEASE, and TESTING. You should  review this file and make sure the flags 
 # are to your liking.
-INCLUDE(${CMAKE_MODULE_PATH}/SetFortranFlags.cmake) 
+INCLUDE(${CMAKE_MODULE_PATH}/SetFortranFlags.cmake)
+
+# ifx 2024.1 compiles the ghost metrics of MOSE and ARES wrongly at -O2 and above without IPO: the check MOSE, ARES and
+# FUSS make when built alone, which does not run inside hydra. It only reads the flags of the build type.
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM" AND CMAKE_Fortran_COMPILER_VERSION VERSION_GREATER_EQUAL 2024.1
+   AND CMAKE_Fortran_COMPILER_VERSION VERSION_LESS 2024.2)
+  string(TOUPPER "${CMAKE_BUILD_TYPE}" _ifx_bt)
+  separate_arguments(_ifx_flags UNIX_COMMAND "${CMAKE_Fortran_FLAGS} ${CMAKE_Fortran_FLAGS_${_ifx_bt}}")
+  set(_ifx_level "no -O option (-O2)")
+  set(_ifx_high TRUE)
+  set(_ifx_ipo FALSE)
+  if(CMAKE_INTERPROCEDURAL_OPTIMIZATION OR CMAKE_INTERPROCEDURAL_OPTIMIZATION_${_ifx_bt})
+    set(_ifx_ipo TRUE)
+  endif()
+  foreach(_ifx_f IN LISTS _ifx_flags)
+    if(_ifx_f MATCHES "^[-/]O[01]$")
+      set(_ifx_level "${_ifx_f}")
+      set(_ifx_high FALSE)
+    elseif(_ifx_f MATCHES "^[-/]O([23s]|fast)?$")
+      set(_ifx_level "${_ifx_f}")
+      set(_ifx_high TRUE)
+    elseif(_ifx_f MATCHES "^[-/]Q?ipo$")
+      set(_ifx_ipo TRUE)
+    endif()
+  endforeach()
+  if(_ifx_high AND NOT _ifx_ipo)
+    message(FATAL_ERROR "ifx ${CMAKE_Fortran_COMPILER_VERSION} with ${_ifx_level} and without IPO compiles a loop of the "
+                        "ghost metrics of MOSE and ARES wrongly (an error of the compiler: a minimal program in standard "
+                        "Fortran gives wrong values at -O2 and -O3 and the right ones at -O0, -O1 and with -ipo); a solver "
+                        "built so stops at set-up on the check of its ghost metrics or on a negative volume, or runs with "
+                        "wrong ghost metrics. Build with -O0 (figaro build hydra-<SUFFIX> --type=DEBUG), with gfortran "
+                        "(--compilers=gnu), or with IPO (-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON).")
+  endif()
+endif()
 # Locate and set parallelization libraries. There are some CMake peculiarities
 # taken care of here, such as the fact that the FindOpenMP routine doesn't know
 # about Fortran.
