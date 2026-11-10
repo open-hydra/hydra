@@ -9,6 +9,10 @@ Definitions (those of JPL-Lagrangian-20micron/jpl_compare.py; the reader is tec_
   X = (x - x_throat)/D*, x of a cell = mean of the four nodes of its k = 0 face; axis = first cell row, wall = last;
   M = |u|/sqrt(g R T). A reference zone is interpolated onto the run's cells; a row uses the cells with
   xmin < X <= the last station of the reference zone. The exit Mach number is taken at that last station.
+  Where the reference curve of the runs' case has a Mach drop (its maximum, then a minimum more than DROP_MIN below
+  it: the axis), two more lines: the row on the cells outside the stretch between those two stations, and the drop
+  itself -- maximum, minimum and the place of half height, of the run and of the reference. The reference has six
+  stations over that stretch: a pointwise difference there measures the place of the front more than the curve.
 Reference zones: OG = gas alone, MPS = 1 micron radius, MPL = 10 micron radius (the case the runs reproduce)."""
 import hashlib
 import os
@@ -22,6 +26,7 @@ sys.path.insert(0, HERE)
 from tec_cc import read_cc  # noqa: E402
 
 X_THROAT, D_STAR = 0.064207, 2.0 * 0.02033740
+DROP_MIN = 0.1            # a reference curve has a drop when it falls by more than this after its maximum
 ROWS = (('axis', 0, 'Axis'), ('wall', -1, 'Wall'))
 DEFAULT = (('IGLOO', 'JPL-Lagrangian-20micron'), ('ICE', 'JPL-Eulerian-20micron'), ('both', 'JPL-3solver-20micron'))
 
@@ -63,6 +68,22 @@ def against(X, M, zone, xmin):
                 exit=float(np.interp(xr[-1], X, M)), refexit=mr[-1])
 
 
+def drop(X, M, xlo, xhi=None):
+    """The Mach drop of a curve: its maximum on xlo < X (<= xhi), the minimum after it, the place of half height.
+    None when the maximum is the last point or the fall after it is below DROP_MIN."""
+    s = np.where((X > xlo) & (X <= (X[-1] if xhi is None else xhi)))[0]
+    i = s[np.argmax(M[s])]
+    if i == len(M) - 1:
+        return None
+    j = i + int(np.argmin(M[i:]))
+    if M[i] - M[j] < DROP_MIN:
+        return None
+    half = 0.5 * (M[i] + M[j])
+    k = i + int(np.argmax(M[i:j + 1] <= half))                   # the first point at or below half height
+    xh = X[k - 1] + (M[k - 1] - half) / (M[k - 1] - M[k]) * (X[k] - X[k - 1])
+    return dict(xmax=X[i], mmax=M[i], xmin=X[j], mmin=M[j], xhalf=xh)
+
+
 def main():
     args, ref, xmin, runs = sys.argv[1:], None, 0.2, []
     while args:
@@ -100,6 +121,25 @@ def main():
                   ' | rms against MPS %.4f, OG %.4f | margin %.2f'
                   % (row, a['n'], a['x0'], a['x1'], a['rms'], a['mean'], a['std'], a['exit'], a['refexit'],
                      a['exit'] - a['refexit'], b['rms'], o['rms'], min(b['rms'], o['rms']) / a['rms']))
+            xr, mr = zones['MPL', Z]
+            dr = drop(xr, mr, xmin)
+            if dr is None:
+                continue
+            out = (X > xmin) & (X <= xr[-1]) & ((X <= dr['xmax']) | (X >= dr['xmin']))
+            d = M[out] - np.interp(X[out], xr, mr)
+            print('  %s outside the drop (X <= %.3f or X >= %.3f): %d cells | run - MPL: rms %.4f mean %+.4f std %.4f'
+                  % (row, dr['xmax'], dr['xmin'], out.sum(), np.sqrt((d ** 2).mean()), d.mean(), d.std()))
+            du = drop(X, M, xmin, dr['xmin'])
+            if du is None:
+                print('  %s drop: none in the run | MPL: max %.3f at X %.3f, min %.3f at X %.3f, half height at X %.3f'
+                      % (row, dr['mmax'], dr['xmax'], dr['mmin'], dr['xmin'], dr['xhalf']))
+                continue
+            print('  %s drop: max %.4f at X %.3f, min %.4f at X %.3f, half height at X %.3f | MPL: max %.3f at X %.3f, '
+                  'min %.3f at X %.3f, half height at X %.3f | run - MPL: max %+.4f, min %+.4f, depth %+.4f, '
+                  'half height X %+.3f'
+                  % (row, du['mmax'], du['xmax'], du['mmin'], du['xmin'], du['xhalf'], dr['mmax'], dr['xmax'],
+                     dr['mmin'], dr['xmin'], dr['xhalf'], du['mmax'] - dr['mmax'], du['mmin'] - dr['mmin'],
+                     (du['mmax'] - du['mmin']) - (dr['mmax'] - dr['mmin']), du['xhalf'] - dr['xhalf']))
     labs = [lab for lab, _ in runs]
     for i, A in enumerate(labs):
         for B in labs[i + 1:]:
