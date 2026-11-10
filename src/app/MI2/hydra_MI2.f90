@@ -102,7 +102,7 @@ program hydra_MI2_program
     error stop 1
   endif
 
-  ! Route each INPUT/*phase.txt to its owning solver (ICE and IGLOO each solve their own phase)
+  ! Route each *phase.txt of INPUT/ to its owning solver (ICE and IGLOO each solve their own phase)
   call Assign_Phases()
 
   ! ---------------------------------------------------------------------------

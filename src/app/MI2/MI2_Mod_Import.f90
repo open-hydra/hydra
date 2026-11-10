@@ -6,7 +6,7 @@ module hydraMI2_Mod_Import
   private
   public :: Assign_Phases
 
-  !> One entry per INPUT/*phase.txt found in filelist.txt.
+  !> One entry per *phase.txt of INPUT/ found in filelist.txt.
   type :: phase_entry_t
     character(len=llen_) :: file     = ''   ! as listed, e.g. INPUT/partL-phase.txt
     character(len=llen_) :: name     = ''   ! partL   ('' for the unnamed INPUT/phase.txt)
@@ -25,7 +25,7 @@ module hydraMI2_Mod_Import
 
 contains
 
-  !> Route every INPUT/*phase.txt to the solver that owns it and set the solver phase prefixes:
+  !> Route every *phase.txt of INPUT/ to the solver that owns it and set the solver phase prefixes:
   !  ideal-gas -> MOSE; condensed -> ICE / IGLOO by [ICE-Parameters] / [IGLOO-General] phase
   !  (legacy fallback: the only candidate). Checks naming rules, the ATLAS modeling token and
   !  the files each solver will open.
@@ -59,7 +59,7 @@ contains
       call Read_Phase_Header(ph(n)%file, ph(n)%kind, ph(n)%word, ph(n)%modeling)
     enddo
     if (n == 0) then
-      write(*,'(A)') '[ERROR] [MI2] no INPUT/*phase.txt listed in filelist.txt'
+      write(*,'(A)') '[ERROR] [MI2] no INPUT/'//'*phase.txt listed in filelist.txt'
       error stop 1
     endif
     ph = ph(1:n)
