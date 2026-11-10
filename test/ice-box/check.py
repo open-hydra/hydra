@@ -191,7 +191,8 @@ def main():
     ncell = pic['rp_11'].size
 
     field = read_tec(os.path.join(run, 'OUTPUT', 'gas-field.tec'))
-    R = uniform(field['R'], 'gas field R')
+    # R is computed in each cell from its composition: uniform to round-off, which the 17 digits of the file show
+    R = uniform(field['R'], 'gas field R', tol=1e-13)
     W = float(open(os.path.join(run, 'INPUT', 'gas-phase.txt')).read().split('\n')[1].split()[1])
     info('gas constant R %.15e J/(kg K) from the field; Runiv/W with W %.6f: %.15e (rel.diff %.1e)'
          % (R, W, RUNIV / W, rel(R, RUNIV / W)))
