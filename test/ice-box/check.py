@@ -140,7 +140,7 @@ def uniform(a, name, tol=0.0):
 def parse_report(log):
     """[MI2-report] lines -> list of dicts (one per coupling step) and the cycles the frozen notice names."""
     steps, frozen, cur = [], [], None
-    for line in open(log):
+    for line in open(log, errors='replace'):
         m = re.match(r'\s*\[MI2-report\] (\S+)\s*(.*)$', line)
         if m:
             key, rest = m.group(1), m.group(2).split()
