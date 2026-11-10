@@ -268,6 +268,7 @@ contains
     Flux(np) = 0.5 * Area * kl * dot_product ( Gradient(np,:), Normal )
 
     if (model==2) then
+      dist = 1d-20 ! since the flux is computed at the wall (as MOSE's own walls pass it)
       call RANS_Diffusive_Flux ( flux=Flux(nt:nprim), &
                                  rans_variables=Prim_Wall(nt:nprim), &
                                  vel_gradient=Gradient(nu:nw,:), &
