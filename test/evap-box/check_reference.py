@@ -23,8 +23,8 @@ mixing). Then, per sweep:
      N-1 to N
   S  every scatter sample, paired with the reference state at the same droplet mass: x, y, u, v, T within
      their print budget (the E13.6 mass rounding times d(.)/dm, plus the F12.6 rounding); on the plateau, for a
-     few thermal relaxation times after the drop temperature crosses a node of the Psat column, plus what the
-     change of slope of the table is worth in T (the solver's implicit step can go across a node whole)
+     few thermal relaxation times after the drop temperature crosses a node of the Psat column, plus what a
+     solver step across the node can leave in T (the change of slope of the table over that step, relaxing after)
   Q  plateau samples against the closed-form wet-bulb balance at their diameter, beyond the reference's lag
   C  the sample clock: the k-th sample of stream n is written at the end of the first solver step past
      t_k = dt_q (k - frac(n phi)), dt_q = L_box/(v_inj fsample-traj); the reference reaches the sample's mass
@@ -485,7 +485,8 @@ def integrate(drop, field, s0, rtol=1e-11, tmax=1.0):
 
 # ------------------------------------------------------------------ pairing and comparisons
 F_HALF = 0.5e-6           # half-ULP of IGLOO's F12.6 columns (x, y, z, u, v, w, T)
-NODE_TIMES = 5.0          # S: thermal relaxation times after a node of the Psat column that get the node allowance
+NODE_STEP = 1.0           # S: thermal relaxation times a solver step across a node of the Psat column can last
+NODE_TIMES = 5.0          # S: thermal relaxation times after such a node over which the node allowance is followed
 
 
 def e_half(v):
@@ -529,12 +530,14 @@ def pair_by_mass(drop, field, traj, m_target):
 
 
 def node_windows(drop, field, traj):
-    """Plateau crossings of the nodes of the Psat column by the reference: a list of (m_hi, m_lo, m[], T[]).
+    """Plateau crossings of the nodes of the Psat column by the reference: a list of (m_hi, m_lo, m[], dT[]).
 
     The slope of the tabulated p_sat changes at every node, and the solver's implicit step can go across one whole:
-    the drop then sits between the reference and the reference with the line of the interval it left continued, and
-    relaxes onto the former within a few thermal times. (m[], T[]) is that second reference along the mass, over
-    NODE_TIMES relaxation times from the step that crosses; m_hi and m_lo are its ends."""
+    at the end of that step the drop sits between the reference and the reference with the line of the interval it
+    left continued, and from there it relaxes onto the former at the thermal rate. dT[] bounds that along the mass
+    m[]: the distance between the two references at equal mass while the crossing step can last (NODE_STEP
+    relaxation times past the node), and the largest such distance, decayed at the relaxation rate, afterwards;
+    the window ends NODE_TIMES relaxation times after the step that crosses. m_hi and m_lo are its ends."""
     wins = []
     if drop.psat_mode != "table":
         return wins
@@ -554,14 +557,25 @@ def node_windows(drop, field, traj):
         lam = abs((f(s[4] + dT) - f(s[4])) / dT)
         alt = drop.continued(node, rising)
         h = NODE_TIMES / lam / 200.0
-        y, ms, ts = s.copy(), [s[5]], [s[4]]
+        t_node = (node - s[4]) / (traj[i + 1][1][4] - s[4]) * (traj[i + 1][0] - traj[i][0])   # from this point on
+        ya, yr = s.copy(), s.copy()
+        ma, ta, mr, tr = [s[5]], [s[4]], [s[5]], [s[4]]
         for _ in range(200):
-            y, _ = dp_step(lambda z: alt.rhs(z, gas), y, h)
-            if not np.all(np.isfinite(y)) or y[5] <= M_BURN:
+            ya, _ = dp_step(lambda z: alt.rhs(z, gas), ya, h)
+            yr, _ = dp_step(lambda z: drop.rhs(z, gas), yr, h)
+            if not (np.all(np.isfinite(ya)) and np.all(np.isfinite(yr))) or min(ya[5], yr[5]) <= M_BURN:
                 break
-            ms.append(y[5])
-            ts.append(y[4])
-        wins.append((ms[0], ms[-1], np.array(ms[::-1]), np.array(ts[::-1])))
+            ma.append(ya[5])
+            ta.append(ya[4])
+            mr.append(yr[5])
+            tr.append(yr[4])
+        ma, ta, mr, tr = (np.array(v[::-1]) for v in (ma, ta, mr, tr))          # by rising mass
+        apart = np.abs(np.interp(mr, ma, ta) - tr)[::-1]                         # at equal mass, in time
+        env, e, decay = [], 0.0, math.exp(-lam * h)
+        for k, a in enumerate(apart):
+            e = max(e * decay, a) if k * h - t_node <= NODE_STEP / lam else e * decay
+            env.append(e)
+        wins.append((mr[-1], mr[0], mr, np.array(env[::-1])))
     return wins
 
 
@@ -613,9 +627,8 @@ def check_sweep(rep, run, drop, field, sweep_tag, streams, dt_q, gated, label):
             dm = e_half(mm)
             ref = {"x": st[0], "y": st[1], "u": st[2], "v": st[3], "T": st[4]}
             idx = {"x": 0, "y": 1, "u": 2, "v": 3, "T": 4}
-            # just after a node of the Psat column: what the change of slope is worth at this mass
-            node = max([abs(float(np.interp(mm, wm, wt)) - st[4]) for m_hi, m_lo, wm, wt in wins if m_lo <= mm <= m_hi],
-                       default=0.0)
+            # just after a node of the Psat column: what a solver step across it can leave in T at this mass
+            node = max([float(np.interp(mm, wm, wd)) for m_hi, m_lo, wm, wd in wins if m_lo <= mm <= m_hi], default=0.0)
             w["node"] += node > 1e-7
             for key in ref:
                 floor = 1e-7 if key == "T" else 1e-9
