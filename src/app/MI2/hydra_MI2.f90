@@ -21,6 +21,7 @@ program hydra_MI2_program
                                      nMassLimited, Accumulate_Injected_Energy, Gas_Total_Energy, &
                                      Gas_Mean_Temperature, energyInjected, energyDatumPart, &
                                      energyAudited, Check_ICE_Mass_Channel, &
+                                     Check_ICE_Source_Finite, Check_IGLOO_Source_Finite, &
                                      Gas_Momentum, ICE_To_Gas_Totals, IGLOO_To_Gas_Totals, &
                                      mdotHanded, nHanded
   use hydraMI2_Build_Stamp,    only: Print_Build_Stamp
@@ -249,6 +250,9 @@ program hydra_MI2_program
           IGLOO_src_eulerian = eulCoupling
           IGLOO_src_cycle    = n_cycle
           IGLOO_src_step     = n_couple
+
+          ! refuse a non-finite rate before MOSE applies it (the Eulerian branch hands IGLOO%euler, not these)
+          if ( .not. IGLOO_src_eulerian ) call Check_IGLOO_Source_Finite( MOSE_simulation%domain(1), IGLOO )
         endif
       endif
 
@@ -272,6 +276,8 @@ program hydra_MI2_program
 
         ! warn once if ICE's mass channel, dropped by ICExMOSE, becomes non-zero
         if ( ICE_has_sources ) call Check_ICE_Mass_Channel( ICE_simulation%domain(1) )
+        ! refuse a non-finite source before MOSE applies it
+        if ( ICE_has_sources ) call Check_ICE_Source_Finite( MOSE_simulation%domain(1), ICE_simulation%domain(1) )
       endif
 
       ! --- Exit conditions ----------------------------------------------------

@@ -17,6 +17,8 @@ module hydraMI2_Mod_Coupling
   public :: Gas_Total_Energy
   public :: Gas_Mean_Temperature
   public :: Check_ICE_Mass_Channel
+  public :: Check_ICE_Source_Finite
+  public :: Check_IGLOO_Source_Finite
   public :: Gas_Momentum
   public :: ICE_To_Gas_Totals
   public :: IGLOO_To_Gas_Totals
@@ -739,6 +741,96 @@ contains
     endif
 
   end subroutine Check_ICE_Mass_Channel
+
+
+  !> Stop on a value that is not finite in what ICE hands the gas, the slots ICExMOSE reads: MOSE's conservative update
+  !  keeps the old temperature of a cell whose energy residual is NaN, so such a value would act unseen. Called once per
+  !  coupling step, outside any parallel region.
+  subroutine Check_ICE_Source_Finite ( MOSE_domain, ICE_domain )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    use MOSE_Finite_m,         only: Not_Finite
+    use ICE_Advanced_Types_m,  only: ICE_domain_type
+    use ICE_Global_m,          only: ngroups, nbase
+    implicit none
+    type(MOSE_domain_type), intent(in) :: MOSE_domain
+    type(ICE_domain_type),  intent(in) :: ICE_domain
+    integer :: b, g, i, j, k, n, s
+    character(len=16) :: val
+
+    do b = 1, size(MOSE_domain%blk)
+      do g = 1, ngroups
+        if (.not. allocated(ICE_domain%blk(b)%cond_phase(g)%source)) cycle
+        do k = 1, MOSE_domain%blk(b)%dim(3)
+        do j = 1, MOSE_domain%blk(b)%dim(2)
+        do i = 1, MOSE_domain%blk(b)%dim(1)
+          do n = 1, 4                        ! momentum source(2:4), energy source(nbase(g)-1)
+            s = merge(n+1, nbase(g)-1, n < 4)
+            if (.not. Not_Finite(ICE_domain%blk(b)%cond_phase(g)%source(s,i,j,k))) cycle
+            write(val,'(ES12.5)') ICE_domain%blk(b)%cond_phase(g)%source(s,i,j,k)
+            write(*,'(A,I0,A,I0,A,3(1X,I0),A,I0,4A)') ' [ERROR] MI2: ICE handed a non-finite source (block ', b, &
+              ', group ', g, ', cell', i, j, k, ', source(', s, '), the ', trim(merge('momentum', 'energy  ', n < 4)), &
+              ') = ', trim(adjustl(val))
+            error stop 1
+          enddo
+        enddo; enddo; enddo
+      enddo
+    enddo
+
+  end subroutine Check_ICE_Source_Finite
+
+
+  !> Stop on a value that is not finite in the source-mode rates IGLOO hands the gas, those IGLOOxMOSE reads (sourceMom,
+  !  sourceEn, and sourceMass under a stoichiometry), for the reason of Check_ICE_Source_Finite. Called once per coupling
+  !  step, after IGLOO's solve, outside any parallel region.
+  subroutine Check_IGLOO_Source_Finite ( MOSE_domain, IGLOO )
+    use MOSE_Advanced_Types_m,  only: MOSE_domain_type
+    use MOSE_Finite_m,          only: Not_Finite
+    use IGLOO_module,           only: obj_IGLOO
+    use IGLOO_variables,        only: nm
+    use hydraMI2_Stoichiometry, only: has_stoichiometry
+    implicit none
+    type(MOSE_domain_type), intent(in) :: MOSE_domain
+    type(obj_IGLOO),        intent(in) :: IGLOO
+    integer :: b, i, j, k, n
+
+    do b = 1, size(MOSE_domain%blk)
+      associate ( src => IGLOO%source(b) )
+      do k = 1, MOSE_domain%blk(b)%dim(3)
+      do j = 1, MOSE_domain%blk(b)%dim(2)
+      do i = 1, MOSE_domain%blk(b)%dim(1)
+        if (allocated(src%sourceMom)) then
+          do n = 1, 3
+            if (Not_Finite(src%sourceMom(n,i,j,k))) call Refuse('sourceMom', n, src%sourceMom(n,i,j,k))
+          enddo
+        endif
+        if (allocated(src%sourceEn)) then
+          if (Not_Finite(src%sourceEn(i,j,k))) call Refuse('sourceEn', 0, src%sourceEn(i,j,k))
+        endif
+        if (has_stoichiometry .and. allocated(src%sourceMass)) then
+          do n = 1, nm
+            if (Not_Finite(src%sourceMass(n,i,j,k))) call Refuse('sourceMass', n, src%sourceMass(n,i,j,k))
+          enddo
+        endif
+      enddo; enddo; enddo
+      end associate
+    enddo
+
+  contains
+
+    subroutine Refuse ( name, n, v )
+      character(len=*), intent(in) :: name
+      integer,          intent(in) :: n
+      real(R8),         intent(in) :: v
+      character(len=16) :: what, val
+      what = name
+      if (n > 0) write(what,'(2A,I0,A)') name, '(', n, ')'
+      write(val,'(ES12.5)') v
+      write(*,'(A,I0,A,3(1X,I0),4A)') ' [ERROR] MI2: IGLOO handed a non-finite source (block ', b, ', cell', i, j, k, &
+        ', ', trim(what), ') = ', trim(adjustl(val))
+      error stop 1
+    end subroutine Refuse
+
+  end subroutine Check_IGLOO_Source_Finite
 
 
   !> Inject ICE's reaction on the gas into MOSE's residual, from MOSE's per-RK-stage callback:
