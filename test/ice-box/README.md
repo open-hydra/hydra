@@ -62,7 +62,7 @@ python3 -B test/ice-box/check.py <run-dir> <log>              # the numeric chec
 ## Regenerate the inputs
 
 ```bash
-export ATLASDIR=<ATLAS tree at e0c7e71>  ATLAS_PYTHON=<python with cantera>
+export ATLASDIR=<ATLAS tree at 34c128e>  ATLAS_PYTHON=<python with cantera>
 test/mi2-checks/regen_case.sh test/ice-box <scratch> GPB BCB ICB --install
 python3 -B test/ice-box/make_case.py
 ```

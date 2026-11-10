@@ -17,11 +17,14 @@ cp -p "$LAG"/INPUT/gas-* "$C/INPUT/"
 for f in phase.txt properties.dat bc.txt; do cp -p "$LAG/INPUT/part-$f" "$C/INPUT/partL-$f"; done
 # Eulerian phase: the Eulerian case's files (bc: f3=200, f4=300; ic.tec)
 for f in phase.txt properties.dat bc.txt ic.tec; do cp -p "$EUL/INPUT/part-$f" "$C/INPUT/partE-$f"; done
-# half loading on both inlets: krho 0.30 -> 0.17647 (krho/(1-krho) = 0.21429 = half of 0.42857)
+# half loading on both inlets: field 1 of a 401 record is krho/(1 - krho_tot) over the dispersed phases of the
+# cell, so krho 0.30 -> 0.15 in each of the two halves it (0.15/0.70 = 0.2142857, half of 0.30/0.70)
 for f in partL partE; do
-  n=$(grep -c '^   0.30000E+00   0.10000E+01' "$C/INPUT/$f-bc.txt")
-  sed -i 's/^   0.30000E+00   0.10000E+01/   0.17647E+00   0.10000E+01/' "$C/INPUT/$f-bc.txt"
-  echo "$f-bc.txt: $n inlet payload(s) set to krho = 0.17647"
+  awk 'h { sub(/^ *[^ ]+/, sprintf("%24.16E", $1 / 2)); n++; h = 0 } NF == 6 && $6 == 401 { h = 1 } { print }
+       END { print n + 0 > "/dev/stderr" }' "$C/INPUT/$f-bc.txt" > "$C/INPUT/$f-bc.txt.half" 2> "$C/INPUT/$f-bc.n"
+  n=$(cat "$C/INPUT/$f-bc.n"); rm -f "$C/INPUT/$f-bc.n"; mv "$C/INPUT/$f-bc.txt.half" "$C/INPUT/$f-bc.txt"
+  [ "$n" -gt 0 ] || { echo "$f-bc.txt: no 401 record"; exit 1; }
+  echo "$f-bc.txt: $n inlet payload(s) at krho = 0.15 per phase (field 1 halved)"
 done
 # The Eulerian IC carries the full (krho = 0.30) loading; halve rho_p and n_p so the initial field matches the inlet.
 python3 - "$C/INPUT/partE-ic.tec" <<'EOF'
@@ -76,11 +79,11 @@ name     = partL
 rho      = 4004.62
 cp       = 1380
 ''')
-s = re.sub(r'^krho = 0\.30$', 'krho = 0.17647   ; HALF loading per phase: two phases -> total mass-flux ratio 0.42857 as in the single-phase cases', s, flags=re.M)
+s = re.sub(r'^krho = 0\.30$', 'krho = 0.15   ; HALF loading per phase: two phases -> total mass-flux ratio 0.42857 as in the single-phase cases', s, flags=re.M)
 s = s.replace('; JPL nozzle (Chang 1980), 20 micron particles -- MOSE + IGLOO Lagrangian coupling.',
 '''; JPL nozzle (Chang 1980), 20 micron particles -- MOSE + ICE (Eulerian, phase partE) + IGLOO (Lagrangian,
-; phase partL): the SAME material solved twice, each phase carrying HALF the loading (krho = 0.17647 each,
-; total mass-flux ratio 0.42857 = the single-phase cases), so the gas is comparable to Chang MPL and the two
+; phase partL): the SAME material solved twice, each phase carrying HALF the loading (krho: 0.15 each,
+; total mass-flux ratio 0.42857: the single-phase cases), so the gas is comparable to Chang MPL and the two
 ; condensed fields can be compared against each other on the same gas. Built 2026-09-16 from
 ; JPL-Lagrangian-20micron (partL files, INI) + JPL-Eulerian-20micron (partE files, ICE sections).''')
 open(p, 'w').write(s); print('input.ini assembled')
@@ -89,7 +92,7 @@ cat > "$C/README.md" <<'EOF'
 # JPL-3solver-20micron
 
 MOSE + ICE (`partE`) + IGLOO (`partL`) on the Chang (1980) JPL nozzle, 20 µm alumina, **same material in both
-condensed phases, half the loading each** (`krho = 0.17647` per phase, total mass-flux ratio 0.42857 = the
+condensed phases, half the loading each** (`krho = 0.15` per phase, total mass-flux ratio 0.42857 = the
 single-phase cases). Each solver reads only its own file set:
 
 | solver | INI key | files |
@@ -103,7 +106,7 @@ writes per-phase BC payloads (plan A1) and the `modeling` token (A4) — the f3/
 are still not ATLAS-expressible.
 
 Run: `figaro hydra-MI2 -p 4 solve` (≈ 15 min). Compare: `python3 jpl_compare.py`.
-Full double loading instead: set `krho` back to `0.30000E+00` in both bc files and restore `partE-ic.tec`
-from `../JPL-Eulerian-20micron/INPUT/part-ic.tec`.
+Full double loading instead: field 1 of every 401 record in both bc files at 0.30/(1 - 0.60) = 0.75 and
+`partE-ic.tec` restored from `../JPL-Eulerian-20micron/INPUT/part-ic.tec`.
 EOF
 ls "$C" "$C/INPUT"; grep -n "^phase\|^ICE-iter\|^IGLOO-iter\|^krho\|^name\|^modeling" "$C/input.ini"

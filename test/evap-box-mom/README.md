@@ -71,7 +71,7 @@ exit 0, no error or parcel-abort line, every sweep ended at time-end) and prints
 
 ## Regenerate
 
-    export ATLASDIR=<ATLAS tree at e0c7e71> ATLAS_PYTHON=<python with cantera>
+    export ATLASDIR=<ATLAS tree at 34c128e> ATLAS_PYTHON=<python with cantera>
     test/mi2-checks/regen_case.sh test/evap-box-mom <scratch> GPB BCB ICB [--install]
 
 `INPUT/` is reproducible byte for byte from `input.ini` (a second regeneration reports every file identical). The
