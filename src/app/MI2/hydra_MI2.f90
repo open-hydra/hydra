@@ -22,6 +22,7 @@ program hydra_MI2_program
                                      Gas_Mean_Temperature, energyInjected, energyDatumPart, &
                                      energyAudited, Check_ICE_Mass_Channel, &
                                      Check_ICE_Source_Finite, Check_IGLOO_Source_Finite, &
+                                     Check_IGLOO_Euler_Finite, &
                                      Gas_Momentum, ICE_To_Gas_Totals, IGLOO_To_Gas_Totals, &
                                      mdotHanded, nHanded
   use hydraMI2_Build_Stamp,    only: Print_Build_Stamp
@@ -254,8 +255,12 @@ program hydra_MI2_program
           IGLOO_src_cycle    = n_cycle
           IGLOO_src_step     = n_couple
 
-          ! refuse a non-finite rate before MOSE applies it (the Eulerian branch hands IGLOO%euler, not these)
-          if ( .not. IGLOO_src_eulerian ) call Check_IGLOO_Source_Finite( MOSE_simulation%domain(1), IGLOO )
+          ! refuse a non-finite value before MOSE applies it: the source-mode rates, or the Eulerian fields
+          if ( IGLOO_src_eulerian ) then
+            call Check_IGLOO_Euler_Finite( MOSE_simulation%domain(1), IGLOO )
+          else
+            call Check_IGLOO_Source_Finite( MOSE_simulation%domain(1), IGLOO )
+          endif
         endif
       endif
 

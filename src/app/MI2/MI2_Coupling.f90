@@ -19,6 +19,7 @@ module hydraMI2_Mod_Coupling
   public :: Check_ICE_Mass_Channel
   public :: Check_ICE_Source_Finite
   public :: Check_IGLOO_Source_Finite
+  public :: Check_IGLOO_Euler_Finite
   public :: Gas_Momentum
   public :: ICE_To_Gas_Totals
   public :: IGLOO_To_Gas_Totals
@@ -846,6 +847,62 @@ contains
     end subroutine Refuse
 
   end subroutine Check_IGLOO_Source_Finite
+
+
+  !> Stop on a value that is not finite in the Eulerian fields IGLOO hands the gas under IGLOO-iter = 2, those IGLOOxMOSE
+  !  turns into momentum and energy sources (velocity, temperature, density, np of every family), for the reason of
+  !  Check_ICE_Source_Finite. Called once per coupling step, after IGLOO's solve, outside any parallel region.
+  subroutine Check_IGLOO_Euler_Finite ( MOSE_domain, IGLOO )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    use MOSE_Finite_m,         only: Not_Finite
+    use IGLOO_module,          only: obj_IGLOO
+    use IGLOO_variables,       only: nfam
+    implicit none
+    type(MOSE_domain_type), intent(in) :: MOSE_domain
+    type(obj_IGLOO),        intent(in) :: IGLOO
+    integer :: b, m, i, j, k, n
+
+    do b = 1, size(MOSE_domain%blk)
+      do m = 1, nfam
+        associate ( e => IGLOO%euler(b,m) )
+        do k = 1, MOSE_domain%blk(b)%dim(3)
+        do j = 1, MOSE_domain%blk(b)%dim(2)
+        do i = 1, MOSE_domain%blk(b)%dim(1)
+          if (allocated(e%velocity)) then
+            do n = 1, 3
+              if (Not_Finite(e%velocity(n,i,j,k))) call Refuse('velocity', n, e%velocity(n,i,j,k))
+            enddo
+          endif
+          if (allocated(e%temperature)) then
+            if (Not_Finite(e%temperature(i,j,k))) call Refuse('temperature', 0, e%temperature(i,j,k))
+          endif
+          if (allocated(e%density)) then
+            if (Not_Finite(e%density(i,j,k))) call Refuse('density', 0, e%density(i,j,k))
+          endif
+          if (allocated(e%np)) then
+            if (Not_Finite(e%np(i,j,k))) call Refuse('np', 0, e%np(i,j,k))
+          endif
+        enddo; enddo; enddo
+        end associate
+      enddo
+    enddo
+
+  contains
+
+    subroutine Refuse ( name, n, v )
+      character(len=*), intent(in) :: name
+      integer,          intent(in) :: n
+      real(R8),         intent(in) :: v
+      character(len=16) :: what, val
+      what = name
+      if (n > 0) write(what,'(2A,I0,A)') name, '(', n, ')'
+      write(val,'(ES12.5)') v
+      write(*,'(A,I0,A,I0,A,3(1X,I0),4A)') ' [ERROR] MI2: IGLOO handed a non-finite Eulerian field (block ', b, &
+        ', family ', m, ', cell', i, j, k, ', ', trim(what), ') = ', trim(adjustl(val))
+      error stop 1
+    end subroutine Refuse
+
+  end subroutine Check_IGLOO_Euler_Finite
 
 
   !> Inject ICE's reaction on the gas into MOSE's residual, from MOSE's per-RK-stage callback:
