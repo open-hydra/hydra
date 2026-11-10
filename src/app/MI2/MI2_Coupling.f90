@@ -566,7 +566,7 @@ contains
     integer  :: i0, i1, j0, j1, k0, k1, ni, nj, nk
     real(R8) :: rhoi(nsc), vel(3), rho, R, gam, T, mu, kappa
     real(R8) :: mSum, mdot
-    integer  :: nSum
+    integer  :: nSum, noFlow
 
     upper = 0
     mdotHanded = 0._R8
@@ -641,9 +641,9 @@ contains
             error stop 1
           enddo
         endif
-        mSum = 0._R8; nSum = 0
+        mSum = 0._R8; nSum = 0; noFlow = 0
         !$OMP PARALLEL DEFAULT(SHARED), PRIVATE(i,m,n,mdot)
-        !$OMP DO REDUCTION(+:mSum,nSum)
+        !$OMP DO REDUCTION(+:mSum,nSum) REDUCTION(max:noFlow)
         do i = lower, upper
           call IGLOO%geoblock(b)%ijk2fmn ( MOSE_domain%bc(i)%i, MOSE_domain%bc(i)%j, &
                                            MOSE_domain%bc(i)%k, f, m, n )
@@ -656,7 +656,8 @@ contains
           case (403, 404, 420)             ! mdot is the prescribed mass flux [kg/(s m2)], an inflow whatever its sign
             if (MOSE_domain%bc(i)%srm_inflow) cycle   ! a grain: no mass flow in its record, IGLOO's value stays
             mdot = abs(MOSE_domain%bc(i)%mdot) * IGLOO%geoblock(b)%face(f)%cell(m,n)%area
-          case default
+          case default                     ! no mass flow in the record: a particle inlet that scales with it is refused below
+            if (IGLOO%geoblock(b)%face(f)%cell(m,n)%bcdef == 401) noFlow = max(noFlow, i)
             cycle
           end select
           IGLOO%geoblock(b)%face(f)%cell(m,n)%mdotGas = mdot
@@ -665,6 +666,12 @@ contains
         enddo
         !$OMP END DO
         !$OMP END PARALLEL
+        if (noFlow > 0) then
+          write(*,'(A,I0,A,I0,A,I0,A)') ' [ERROR] MI2: block ', b, ' face ', f, ': particles injected in proportion to '// &
+            'the gas mass flow (particle BC 401) on a gas boundary of kind ', MOSE_domain%bc(noFlow)%type, &
+            ', whose record holds no mass flow'
+          error stop 1
+        endif
         mdotHanded = mdotHanded + mSum
         nHanded    = nHanded + nSum
       enddo
