@@ -72,8 +72,11 @@ program hydra_MI2_program
   call Print_Build_Stamp()
 
 #if defined (_OPENMP)
+  ! the team size of a parallel region, written by one thread
   !$omp parallel
+  !$omp single
   nthreads = OMP_GET_NUM_THREADS()
+  !$omp end single
   !$omp end parallel
   write(*,'(A)')    ' Parallel execution'
   write(*,'(A)')    ' OpenMP:'
