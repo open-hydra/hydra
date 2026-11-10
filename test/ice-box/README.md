@@ -17,9 +17,7 @@ material density 1000 kg/m³, cp 4184 J/(kg K), Stokes drag (`C_d = 24/Re`) and 
 Schedule (`[HYDRA-Parameters]`): cycle 1 runs no MOSE and one forward-Euler ICE step, so the
 source ICE stores is the one evaluated at the initial state; cycle 2 runs 200 coupling steps of
 one time-accurate MOSE iteration each with that source frozen (`ICE-iter = 0`). One iteration
-per step, not one block of 200: MOSE ends a block at its first iteration when the density
-residual is below `res-threshold`, which a uniform gas with no mass source satisfies (measured:
-a `MOSE-iter = 0 200` block stops after one dt).
+per step, not one block of 200, so that the coupling report covers every time step.
 
 ## The oracle
 
@@ -37,9 +35,9 @@ W      = rho_p u_p (u_p - u_g) / tau · V                drag work on the partic
 and over cycle 2, of duration `t`: `Δ(Σ rho u V) = F t`, `Δ(Σ rho E V) = (W - Q_heat) t`.
 `mu_g` and `k_g` are interpolated from `INPUT/gas-transport.dat` as FLINT does (linear between
 the integer-kelvin rows) at `T_g = p/(rho R)` of `INPUT/gas-ic.tec`. Everything is independent
-of both integrators and of the time step. Numbers (2026-09-30, hydra `c6b80c5` tree): `tau = 9.98871e-4 s`,
-`F = 1.28167e-2 N`, `Q_heat = 1234.92 W`, `t = 7.4998e-4 s`, gas velocity gain 0.2252 m/s,
-gas energy loss 0.9262 J (the gas cools by 29 K; the source is frozen, so it does not relax).
+of both integrators and of the time step. Numbers (2026-11-10, MOSE `b3e2ba8`): `tau = 9.98867e-4 s`,
+`F = 1.28168e-2 N`, `Q_heat = 1234.96 W`, `t = 3.7159e-4 s`, gas velocity gain 0.1116 m/s,
+gas energy loss 0.4589 J (the gas cools by 14.4 K; the source is frozen, so it does not relax).
 
 `check.py` (run by the gate) compares, from the `[MI2-report]` lines of cycle 2 and the output
 fields: A0 the reported `tau` (uniform) with the closed form to 1e-10; A1 the gas momentum

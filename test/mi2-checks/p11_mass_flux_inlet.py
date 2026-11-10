@@ -9,9 +9,10 @@ injects from it. Prints PASS/FAIL lines with the numbers compared; exits 1 on an
            mesh exactly as IGLOO does (mean of the two i-faces of the first-column hexahedron, each quad split along
            its 1-3 diagonal); for 401, 0.5 <= sum / (g * SUM(area)) <= 2 (MOSE's computed inflow, positive).
   flux   : the inlet-column condensed flux mean_j(rho_p u_p)[i=1] of the last IGLOO euler file equals
-           krho/(1-krho) * mean_j(rho u)[i=1] of the gas field within 3 % (krho from part-bc.txt), both above a
-           10 kg/(s m2) floor; for 403 it also equals krho/(1-krho) * g within 3 % (the projected column mean varies
-           1-2 % with the gas state)."""
+           krho/(1-krho) * mean_j(rho u)[i=1] of the gas field within 5 % (krho from part-bc.txt), both above a
+           10 kg/(s m2) floor; for 403 it also equals krho/(1-krho) * g within 5 %. The column mean is not weighted
+           by the cell areas and follows the gas of the start-up: 0.990 to 1.032 of krho/(1-krho) * g over one to
+           four sweeps of 50 to 800 MOSE iterations; a loading applied twice or not at all is 30 % off or more."""
 import glob, os, re, sys
 import numpy as np
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -19,6 +20,7 @@ from tec_cc import read_cc
 
 INLET_CODES = {401, 402, 403, 404, 405, 406, 407, 420}   # the records MOSExIGLOO hands over
 GUIDE = {1: (1, 2, 3, 4), 2: (7, 6, 5, 8)}               # IGLOO's face-vertex table, faces 1 and 2
+FLUX_TOL = 0.05                                          # relative band of the inlet-column condensed flux
 fails = 0
 
 
@@ -129,11 +131,13 @@ def main():
     load = krho / (1.0 - krho)
     print(f'  {os.path.basename(eul[-1])}: inlet-column rho_p*u_p {cond:.4f}; gas rho*u {gflx:.4f}; '
           f'krho/(1-krho)*rho*u {load * gflx:.4f}; krho/(1-krho)*g {load * g:.4f} kg/(s m2)')
-    verdict(cond > 10.0 and gflx > 10.0 and abs(cond - load * gflx) <= 0.03 * load * gflx,
-            f'{mode}: inlet-column condensed flux = krho/(1-krho) x gas rho*u within 3 % (ratio {cond / (load * gflx):.4f})')
+    verdict(cond > 10.0 and gflx > 10.0 and abs(cond - load * gflx) <= FLUX_TOL * load * gflx,
+            f'{mode}: inlet-column condensed flux = krho/(1-krho) x gas rho*u within {100 * FLUX_TOL:.0f} % '
+            f'(ratio {cond / (load * gflx):.4f})')
     if mode == '403':
-        verdict(abs(cond - load * g) <= 0.03 * load * g,
-                f'403: inlet-column condensed flux = krho/(1-krho) x g within 3 % (ratio {cond / (load * g):.4f})')
+        verdict(abs(cond - load * g) <= FLUX_TOL * load * g,
+                f'403: inlet-column condensed flux = krho/(1-krho) x g within {100 * FLUX_TOL:.0f} % '
+                f'(ratio {cond / (load * g):.4f})')
 
 
 if __name__ == '__main__':

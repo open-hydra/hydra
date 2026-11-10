@@ -9,11 +9,11 @@
 #             part-bc.txt untouched -> every ' [MI2-report] igloo-inlet-mdot <sum> <n>' line has n = 40 and
 #             sum = g * SUM(cell%area) to 1e-8 (the areas recomputed from MESH/mesh.tec as IGLOO does), and the
 #             inlet-column condensed flux of IGLOO's Eulerian projection is krho/(1-krho) x the gas rho*u of the
-#             same run's field within 3 % (and krho/(1-krho) x g within 3 %);
+#             same run's field within 5 % (and krho/(1-krho) x g within 5 %);
 #  one403   : the same with N-coupling 1 -> the flux check on a binary whose over-injection kills the gas in the
 #             second MOSE block (no final write, no euler file) still yields a number;
 #  ctrl401  : the case as shipped -> n = 40, MOSE's positive computed inflow within [0.5, 2] x g * SUM(area), and
-#             the same 3 % flux check.
+#             the same 5 % flux check.
 # Every run: GAME OVER, none of the failure signatures, exit 0, parcels injected in every sweep.
 # Without the area factor the report holds g x n (1/mean(area) = 1.1e6 too large) or is absent, and the second
 # MOSE block dies with 'NaN or p<0 detected' ('NaN, infinity or p<0 detected' from a later MOSE). The numeric checks are in p11_mass_flux_inlet.py.

@@ -616,6 +616,21 @@ contains
       do f = 1, 6
         lower = upper + 1
         upper = upper + MOSE_domain%n_bf(b,f)
+        ! the record of a grain applied as an inlet holds the reference mass flux of its burning law, not the flow of
+        ! the face: particles injected in proportion to the gas mass flow cannot sit on it
+        if (any(MOSE_domain%bc(lower:upper)%srm_inflow)) then
+          do i = lower, upper
+            if (.not. MOSE_domain%bc(i)%srm_inflow) cycle
+            call IGLOO%geoblock(b)%ijk2fmn ( MOSE_domain%bc(i)%i, MOSE_domain%bc(i)%j, &
+                                             MOSE_domain%bc(i)%k, f, m, n )
+            if (m<=0 .or. n<=0) cycle
+            if (IGLOO%geoblock(b)%face(f)%cell(m,n)%bcdef /= 401) cycle
+            write(*,'(A,I0,A,I0,A)') ' [ERROR] MI2: block ', b, ' face ', f, ': particles injected in proportion to '// &
+              'the gas mass flow (particle BC 401) on a propellant grain applied as an inlet (MOSE BC 502, mode 2): '// &
+              'its record holds the reference mass flux of the burning law, not the mass flow of the face'
+            error stop 1
+          enddo
+        endif
         mSum = 0._R8; nSum = 0
         !$OMP PARALLEL DEFAULT(SHARED), PRIVATE(i,m,n,mdot)
         !$OMP DO REDUCTION(+:mSum,nSum)
@@ -624,10 +639,13 @@ contains
                                            MOSE_domain%bc(i)%k, f, m, n )
           if (m<=0 .or. n<=0) cycle
           select case (MOSE_domain%bc(i)%type)
-          case (401, 402, 405, 406, 407)   ! mdot is the face mass flow MOSE computes [kg/s]
+          case (401, 402, 405)             ! mdot is the face mass flow MOSE computes [kg/s] along the solver normal:
+            mdot = abs(MOSE_domain%bc(i)%mdot)   ! negative for an inflow on faces 2, 4 and 6
+          case (406, 407)
             mdot = MOSE_domain%bc(i)%mdot
-          case (403, 404, 420)             ! mdot is the prescribed mass flux [kg/(s m2)]
-            mdot = MOSE_domain%bc(i)%mdot * IGLOO%geoblock(b)%face(f)%cell(m,n)%area
+          case (403, 404, 420)             ! mdot is the prescribed mass flux [kg/(s m2)], an inflow whatever its sign
+            if (MOSE_domain%bc(i)%srm_inflow) cycle   ! a grain: no mass flow in its record, IGLOO's value stays
+            mdot = abs(MOSE_domain%bc(i)%mdot) * IGLOO%geoblock(b)%face(f)%cell(m,n)%area
           case default
             cycle
           end select

@@ -4,7 +4,7 @@
 with the gas solved as RANS: `[MOSE-Physics] equations = navier-stokes`, `turbulence = SA`, `schmidt = 0.7`.
 
 With a turbulence model MOSE's primitive vector holds one variable more than the Euler run: the Spalart-Allmaras
-variable `mi_tilde` (density times the modified eddy viscosity) after the energy slot, so `nprim = np + 1`. The coupler
+variable `rhoNuTilde` (density times the modified eddy viscosity) after the energy slot, so `nprim = np + 1`. The coupler
 (`src/app/MI2/MI2_Coupling.f90`, `IGLOOxMOSE`) adds the droplet sources to the species, momentum and energy slots of
 MOSE's residual and must leave the slot after the energy alone. No other case of the repository runs a turbulence
 model, so this is the only case where a coupler write past the energy slot can show.
@@ -23,7 +23,7 @@ boundary layers and a wall thermal condition that the gate does not need.
 
 `[ICB-Block1] mit = 6.0e-5` is the SA variable ATLAS ICB writes as the 7th cell variable `mi_t` of `INPUT/gas-ic.tec`
 (MOSE refuses an initial condition with fewer variables than `nprim`): three times the laminar viscosity of N2 at 350 K,
-the far-field value the SA model recommends (`chi` about 3, eddy viscosity ratio `mit/mil` about 0.21).
+the far-field value the SA model recommends (`chi` about 3, eddy viscosity ratio `mut/mil` about 0.21).
 
 ## Files
 
@@ -44,15 +44,15 @@ test/mi2-checks/p13_rans_slot_check.sh [scratch-root] [exe]                # run
 
 | check | bound | on the current sources (1 thread) |
 |---|---|---|
-| R1 mass balance, species 1 | rel.err <= 1e-12, injected >= 5e-9 kg | 2.212e-16, 1.495472e-8 kg |
-| R2 energy bookkeeping | rel.err <= 1e-7, handed >= 1e-2 J | 2.790e-9, -0.2362 J |
-| R3 SA variable (last field, iteration 950) | finite, within 5 % of `mi_t` everywhere; `mit/mil` in [0.1, 0.4] | -1.6e-3 .. +1.2e-2; 0.199 .. 0.221 |
-| R4 log hygiene, RANS setup | exit 0, `GAME OVER`, no error markers; `Navier-Stokes`, `Turbulent, SA`; `mi_tilde` in the field | pass |
+| R1 mass balance, species 1 | rel.err <= 1e-12, injected >= 5e-9 kg | 6.638e-16, 7.476478e-9 kg |
+| R2 energy bookkeeping | rel.err <= 1e-7, handed >= 1e-2 J | 1.988e-8, -0.1181 J |
+| R3 SA variable (last field, iteration 1000) | finite, within 5 % of `mi_t` everywhere; `mut/mil` in [0.1, 0.4] | -8.2e-4 .. +6.1e-3; 0.199 .. 0.210 |
+| R4 log hygiene, RANS setup | exit 0, `GAME OVER`, no error markers; `Navier-Stokes`, `Turbulent, SA`; `rhoNuTilde` in the field | pass |
 
 The 5 % bound of R3: the vorticity production moves the SA variable by at most `cb1 |omega| t` (below 0.5 % with the
 0.02 m/s creep the evaporation drives), and the injected mass changes the density of an injection cell by at most 3 %;
 a source leaking into the slot moves it by orders of magnitude within a few steps. The field is the last one MOSE writes
-(`sol-diter = 50`; the run ends at iteration 951, the first coupling step converging at its first iteration).
+(`sol-diter = 50`; the run ends at iteration 1000: twenty coupling steps of 50 iterations).
 
 The log carries IGLOO's `[WARNING] import_gas block 1: unbound gas variable(s): MIT` in the Euler run of `evap-box-ta`
 as well; it is not a hygiene marker.
