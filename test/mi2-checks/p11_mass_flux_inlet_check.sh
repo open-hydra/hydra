@@ -9,12 +9,13 @@
 #  inlet403 : the 40 gas inlet records 401 -> 403 with g = 219.39 kg/(s m2) (the converged rho*u of the 401 case),
 #             part-bc.txt untouched -> every ' [MI2-report] igloo-inlet-mdot <sum> <n>' line has n = 40 and
 #             sum = g * SUM(cell%area) to 1e-8 (the areas recomputed from MESH/mesh.tec as IGLOO does), and the
-#             inlet-column condensed flux of IGLOO's Eulerian projection is k x the gas rho*u of the same run's
-#             field within 5 % (and k x g within 5 %);
+#             inlet-column condensed mass flow of IGLOO's Eulerian projection is k x the gas mass flow of the same
+#             run's field within 1.7 % (and k x g within 1.7 %), both fluxes weighted with those areas (the
+#             unweighted column means are printed, not judged);
 #  one403   : the same with N-coupling 1 -> the flux check on a binary whose over-injection kills the gas in the
 #             second MOSE block (no final write, no euler file) still yields a number;
 #  ctrl401  : the case as shipped -> n = 40, MOSE's positive computed inflow within [0.5, 2] x g * SUM(area), and
-#             the same 5 % flux check.
+#             the same 1.7 % flow check.
 # Every run: GAME OVER, none of the failure signatures, exit 0, parcels injected in every sweep. A ten-field 401
 # record must carry krho/(1 - krho_tot) of input.ini as field 1. No leg carries a fixed mass flux G > 0 in field 10
 # (G = 0 on every JPL record): IGLOO's G term is not exercised here.
