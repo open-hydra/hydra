@@ -1,11 +1,10 @@
 #!/bin/bash
 # P2 check: frozen-source notice cadence, plus inertness when nothing is frozen.
 #  frozen : evap-box-ta, 2 cycles: MOSE-iter 50 50, N-coupling 3 3, IGLOO-iter 1 0, [MOSE-IO] shell-diter 100
-#           -> cycle 2 keeps IGLOO's cycle-1 sources; notices expected at cycle-2 steps 1 and 3 only.
-#              Cumulative MOSE iters at step start are 101 / 151 / 201, NOT 150 / 200 / 250: the very first
-#              coupling step on the quiescent IC converges at MOSE iteration 1 (zero residual -> TODO = 3 ->
-#              the remaining 49 iterations of that step are skipped), so cycle 1 = 1 + 50 + 50.
-#              step 1 -> first of the cycle; step 2 -> 151/100 == 101/100, silent; step 3 -> 201/100 > 1.
+#           -> cycle 2 keeps IGLOO's cycle-1 sources; notices expected at cycle-2 steps 1 and 2 only.
+#              Cumulative MOSE iters at step start are 150 / 200 / 250: every block of this time-accurate run
+#              runs its 50 iterations (MOSE tests res-threshold on steady runs only), so cycle 1 = 3 x 50.
+#              step 1 -> first of the cycle; step 2 -> 200/100 > 150/100; step 3 -> 250/100 == 200/100, silent.
 #  inert  : evap-box-ta as shipped -> no notice, OUTPUT byte-identical to the case's reference OUTPUT/
 #   usage: p2_frozen_source_check.sh [scratch-root] [exe]   (REF=<OUTPUT dir of the reference run> for the byte check)
 set -u
@@ -27,7 +26,7 @@ sed -i -e 's/^N-coupling *=.*/N-coupling    = 3 3/' -e 's/^MOSE-iter *=.*/MOSE-i
 n=$(grep -c "IGLOO source FROZEN" "$d/run.log")
 steps=$(grep -o "\[cycle [0-9]*, step [0-9]*, MOSE iter [0-9]*\]" "$d/run.log" | tr '\n' ' ')
 echo "  frozen notices: $n  at: $steps  (exit=$rc)"
-[ $rc = 0 ] && [ "$n" = 2 ] && [ "$steps" = "[cycle 2, step 1, MOSE iter 101] [cycle 2, step 3, MOSE iter 201] " ] && ok "frozen-source notice at first step + shell-diter cadence" || ko "frozen-source notice cadence"
+[ $rc = 0 ] && [ "$n" = 2 ] && [ "$steps" = "[cycle 2, step 1, MOSE iter 150] [cycle 2, step 2, MOSE iter 200] " ] && ok "frozen-source notice at first step + shell-diter cadence" || ko "frozen-source notice cadence"
 grep -q "produced in cycle 1, coupling step 3" "$d/run.log" && ok "notice names the producing (cycle, step)" || ko "notice provenance"
 # the frozen sources must still be applied: the mass audit of cycle 2 must keep growing
 inj=$(grep -A3 "closed-domain mass balance" "$d/run.log" | grep "^   1  " | awk '{print $2}')

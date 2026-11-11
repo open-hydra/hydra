@@ -76,6 +76,10 @@ print_usage() {
   echo "  - Each hydra solver is built in its own directory: build/<suffix>"
   echo "  - CMakePresets.json is generated automatically during build"
   echo "  - hydra executables: MF (MOSE+FUSS), AF (ARES+FUSS), MI2 (MOSE+ICE+IGLOO)"
+  echo "  - FORT_BUFFERED=true figaro hydra-<suffix> solve: an ifx build writes its files a buffer at a time"
+  echo "    (same files; a kill -9, a SIGBUS or a SIGHUP loses what is still in the buffer; a normal end, an error"
+  echo "    stop, figaro kill and a SIGSEGV, SIGFPE or SIGABRT flush it). Not set by default: the time it saves"
+  echo "    is not established"
   
   exit 0
 }

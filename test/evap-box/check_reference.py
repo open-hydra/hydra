@@ -22,7 +22,9 @@ mixing). Then, per sweep:
      reference over m in [0.9e-15, 1e-15]; the number of scatter samples against the reference lifetime,
      N-1 to N
   S  every scatter sample, paired with the reference state at the same droplet mass: x, y, u, v, T within
-     their print budget (the E13.6 mass rounding times d(.)/dm, plus the F12.6 rounding)
+     their print budget (the E13.6 mass rounding times d(.)/dm, plus the F12.6 rounding); on the plateau, for a
+     few thermal relaxation times after the drop temperature crosses a node of the Psat column, plus what a
+     solver step across the node can leave in T (the change of slope of the table over that step, relaxing after)
   Q  plateau samples against the closed-form wet-bulb balance at their diameter, beyond the reference's lag
   C  the sample clock: the k-th sample of stream n is written at the end of the first solver step past
      t_k = dt_q (k - frac(n phi)), dt_q = L_box/(v_inj fsample-traj); the reference reaches the sample's mass
@@ -41,6 +43,7 @@ Usage: check_reference.py [RUN_DIR] [--ini PATH] [--props PATH] [--log PATH] [--
 gated check passes. Python 3, numpy only.
 """
 import argparse
+import copy
 import math
 import os
 import re
@@ -49,7 +52,7 @@ import sys
 import numpy as np
 
 RU_IGLOO = 8314.46        # IGLOO's universal gas constant (Lib_Evaporation, IO)
-RU_FLINT = 8314.51        # the gas solver's (FLINT Lib_ThermoTransport)
+RU_FLINT = 8314.46261815324   # the gas solver's (FLINT Lib_ThermoTransport: the exact SI value)
 PATM = 101325.0
 XS_CAP = 1.0e-12
 M_BURN = 1.0e-15          # IGLOO burnout mass [kg]
@@ -126,7 +129,9 @@ def read_tec_block(path):
     zone = lines[zi]
     ni, nj, nk = (int(re.search(r"\b%s=(\d+)" % c, zone).group(1)) for c in "IJK")
     nn, nc = ni * nj * nk, (ni - 1) * (nj - 1) * max(nk - 1, 1)
-    vals = np.array(" ".join(lines[zi + 1:]).split(), dtype=float)
+    # the zone's values end at the auxiliary data a solver appends after them
+    zend = next((i for i in range(zi + 1, len(lines)) if lines[i].lstrip().startswith("DATASETAUXDATA")), len(lines))
+    vals = np.array(" ".join(lines[zi + 1:zend]).split(), dtype=float)
     out, pos = {}, 0
     for n, name in enumerate(names):
         cnt = nn if n < 3 else nc
@@ -298,6 +303,18 @@ class Droplet:
                 glo *= 0.5
         return 0.5 * (lo + hi)
 
+    def continued(self, node, rising):
+        """The drop with the line of the table interval it leaves at `node` continued over the next interval."""
+        other = copy.copy(self)
+        tab = self.psat_tab.copy()
+        i = node - self.tmin
+        if rising:
+            tab[i + 1] = 2.0 * tab[i] - tab[i - 1]
+        else:
+            tab[i - 1] = 2.0 * tab[i] - tab[i + 1]
+        other.psat_tab = tab
+        return other
+
     def h(self, T):
         return self.cp_l * T + self.hoff
 
@@ -468,6 +485,8 @@ def integrate(drop, field, s0, rtol=1e-11, tmax=1.0):
 
 # ------------------------------------------------------------------ pairing and comparisons
 F_HALF = 0.5e-6           # half-ULP of IGLOO's F12.6 columns (x, y, z, u, v, w, T)
+NODE_STEP = 1.0           # S: thermal relaxation times a solver step across a node of the Psat column can last
+NODE_TIMES = 5.0          # S: thermal relaxation times after such a node over which the node allowance is followed
 
 
 def e_half(v):
@@ -510,6 +529,56 @@ def pair_by_mass(drop, field, traj, m_target):
     return traj[lo][0] + 0.5 * (a + b), state_at(drop, field, traj, lo, 0.5 * (a + b)), traj[lo][2]
 
 
+def node_windows(drop, field, traj):
+    """Plateau crossings of the nodes of the Psat column by the reference: a list of (m_hi, m_lo, m[], dT[]).
+
+    The slope of the tabulated p_sat changes at every node, and the solver's implicit step can go across one whole:
+    at the end of that step the drop sits between the reference and the reference with the line of the interval it
+    left continued, and from there it relaxes onto the former at the thermal rate. dT[] bounds that along the mass
+    m[]: the distance between the two references at equal mass while the crossing step can last (NODE_STEP
+    relaxation times past the node), and the largest such distance, decayed at the relaxation rate, afterwards;
+    the window ends NODE_TIMES relaxation times after the step that crosses. m_hi and m_lo are its ends."""
+    wins = []
+    if drop.psat_mode != "table":
+        return wins
+    lo, hi = drop.tmin, drop.tmin + len(drop.psat_tab) - 1
+    for i in range(len(traj) - 1):
+        s, cell = traj[i][1], traj[i][2]
+        n0, n1 = int(math.floor(s[4])), int(math.floor(traj[i + 1][1][4]))
+        node = max(n0, n1)
+        if abs(n1 - n0) != 1 or not lo < node < hi:
+            continue
+        gas = field.gas(cell)
+        if abs(s[4] - drop.t_quasi_steady(gas, drop.diameter(s[5]), s[2], s[3])) >= 0.02:
+            continue                                           # not on the plateau: the steps are short there
+        rising = n1 > n0
+        dT = -1.0e-4 if rising else 1.0e-4                     # the relaxation rate, inside the interval it leaves
+        f = lambda T: drop.rhs(np.array([s[0], s[1], s[2], s[3], T, s[5]]), gas)[4]
+        lam = abs((f(s[4] + dT) - f(s[4])) / dT)
+        alt = drop.continued(node, rising)
+        h = NODE_TIMES / lam / 200.0
+        t_node = (node - s[4]) / (traj[i + 1][1][4] - s[4]) * (traj[i + 1][0] - traj[i][0])   # from this point on
+        ya, yr = s.copy(), s.copy()
+        ma, ta, mr, tr = [s[5]], [s[4]], [s[5]], [s[4]]
+        for _ in range(200):
+            ya, _ = dp_step(lambda z: alt.rhs(z, gas), ya, h)
+            yr, _ = dp_step(lambda z: drop.rhs(z, gas), yr, h)
+            if not (np.all(np.isfinite(ya)) and np.all(np.isfinite(yr))) or min(ya[5], yr[5]) <= M_BURN:
+                break
+            ma.append(ya[5])
+            ta.append(ya[4])
+            mr.append(yr[5])
+            tr.append(yr[4])
+        ma, ta, mr, tr = (np.array(v[::-1]) for v in (ma, ta, mr, tr))          # by rising mass
+        apart = np.abs(np.interp(mr, ma, ta) - tr)[::-1]                         # at equal mass, in time
+        env, e, decay = [], 0.0, math.exp(-lam * h)
+        for k, a in enumerate(apart):
+            e = max(e * decay, a) if k * h - t_node <= NODE_STEP / lam else e * decay
+            env.append(e)
+        wins.append((mr[-1], mr[0], mr, np.array(env[::-1])))
+    return wins
+
+
 class Report:
     def __init__(self):
         self.nfail = 0
@@ -540,9 +609,10 @@ def check_sweep(rep, run, drop, field, sweep_tag, streams, dt_q, gated, label):
     print("\n== %s (%s)%s" % ("sweep 0" if not sweep_tag else sweep_tag.strip("-"), label,
                               "" if gated else " -- per-stream checks informational"))
     results = {}
-    w = {"ratio": 0.0, "arg": "", "qs": 0.0, "lead": -1e300, "lag": 0.0, "n": 0}
+    w = {"ratio": 0.0, "arg": "", "qs": 0.0, "lead": -1e300, "lag": 0.0, "n": 0, "node": 0}
     for sid, s0, mdot in streams:
         traj = integrate(drop, field, s0)
+        wins = node_windows(drop, field, traj)
         t_life, s_end = traj[-1][0], traj[-1][1]
         results[sid] = (t_life, traj)
         frac = math.modf(sid * PHI)[0]
@@ -557,9 +627,12 @@ def check_sweep(rep, run, drop, field, sweep_tag, streams, dt_q, gated, label):
             dm = e_half(mm)
             ref = {"x": st[0], "y": st[1], "u": st[2], "v": st[3], "T": st[4]}
             idx = {"x": 0, "y": 1, "u": 2, "v": 3, "T": 4}
+            # just after a node of the Psat column: what a solver step across it can leave in T at this mass
+            node = max([float(np.interp(mm, wm, wd)) for m_hi, m_lo, wm, wd in wins if m_lo <= mm <= m_hi], default=0.0)
+            w["node"] += node > 1e-7
             for key in ref:
                 floor = 1e-7 if key == "T" else 1e-9
-                budget = abs(der[idx[key]] / der[5]) * dm + F_HALF + floor
+                budget = abs(der[idx[key]] / der[5]) * dm + F_HALF + floor + (node if key == "T" else 0.0)
                 rr = abs(meas[key] - ref[key]) / budget
                 if rr > w["ratio"]:
                     w["ratio"], w["arg"] = rr, "stream %d sample %d %s: %.6f vs %.6f (budget %.1e)" % (
@@ -610,8 +683,8 @@ def check_sweep(rep, run, drop, field, sweep_tag, streams, dt_q, gated, label):
                   % (min(tplat), max(tplat), dmin_plat * 1e6, dmax_plat * 1e6, t_life, s_end[0]))
     rtol_s = TOL["ratio"] if isinstance(field, UniformGas) else TOL["ratio_cells"]
     rep.check("S", w["ratio"] <= rtol_s,
-              "%d samples paired by mass: worst residual/budget %.3f (tol %.1f) -- %s"
-              % (w["n"], w["ratio"], rtol_s, w["arg"]), gated)
+              "%d samples paired by mass: worst residual/budget %.3f (tol %.1f) -- %s; %d just after a node of the "
+              "Psat column" % (w["n"], w["ratio"], rtol_s, w["arg"], w["node"]), gated)
     rep.check("Q", w["qs"] <= TOL["T_qs"],
               "plateau samples vs the closed-form wet-bulb balance at their diameter: excess over the reference's "
               "own lag %.2e K (tol %.0e)" % (w["qs"], TOL["T_qs"]), gated)
@@ -777,7 +850,8 @@ def main():
         elif k == ncoup - 1:
             gf = os.path.join(run, "OUTPUT", "gas-field.tec")
             field = CellGas(tables, gf)
-            it_file = float(re.search(r"SOLUTIONTIME=\s*([-+0-9.EeDd]+)", open(gf).read(2000)).group(1).replace("D", "E"))
+            # a steady field carries its iteration as the solution time, negative when ORION prints the sign
+            it_file = abs(float(re.search(r"SOLUTIONTIME=\s*([-+0-9.EeDd]+)", open(gf).read(2000)).group(1).replace("D", "E")))
             hist = [l.split() for l in open(os.path.join(run, "OUTPUT", "gas-residual-history.dat")) if l.strip()]
             it_last = int(hist[-1][0])
             gated = int(round(it_file)) == it_last

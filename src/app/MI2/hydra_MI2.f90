@@ -21,6 +21,8 @@ program hydra_MI2_program
                                      nMassLimited, Accumulate_Injected_Energy, Gas_Total_Energy, &
                                      Gas_Mean_Temperature, energyInjected, energyDatumPart, &
                                      energyAudited, Check_ICE_Mass_Channel, &
+                                     Check_ICE_Source_Finite, Check_IGLOO_Source_Finite, &
+                                     Check_IGLOO_Euler_Finite, &
                                      Gas_Momentum, ICE_To_Gas_Totals, IGLOO_To_Gas_Totals, &
                                      mdotHanded, nHanded
   use hydraMI2_Build_Stamp,    only: Print_Build_Stamp
@@ -71,8 +73,11 @@ program hydra_MI2_program
   call Print_Build_Stamp()
 
 #if defined (_OPENMP)
+  ! the team size of a parallel region, written by one thread
   !$omp parallel
+  !$omp single
   nthreads = OMP_GET_NUM_THREADS()
+  !$omp end single
   !$omp end parallel
   write(*,'(A)')    ' Parallel execution'
   write(*,'(A)')    ' OpenMP:'
@@ -97,7 +102,7 @@ program hydra_MI2_program
     error stop 1
   endif
 
-  ! Route each INPUT/*phase.txt to its owning solver (ICE and IGLOO each solve their own phase)
+  ! Route each *phase.txt of INPUT/ to its owning solver (ICE and IGLOO each solve their own phase)
   call Assign_Phases()
 
   ! ---------------------------------------------------------------------------
@@ -249,6 +254,13 @@ program hydra_MI2_program
           IGLOO_src_eulerian = eulCoupling
           IGLOO_src_cycle    = n_cycle
           IGLOO_src_step     = n_couple
+
+          ! refuse a non-finite value before MOSE applies it: the source-mode rates, or the Eulerian fields
+          if ( IGLOO_src_eulerian ) then
+            call Check_IGLOO_Euler_Finite( MOSE_simulation%domain(1), IGLOO )
+          else
+            call Check_IGLOO_Source_Finite( MOSE_simulation%domain(1), IGLOO )
+          endif
         endif
       endif
 
@@ -272,6 +284,8 @@ program hydra_MI2_program
 
         ! warn once if ICE's mass channel, dropped by ICExMOSE, becomes non-zero
         if ( ICE_has_sources ) call Check_ICE_Mass_Channel( ICE_simulation%domain(1) )
+        ! refuse a non-finite source before MOSE applies it
+        if ( ICE_has_sources ) call Check_ICE_Source_Finite( MOSE_simulation%domain(1), ICE_simulation%domain(1) )
       endif
 
       ! --- Exit conditions ----------------------------------------------------

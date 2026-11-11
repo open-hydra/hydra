@@ -86,6 +86,7 @@ def read_tec(path):
     I, J, K = (int(v) for v in z.groups())
     body = txt[z.end():]
     body = body[body.index('\n') + 1:]
+    body = body.split('DATASETAUXDATA', 1)[0]     # the auxiliary data a solver appends after the zone are not field values
     vals = np.array([float(v) for v in re.findall(r'[-+]?\d*\.?\d+(?:[EeDd][-+]?\d+)?', body.replace('D', 'E'))])
     nn, nc = I * J * K, (I - 1) * (J - 1) * (K - 1)
     out, p = {}, 0
@@ -139,7 +140,7 @@ def uniform(a, name, tol=0.0):
 def parse_report(log):
     """[MI2-report] lines -> list of dicts (one per coupling step) and the cycles the frozen notice names."""
     steps, frozen, cur = [], [], None
-    for line in open(log):
+    for line in open(log, errors='replace'):
         m = re.match(r'\s*\[MI2-report\] (\S+)\s*(.*)$', line)
         if m:
             key, rest = m.group(1), m.group(2).split()
@@ -190,7 +191,8 @@ def main():
     ncell = pic['rp_11'].size
 
     field = read_tec(os.path.join(run, 'OUTPUT', 'gas-field.tec'))
-    R = uniform(field['R'], 'gas field R')
+    # R is computed in each cell from its composition: uniform to round-off, which the 17 digits of the file show
+    R = uniform(field['R'], 'gas field R', tol=1e-13)
     W = float(open(os.path.join(run, 'INPUT', 'gas-phase.txt')).read().split('\n')[1].split()[1])
     info('gas constant R %.15e J/(kg K) from the field; Runiv/W with W %.6f: %.15e (rel.diff %.1e)'
          % (R, W, RUNIV / W, rel(R, RUNIV / W)))

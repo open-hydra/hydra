@@ -17,6 +17,9 @@ module hydraMI2_Mod_Coupling
   public :: Gas_Total_Energy
   public :: Gas_Mean_Temperature
   public :: Check_ICE_Mass_Channel
+  public :: Check_ICE_Source_Finite
+  public :: Check_IGLOO_Source_Finite
+  public :: Check_IGLOO_Euler_Finite
   public :: Gas_Momentum
   public :: ICE_To_Gas_Totals
   public :: IGLOO_To_Gas_Totals
@@ -554,7 +557,7 @@ contains
   !  sweep. Opens its own parallel region.
   subroutine MOSExIGLOO ( MOSE_domain, IGLOO )
     use MOSE_Advanced_Types_m, only: MOSE_domain_type
-    use MOSE_Global_m,         only: nsc, gc
+    use MOSE_Global_m,         only: nsc, gc, MOSE_phase_prefix
     use IGLOO_module,          only: obj_IGLOO
     implicit none
     type(MOSE_domain_type), intent(in)    :: MOSE_domain
@@ -564,7 +567,7 @@ contains
     integer  :: i0, i1, j0, j1, k0, k1, ni, nj, nk
     real(R8) :: rhoi(nsc), vel(3), rho, R, gam, T, mu, kappa
     real(R8) :: mSum, mdot
-    integer  :: nSum
+    integer  :: nSum, noFlow
 
     upper = 0
     mdotHanded = 0._R8
@@ -616,19 +619,46 @@ contains
       do f = 1, 6
         lower = upper + 1
         upper = upper + MOSE_domain%n_bf(b,f)
-        mSum = 0._R8; nSum = 0
+        ! the walk takes the next n_bf(b,f) records as those of block b, face f: MOSE keeps them in the order of its file
+        do i = lower, upper
+          if (MOSE_domain%bc(i)%b == b .and. MOSE_domain%bc(i)%f == f) cycle
+          write(*,'(A,I0,3A,I0,A,I0,A,I0,A,I0,A)') ' [ERROR] MI2: record ', i, ' of INPUT/', trim(MOSE_phase_prefix), &
+            'bc.txt is of block ', MOSE_domain%bc(i)%b, ' face ', MOSE_domain%bc(i)%f, ' where the coupler expects block ', &
+            b, ' face ', f, ': the gas boundary records must be grouped by block, then by face (1 to 6), in that order'
+          error stop 1
+        enddo
+        ! the record of a grain applied as an inlet holds the reference mass flux of its burning law, not the flow of
+        ! the face: particles injected in proportion to the gas mass flow cannot sit on it
+        if (any(MOSE_domain%bc(lower:upper)%srm_inflow)) then
+          do i = lower, upper
+            if (.not. MOSE_domain%bc(i)%srm_inflow) cycle
+            call IGLOO%geoblock(b)%ijk2fmn ( MOSE_domain%bc(i)%i, MOSE_domain%bc(i)%j, &
+                                             MOSE_domain%bc(i)%k, f, m, n )
+            if (m<=0 .or. n<=0) cycle
+            if (IGLOO%geoblock(b)%face(f)%cell(m,n)%bcdef /= 401) cycle
+            write(*,'(A,I0,A,I0,A)') ' [ERROR] MI2: block ', b, ' face ', f, ': particles injected in proportion to '// &
+              'the gas mass flow (particle BC 401) on a propellant grain applied as an inlet (MOSE BC 502, mode 2): '// &
+              'its record holds the reference mass flux of the burning law, not the mass flow of the face'
+            error stop 1
+          enddo
+        endif
+        mSum = 0._R8; nSum = 0; noFlow = 0
         !$OMP PARALLEL DEFAULT(SHARED), PRIVATE(i,m,n,mdot)
-        !$OMP DO REDUCTION(+:mSum,nSum)
+        !$OMP DO REDUCTION(+:mSum,nSum) REDUCTION(max:noFlow)
         do i = lower, upper
           call IGLOO%geoblock(b)%ijk2fmn ( MOSE_domain%bc(i)%i, MOSE_domain%bc(i)%j, &
                                            MOSE_domain%bc(i)%k, f, m, n )
           if (m<=0 .or. n<=0) cycle
           select case (MOSE_domain%bc(i)%type)
-          case (401, 402, 405, 406, 407)   ! mdot is the face mass flow MOSE computes [kg/s]
+          case (401, 402, 405)             ! mdot is the face mass flow MOSE computes [kg/s] along the solver normal:
+            mdot = abs(MOSE_domain%bc(i)%mdot)   ! negative for an inflow on faces 2, 4 and 6
+          case (406, 407)
             mdot = MOSE_domain%bc(i)%mdot
-          case (403, 404, 420)             ! mdot is the prescribed mass flux [kg/(s m2)]
-            mdot = MOSE_domain%bc(i)%mdot * IGLOO%geoblock(b)%face(f)%cell(m,n)%area
-          case default
+          case (403, 404, 420)             ! mdot is the prescribed mass flux [kg/(s m2)], an inflow whatever its sign
+            if (MOSE_domain%bc(i)%srm_inflow) cycle   ! a grain: no mass flow in its record, IGLOO's value stays
+            mdot = abs(MOSE_domain%bc(i)%mdot) * IGLOO%geoblock(b)%face(f)%cell(m,n)%area
+          case default                     ! no mass flow in the record: a particle inlet that scales with it is refused below
+            if (IGLOO%geoblock(b)%face(f)%cell(m,n)%bcdef == 401) noFlow = max(noFlow, i)
             cycle
           end select
           IGLOO%geoblock(b)%face(f)%cell(m,n)%mdotGas = mdot
@@ -637,6 +667,12 @@ contains
         enddo
         !$OMP END DO
         !$OMP END PARALLEL
+        if (noFlow > 0) then
+          write(*,'(A,I0,A,I0,A,I0,A)') ' [ERROR] MI2: block ', b, ' face ', f, ': particles injected in proportion to '// &
+            'the gas mass flow (particle BC 401) on a gas boundary of kind ', MOSE_domain%bc(noFlow)%type, &
+            ', whose record holds no mass flow'
+          error stop 1
+        endif
         mdotHanded = mdotHanded + mSum
         nHanded    = nHanded + nSum
       enddo
@@ -721,6 +757,152 @@ contains
     endif
 
   end subroutine Check_ICE_Mass_Channel
+
+
+  !> Stop on a value that is not finite in what ICE hands the gas, the slots ICExMOSE reads: MOSE's conservative update
+  !  keeps the old temperature of a cell whose energy residual is NaN, so such a value would act unseen. Called once per
+  !  coupling step, outside any parallel region.
+  subroutine Check_ICE_Source_Finite ( MOSE_domain, ICE_domain )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    use MOSE_Finite_m,         only: Not_Finite
+    use ICE_Advanced_Types_m,  only: ICE_domain_type
+    use ICE_Global_m,          only: ngroups, nbase
+    implicit none
+    type(MOSE_domain_type), intent(in) :: MOSE_domain
+    type(ICE_domain_type),  intent(in) :: ICE_domain
+    integer :: b, g, i, j, k, n, s
+    character(len=16) :: val
+
+    do b = 1, size(MOSE_domain%blk)
+      do g = 1, ngroups
+        if (.not. allocated(ICE_domain%blk(b)%cond_phase(g)%source)) cycle
+        do k = 1, MOSE_domain%blk(b)%dim(3)
+        do j = 1, MOSE_domain%blk(b)%dim(2)
+        do i = 1, MOSE_domain%blk(b)%dim(1)
+          do n = 1, 4                        ! momentum source(2:4), energy source(nbase(g)-1)
+            s = merge(n+1, nbase(g)-1, n < 4)
+            if (.not. Not_Finite(ICE_domain%blk(b)%cond_phase(g)%source(s,i,j,k))) cycle
+            write(val,'(ES12.5)') ICE_domain%blk(b)%cond_phase(g)%source(s,i,j,k)
+            write(*,'(A,I0,A,I0,A,3(1X,I0),A,I0,4A)') ' [ERROR] MI2: ICE handed a non-finite source (block ', b, &
+              ', group ', g, ', cell', i, j, k, ', source(', s, '), the ', trim(merge('momentum', 'energy  ', n < 4)), &
+              ') = ', trim(adjustl(val))
+            error stop 1
+          enddo
+        enddo; enddo; enddo
+      enddo
+    enddo
+
+  end subroutine Check_ICE_Source_Finite
+
+
+  !> Stop on a value that is not finite in the source-mode rates IGLOO hands the gas, those IGLOOxMOSE reads (sourceMom,
+  !  sourceEn, and sourceMass under a stoichiometry), for the reason of Check_ICE_Source_Finite. Called once per coupling
+  !  step, after IGLOO's solve, outside any parallel region.
+  subroutine Check_IGLOO_Source_Finite ( MOSE_domain, IGLOO )
+    use MOSE_Advanced_Types_m,  only: MOSE_domain_type
+    use MOSE_Finite_m,          only: Not_Finite
+    use IGLOO_module,           only: obj_IGLOO
+    use IGLOO_variables,        only: nm
+    use hydraMI2_Stoichiometry, only: has_stoichiometry
+    implicit none
+    type(MOSE_domain_type), intent(in) :: MOSE_domain
+    type(obj_IGLOO),        intent(in) :: IGLOO
+    integer :: b, i, j, k, n
+
+    do b = 1, size(MOSE_domain%blk)
+      associate ( src => IGLOO%source(b) )
+      do k = 1, MOSE_domain%blk(b)%dim(3)
+      do j = 1, MOSE_domain%blk(b)%dim(2)
+      do i = 1, MOSE_domain%blk(b)%dim(1)
+        if (allocated(src%sourceMom)) then
+          do n = 1, 3
+            if (Not_Finite(src%sourceMom(n,i,j,k))) call Refuse('sourceMom', n, src%sourceMom(n,i,j,k))
+          enddo
+        endif
+        if (allocated(src%sourceEn)) then
+          if (Not_Finite(src%sourceEn(i,j,k))) call Refuse('sourceEn', 0, src%sourceEn(i,j,k))
+        endif
+        if (has_stoichiometry .and. allocated(src%sourceMass)) then
+          do n = 1, nm
+            if (Not_Finite(src%sourceMass(n,i,j,k))) call Refuse('sourceMass', n, src%sourceMass(n,i,j,k))
+          enddo
+        endif
+      enddo; enddo; enddo
+      end associate
+    enddo
+
+  contains
+
+    subroutine Refuse ( name, n, v )
+      character(len=*), intent(in) :: name
+      integer,          intent(in) :: n
+      real(R8),         intent(in) :: v
+      character(len=16) :: what, val
+      what = name
+      if (n > 0) write(what,'(2A,I0,A)') name, '(', n, ')'
+      write(val,'(ES12.5)') v
+      write(*,'(A,I0,A,3(1X,I0),4A)') ' [ERROR] MI2: IGLOO handed a non-finite source (block ', b, ', cell', i, j, k, &
+        ', ', trim(what), ') = ', trim(adjustl(val))
+      error stop 1
+    end subroutine Refuse
+
+  end subroutine Check_IGLOO_Source_Finite
+
+
+  !> Stop on a value that is not finite in the Eulerian fields IGLOO hands the gas under IGLOO-iter = 2, those IGLOOxMOSE
+  !  turns into momentum and energy sources (velocity, temperature, density, np of every family), for the reason of
+  !  Check_ICE_Source_Finite. Called once per coupling step, after IGLOO's solve, outside any parallel region.
+  subroutine Check_IGLOO_Euler_Finite ( MOSE_domain, IGLOO )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    use MOSE_Finite_m,         only: Not_Finite
+    use IGLOO_module,          only: obj_IGLOO
+    use IGLOO_variables,       only: nfam
+    implicit none
+    type(MOSE_domain_type), intent(in) :: MOSE_domain
+    type(obj_IGLOO),        intent(in) :: IGLOO
+    integer :: b, m, i, j, k, n
+
+    do b = 1, size(MOSE_domain%blk)
+      do m = 1, nfam
+        associate ( e => IGLOO%euler(b,m) )
+        do k = 1, MOSE_domain%blk(b)%dim(3)
+        do j = 1, MOSE_domain%blk(b)%dim(2)
+        do i = 1, MOSE_domain%blk(b)%dim(1)
+          if (allocated(e%velocity)) then
+            do n = 1, 3
+              if (Not_Finite(e%velocity(n,i,j,k))) call Refuse('velocity', n, e%velocity(n,i,j,k))
+            enddo
+          endif
+          if (allocated(e%temperature)) then
+            if (Not_Finite(e%temperature(i,j,k))) call Refuse('temperature', 0, e%temperature(i,j,k))
+          endif
+          if (allocated(e%density)) then
+            if (Not_Finite(e%density(i,j,k))) call Refuse('density', 0, e%density(i,j,k))
+          endif
+          if (allocated(e%np)) then
+            if (Not_Finite(e%np(i,j,k))) call Refuse('np', 0, e%np(i,j,k))
+          endif
+        enddo; enddo; enddo
+        end associate
+      enddo
+    enddo
+
+  contains
+
+    subroutine Refuse ( name, n, v )
+      character(len=*), intent(in) :: name
+      integer,          intent(in) :: n
+      real(R8),         intent(in) :: v
+      character(len=16) :: what, val
+      what = name
+      if (n > 0) write(what,'(2A,I0,A)') name, '(', n, ')'
+      write(val,'(ES12.5)') v
+      write(*,'(A,I0,A,I0,A,3(1X,I0),4A)') ' [ERROR] MI2: IGLOO handed a non-finite Eulerian field (block ', b, &
+        ', family ', m, ', cell', i, j, k, ', ', trim(what), ') = ', trim(adjustl(val))
+      error stop 1
+    end subroutine Refuse
+
+  end subroutine Check_IGLOO_Euler_Finite
 
 
   !> Inject ICE's reaction on the gas into MOSE's residual, from MOSE's per-RK-stage callback:

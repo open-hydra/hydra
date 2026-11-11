@@ -51,9 +51,12 @@ ENDIF(CMAKE_Fortran_FLAGS_RELEASE AND CMAKE_Fortran_FLAGS_TESTING AND CMAKE_Fort
 ### GENERAL FLAGS ###
 #####################
 
-# Don't add underscores in symbols for C-compatability
+# Don't add underscores in symbols for C-compatability. Not for MI2: under gfortran it makes the calls of omp_lib's
+# routines reach libgomp's C entries, whose arguments are by value (omp_set_schedule then sets a wrong schedule)
+IF(NOT EXE_NAME STREQUAL "MI2")
 SET_COMPILE_FLAG(CMAKE_Fortran_FLAGS "${CMAKE_Fortran_FLAGS}"
                  Fortran "-fno-underscoring")
+ENDIF()
 
 # There is some bug where -march=native doesn't work on Mac
 IF(APPLE)

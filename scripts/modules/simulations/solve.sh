@@ -58,6 +58,8 @@ run_solver() {
         exit 1
       fi
       [[ "$master" -nt "$local" ]] && mkdir -p ./bin && cp "$master" "$local"
+      # FORT_BUFFERED is left to the caller: =true makes an ifx build write its files a buffer at a time, and a SIGKILL,
+      # SIGBUS or SIGHUP then loses what the buffer holds (an end, an error stop, SIGTERM/INT/SEGV/FPE/ABRT flush it)
       [[ "$action" == "solve" ]] && run_generic_solver "$local"
       sleep 3
       rm -f filelist.txt

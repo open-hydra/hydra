@@ -285,7 +285,7 @@ contains
 
     ! Wall variables
     q_wall = kl * dot_product( Gradient(np,:), Normal )
-    if (present(Ovar)) call Compute_Wall_Properties(stress=Stress, pw=prim(np), Tw=T_wall,          &
+    if (present(Ovar)) call Compute_Wall_Properties(stress=Stress, pw=prim(np), into=-modfm2, Tw=T_wall,          &
                                                     rhow=rho_wall, mu=mil,                          &
                                                     y=Blk_MOSE%dl(im,jm,km)%c(dir)*0.5d0,            &
                                                     qw=q_wall, &
