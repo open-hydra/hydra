@@ -400,7 +400,7 @@ contains
     ! Wall variables
     q_wall = kappa_fluid * dot_product( Gradient(nh,:), Normal )
     if (present(k_fluid_wall_new)) k_fluid_wall_new = kl + kt
-    if (present(Ovar)) call Compute_Wall_Properties(stress=Stress, pw=prim(np), Tw=T_wall,          &
+    if (present(Ovar)) call Compute_Wall_Properties(stress=Stress, pw=prim(np), into=-modfm2, Tw=T_wall,          &
                                                     rhow=rho_wall, mu=mil,                          &
                                                     y=Blk_ARES%dl(im,jm,km)%c(dir)*0.5d0,                &
                                                     qw=q_wall,                                      &
