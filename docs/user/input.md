@@ -5,7 +5,7 @@ Hydra is configured through a single **INI-format** file named `input.ini`, loca
 In coupled runs (for example `hydra-MF`), this file contains both:
 
 - **Hydra-level sections** (`HYDRA-*`) controlling coupling orchestration
-- **Solver-level sections** (such as `MOSE-*` and `FUSS-*`) consumed by each solver
+- **Solver-level sections** (such as `MOSE-*`, `ARES-*` and `FUSS-*`) consumed by each solver
 
 Hydra-level parameters define how the solvers are coordinated, while
 solver-level parameters define each solver's own physics and numerics.
@@ -58,6 +58,7 @@ Core coupling-loop controls.
 | `N-coupling` | `1000000000` | Number of coupling iterations (array supported) |
 | `FUSS-iter` | `1` | Number of FUSS iterations per coupling step (array supported) |
 | `MOSE-iter` | `1` | Number of MOSE iterations per coupling step (array supported) |
+| `ARES-iter` | `1` | Number of ARES iterations per coupling step (array supported, `hydra-AF`) |
 | `time-accurate` | `false` | Enables synchronized time-accurate mode |
 | `time-threshold` | `1e30` | Maximum simulation time |
 | `iter-threshold` | `1000000000` | Maximum total iteration threshold |
@@ -90,8 +91,20 @@ Per-level coupling thresholds in multigrid mode.
 `input.ini` must also include sections required by each solver you run.
 
 - For MOSE options and accepted values, see [MOSE User Guide](https://open-hydra.github.io/MOSE/user/)
+- For ARES options and accepted values, see [ARES User Guide](https://open-hydra.github.io/ARES/user/)
 - For FUSS options and accepted values, see [FUSS User Guide](https://open-hydra.github.io/FUSS/user/)
 - For GROOT options and accepted values, see [GROOT User Guide](https://open-hydra.github.io/GROOT/user/)
 
 In other words, Hydra orchestration keys and solver keys coexist in the same INI file.
+
+The two fluid solvers take the flow model with the same keys, so a fluid block moves from `hydra-MF` (MOSE) to `hydra-AF` (ARES) by renaming the sections:
+
+```ini
+[MOSE-Physics]              ; [ARES-Physics] in hydra-AF
+equations  = navier-stokes  ; euler, navier-stokes
+turbulence = SST            ; none (default) = laminar
+
+[MOSE-Turbulence]           ; [ARES-Turbulence] in hydra-AF
+Prt = 0.9
+```
 

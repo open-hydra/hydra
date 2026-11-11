@@ -10,13 +10,19 @@
 !>    sides, so what leaves one solver enters the other exactly.
 !> On conforming faces there is one segment per face and the scheme is 103.
 !>
+!> MPI: every rank builds the same, whole segment list, from the face geometry
+!> summed over the ranks, and evaluates only the segments of the faces whose
+!> block it owns. FUSS and MOSE partition their blocks independently, so the two
+!> faces of a segment can live on different ranks: then the partner cell state
+!> (Update_Partners) and the two flux estimates (Exchange_Estimates) cross between
+!> the two owner ranks. With both faces on one rank the partner cell is read in
+!> place, as in serial.
+!>
 !> Still to come:
 !>  - partner metric: only the normal distance of the partner cell centre is
 !>    used, exact when the mesh is orthogonal at the interface; the partner
 !>    tangential terms are dropped. The full metric, oriented as
 !>    Setup_Coupled_Metrics does for 103, is the next step.
-!>  - MPI: partner cells are read in place, so 104 runs serial
-!>    (Check_Chimera_Coupling_Donors).
 module hydraMF_Lib_Coupling_Segments
   use iso_fortran_env, only: I4 => int32, R8 => real64
   use FUSS_Advanced_Types_m
@@ -24,10 +30,22 @@ module hydraMF_Lib_Coupling_Segments
 
   implicit none
   private
-  public :: Check_Chimera_Coupling_Donors, Setup_Coupling_Segments, Compute_Coupling_Segment_Fluxes
+  public :: Setup_Coupling_Segments, Compute_Coupling_Segment_Fluxes, Update_Coupling_Segment_Partners
   public :: Segment_Wall_Output_FUSS, Segment_Wall_Output_MOSE
 
   integer, parameter :: max_levels = 16
+  integer, parameter :: NGEO = 20                ! reals of one face geometry, packed for the sum over the ranks
+  integer, parameter :: NXF  = 2                 ! FUSS partner state of a segment: T, matID
+  integer, parameter :: TAG_SEG_STATE = 7104     ! MPI tags, apart from the 103 ones (7001-7006)
+  integer, parameter :: TAG_SEG_FLUX  = 7105
+
+  !> Segments split between this rank and one other rank, in increasing order
+  type :: peer_type
+    integer :: rank = -1
+    integer,  allocatable :: sFM(:)              ! FUSS face on this rank, MOSE face on the other
+    integer,  allocatable :: sMF(:)              ! MOSE face on this rank, FUSS face on the other
+    real(R8), allocatable :: sbuf(:), rbuf(:)    ! message to / from the other rank
+  end type peer_type
 
   !> Segments of the 104 interface of one multigrid level
   type :: segment_set_type
@@ -43,6 +61,14 @@ module hydraMF_Lib_Coupling_Segments
     integer,  allocatable :: lF(:), lM(:)
     real(R8), allocatable :: qF(:)               ! FUSS estimate of the energy flux through the segment
     real(R8), allocatable :: fM(:,:)             ! MOSE estimate of the fluxes through the segment (nprim, ns)
+    ! MPI: the lists above are the same on every rank, each rank works on its own faces
+    integer,  allocatable :: oF(:), oM(:)        ! rank owning the FUSS / MOSE face of the segment
+    integer :: nmyF = 0, nmyM = 0                ! 104 faces of each solver on this rank
+    integer,  allocatable :: myF(:), myM(:)      ! their 104 face numbers
+    real(R8), allocatable :: xM(:,:)             ! MOSE partner cell, as the FUSS face sees it: T, P(1:nsc) (1+nsc, ns)
+    real(R8), allocatable :: xF(:,:)             ! FUSS partner cell, as the MOSE face sees it: T, matID (NXF, ns)
+    integer :: npeer = 0                         ! ranks this one shares segments with
+    type(peer_type), allocatable :: peer(:)
   end type segment_set_type
 
   type(segment_set_type), target, save :: segs(max_levels)
@@ -62,64 +88,16 @@ module hydraMF_Lib_Coupling_Segments
 
 contains
 
-  !> Type 104 has no cross-rank exchange yet: the coupling reads the partner cells
-  !> of the other solver in place, so every donor of an entry whose block this
-  !> rank owns must belong to this rank too. Run once per level at setup, before
-  !> Setup_Coupling_Segments; always satisfied in serial.
-  subroutine Check_Chimera_Coupling_Donors ( FUSS_domain, MOSE_domain, level )
-    use FUSS_Mod_MPI, only: FUSS_is_local_block => is_local_block, mpi_abort_all
-    use MOSE_Mod_MPI, only: MOSE_is_local_block => is_local_block
-    implicit none
-    type(FUSS_domain_type), intent(in) :: FUSS_domain
-    type(MOSE_domain_type), intent(in) :: MOSE_domain
-    integer, intent(in)                :: level
-    ! Local
-    integer :: ii, i, c, n_remote
-    character(len=256) :: msg
-
-    ! Entries with at least one donor on another rank: FUSS entries read MOSE
-    ! donors, MOSE entries read FUSS donors
-    n_remote = 0
-    do ii = 1, FUSS_domain % n_local_bc
-      i = FUSS_domain % local_bc_idx(ii)
-      if (FUSS_domain % bc(i) % type /= 104) cycle
-      do c = 1, sum ( FUSS_domain % bc(i) % ni )
-        if (.not. MOSE_is_local_block ( FUSS_domain % bc(i) % donorID(c,1) )) then
-          n_remote = n_remote + 1
-          exit
-        endif
-      enddo
-    enddo
-    do ii = 1, MOSE_domain % n_local_bc
-      i = MOSE_domain % local_bc_idx(ii)
-      if (MOSE_domain % bc(i) % type /= 104) cycle
-      do c = 1, sum ( MOSE_domain % bc(i) % ni )
-        if (.not. FUSS_is_local_block ( MOSE_domain % bc(i) % donorID(c,1) )) then
-          n_remote = n_remote + 1
-          exit
-        endif
-      enddo
-    enddo
-
-    if (n_remote > 0) then
-      write(msg,'(I0,A,I0,A)') n_remote, ' coupled chimera (104) entries in the level-', level, &
-        ' BC files have donors on another MPI rank. BC 104 does not exchange donors between '// &
-        'ranks yet: run it serial.'
-      call mpi_abort_all(trim(msg))
-    endif
-
-  end subroutine Check_Chimera_Coupling_Donors
-
-
   !> Build the segments of the 104 interface of one level, once at setup.
   !> The partner faces of a FUSS 104 face are searched among the MOSE cells that
   !> ATLAS lists as donors of its first ghost row (the MOSE cells next to the
   !> interface overlap that ghost cell); a MOSE 104 face of such a cell makes a
   !> segment when it looks at the FUSS face, lies on the same surface and the
   !> two faces overlap. Every 104 face must end up with at least one segment.
+  !> Collective under MPI: every rank calls it and builds the same segments.
   subroutine Setup_Coupling_Segments ( FUSS_domain, MOSE_domain, level )
-    use MOSE_Global_m, only: nprim
-    use FUSS_Mod_MPI,  only: mpi_is_root, mpi_abort_all
+    use MOSE_Global_m, only: nprim, nsc
+    use FUSS_Mod_MPI,  only: mpi_is_root, mpi_abort_all, mpi_rank_, mpi_allreduce_sum_r8_array
     implicit none
     type(FUSS_domain_type), intent(in) :: FUSS_domain
     type(MOSE_domain_type), intent(in) :: MOSE_domain
@@ -129,7 +107,7 @@ contains
     type(face_geo_type), allocatable :: gF(:), gM(:)
     type(int_grid_type), allocatable :: head(:)
     integer,  allocatable :: next(:), found(:), pos(:)
-    real(R8), allocatable :: covF(:), covM(:)
+    real(R8), allocatable :: covF(:), covM(:), gbuf(:)
     integer  :: i, j, e, m, c, sg, nfound, Bs, Is, Js, Ks
     character(len=256) :: msg
 
@@ -158,12 +136,12 @@ contains
       set%eF(e) = i
       set%rowF(i) = e
     enddo
-    ! CERCO LE BC 104 tra tutte 
+    ! CERCO LE BC 104 tra tutte
     ! i    :  1  2  3  4  5  6 -> facce del blocco
     ! BC type :  1 104 104 7 104 1 -> bc per ogni faccia
     ! eF   = [2, 3, 5]             facce che hanno la bc 104
-    ! rowF = [0, 1, 2, 0, 3, 0]    ! salvo 
-    
+    ! rowF = [0, 1, 2, 0, 3, 0]    ! salvo
+
     e = 0
     do j = 1, MOSE_domain % nbound
       if (MOSE_domain % bc(j) % type /= 104) cycle
@@ -174,13 +152,26 @@ contains
 
 
     ! Calcolo metria e geometria delle facce con 104
-    allocate ( gF(set%nF), gM(set%nM) )
+    ! Each rank computes the faces of the blocks it owns (under MPI the other ranks
+    ! may have freed their mesh) and the sum over the ranks gives all of them to all
+    allocate ( gF(set%nF), gM(set%nM), gbuf(NGEO*(set%nF+set%nM)) )
+    gbuf = 0d0
     do e = 1, set%nF
-      gF(e) = FUSS_Face_Geometry ( FUSS_domain, set%eF(e) )
+      if (FUSS_Owner ( FUSS_domain % bc(set%eF(e)) % b ) /= mpi_rank_) cycle
+      call Pack_Geo ( FUSS_Face_Geometry ( FUSS_domain, set%eF(e) ), gbuf(NGEO*(e-1)+1 : NGEO*e) )
     enddo
     do e = 1, set%nM
-      gM(e) = MOSE_Face_Geometry ( MOSE_domain, set%eM(e) )
+      if (MOSE_Owner ( MOSE_domain % bc(set%eM(e)) % b ) /= mpi_rank_) cycle
+      call Pack_Geo ( MOSE_Face_Geometry ( MOSE_domain, set%eM(e) ), gbuf(NGEO*(set%nF+e-1)+1 : NGEO*(set%nF+e)) )
     enddo
+    call mpi_allreduce_sum_r8_array ( gbuf, size(gbuf) )
+    do e = 1, set%nF
+      gF(e) = Unpack_Geo ( gbuf(NGEO*(e-1)+1 : NGEO*e) )
+    enddo
+    do e = 1, set%nM
+      gM(e) = Unpack_Geo ( gbuf(NGEO*(set%nF+e-1)+1 : NGEO*(set%nF+e)) )
+    enddo
+    deallocate ( gbuf )
 
     ! MOSE cell -> its 104 faces (up to 6), as a linked list per block
     allocate ( head(MOSE_domain%nb), next(set%nM) )
@@ -270,9 +261,14 @@ contains
       call mpi_abort_all(trim(msg))
     endif
 
-    allocate ( set%qF(set%ns), set%fM(nprim, set%ns) )
+    allocate ( set%qF(set%ns), set%fM(nprim, set%ns), set%xM(1+nsc, set%ns), set%xF(NXF, set%ns) )
     set%qF = 0d0
     set%fM = 0d0
+    set%xM = 0d0
+    set%xF = 0d0
+
+    ! Ranks of the two faces of every segment, and what this rank shares with the others
+    call Setup_Ranks ( set, FUSS_domain, MOSE_domain, 1+nsc )
     set%ready = .true.
 
     if (mpi_is_root) then
@@ -280,6 +276,9 @@ contains
                                          ' MOSE faces, ', set%ns, ' segments'
       write(*,'(A,2F10.6,A,2F10.6)') '   coverage of the faces by their segments: FUSS', minval(covF), maxval(covF), &
                                      '   MOSE', minval(covM), maxval(covM)
+      if (any(set%oF /= set%oM)) then
+        write(*,'(A,I0,A)') '   ', count(set%oF /= set%oM), ' segments have their two faces on different MPI ranks'
+      endif
       if (max(maxval(gF%ortho), maxval(gM%ortho)) > 1d-3) then
         write(*,'(A,ES9.2,A)') '   WARNING: the mesh is not orthogonal at the 104 interface (tangential/normal metric ', &
           max(maxval(gF%ortho), maxval(gM%ortho)), '): this version neglects the partner tangential terms.'
@@ -300,7 +299,7 @@ contains
 
       call Overlap_Area ( gM(m)%p, gF(e)%p, gF(e)%c, gF(e)%n, As, AM, AF ) ! Le due facce si sovrappongono
       if (As <= 1d-9 * AF) return
-      
+
       ! Overlap_Area funziona così:
       !proietta i due quadrilateri sul piano della faccia FUSS, usando una base 2D (e1, e2);
       !li orienta entrambi in senso antiorario;
@@ -320,10 +319,86 @@ contains
   end subroutine Setup_Coupling_Segments
 
 
+  !> Ranks of the two faces of every segment, the 104 faces of this rank and the
+  !> segments it shares with each other rank. nxm is the size of the MOSE partner
+  !> state; the buffers are sized for the partner states, the larger exchange.
+  subroutine Setup_Ranks ( set, FUSS_domain, MOSE_domain, nxm )
+    use FUSS_Mod_MPI, only: mpi_rank_, mpi_size_
+    implicit none
+    type(segment_set_type), intent(inout) :: set
+    type(FUSS_domain_type), intent(in)    :: FUSS_domain
+    type(MOSE_domain_type), intent(in)    :: MOSE_domain
+    integer, intent(in)                   :: nxm
+    ! Local
+    integer, allocatable :: nFM(:), nMF(:), slot(:)
+    integer :: sg, e, p, r
+
+    allocate ( set%oF(set%ns), set%oM(set%ns) )
+    do sg = 1, set%ns
+      set%oF(sg) = FUSS_Owner ( FUSS_domain % bc(set%sF(sg)) % b )
+      set%oM(sg) = MOSE_Owner ( MOSE_domain % bc(set%sM(sg)) % b )
+    enddo
+
+    ! 104 faces whose block this rank owns
+    allocate ( set%myF(set%nF), set%myM(set%nM) )
+    set%nmyF = 0
+    do e = 1, set%nF
+      if (FUSS_Owner ( FUSS_domain % bc(set%eF(e)) % b ) /= mpi_rank_) cycle
+      set%nmyF = set%nmyF + 1
+      set%myF(set%nmyF) = e
+    enddo
+    set%nmyM = 0
+    do e = 1, set%nM
+      if (MOSE_Owner ( MOSE_domain % bc(set%eM(e)) % b ) /= mpi_rank_) cycle
+      set%nmyM = set%nmyM + 1
+      set%myM(set%nmyM) = e
+    enddo
+
+    ! Segments with one face here and the other on rank r
+    allocate ( nFM(0:mpi_size_-1), nMF(0:mpi_size_-1), slot(0:mpi_size_-1) )
+    nFM = 0
+    nMF = 0
+    do sg = 1, set%ns
+      if (set%oF(sg) == set%oM(sg)) cycle
+      if (set%oF(sg) == mpi_rank_) nFM(set%oM(sg)) = nFM(set%oM(sg)) + 1
+      if (set%oM(sg) == mpi_rank_) nMF(set%oF(sg)) = nMF(set%oF(sg)) + 1
+    enddo
+    set%npeer = count ( nFM + nMF > 0 )
+    allocate ( set%peer(set%npeer) )
+    slot = 0
+    p = 0
+    do r = 0, mpi_size_ - 1
+      if (nFM(r) + nMF(r) == 0) cycle
+      p = p + 1
+      slot(r) = p
+      set%peer(p)%rank = r
+      allocate ( set%peer(p)%sFM(nFM(r)), set%peer(p)%sMF(nMF(r)) )
+      allocate ( set%peer(p)%sbuf(NXF*nFM(r) + nxm*nMF(r)), set%peer(p)%rbuf(nxm*nFM(r) + NXF*nMF(r)) )
+    enddo
+    nFM = 0
+    nMF = 0
+    do sg = 1, set%ns
+      if (set%oF(sg) == set%oM(sg)) cycle
+      if (set%oF(sg) == mpi_rank_) then
+        r = set%oM(sg)
+        nFM(r) = nFM(r) + 1
+        set%peer(slot(r))%sFM(nFM(r)) = sg
+      endif
+      if (set%oM(sg) == mpi_rank_) then
+        r = set%oF(sg)
+        nMF(r) = nMF(r) + 1
+        set%peer(slot(r))%sMF(nMF(r)) = sg
+      endif
+    enddo
+
+  end subroutine Setup_Ranks
+
+
   !> Coupled fluxes of the 104 faces, replacing the per-face fluxes of the old
   !> chimera blend. On every segment the FUSS and MOSE estimates come from the 103
   !> routines with the partner cell; each face then takes, summed over its
   !> segments, 0.5*own - 0.5*partner energy flux, as the 103 pair of faces does.
+  !> Each rank works on the faces it owns. Collective under MPI.
   subroutine Compute_Coupling_Segment_Fluxes ( FUSS_domain, MOSE_domain, level )
     use MOSE_Global_m, only: nprim, np
     implicit none
@@ -332,38 +407,47 @@ contains
     integer, intent(in)                   :: level
     ! Local
     type(segment_set_type), pointer :: set
-    integer  :: e, k, sg
+    integer  :: m, e, k, sg
     real(R8) :: flux, fluxv(nprim), acc, accv(nprim), accE, wsum
 
     if (level > max_levels) return
     set => segs(level)
     if (.not. set%ready) return
 
+    ! Partner cell of every segment of the faces of this rank
+    call Update_Partners ( set, FUSS_domain, MOSE_domain )
+
     ! FUSS estimate on every segment; a face owns its segments, so one face per thread
-    !$omp parallel do schedule (dynamic, 16) private(e, k, sg, flux)
-    do e = 1, set%nF
+    !$omp parallel do schedule (dynamic, 16) private(m, e, k, sg, flux)
+    do m = 1, set%nmyF
+      e = set%myF(m)
       do k = set%pF(e), set%pF(e+1) - 1
         sg = set%lF(k)
-        call Eval_FUSS_Segment ( set, sg, FUSS_domain, MOSE_domain, flux )
+        call Eval_FUSS_Segment ( set, sg, FUSS_domain, flux )
         set%qF(sg) = flux * set%wF(sg)
       enddo
     enddo
     !$omp end parallel do
 
     ! MOSE estimate on every segment (the MOSE routine also sets the RANS ghost of its face)
-    !$omp parallel do schedule (dynamic, 16) private(e, k, sg, fluxv)
-    do e = 1, set%nM
+    !$omp parallel do schedule (dynamic, 16) private(m, e, k, sg, fluxv)
+    do m = 1, set%nmyM
+      e = set%myM(m)
       do k = set%pM(e), set%pM(e+1) - 1
         sg = set%lM(k)
-        call Eval_MOSE_Segment ( set, sg, FUSS_domain, MOSE_domain, fluxv )
+        call Eval_MOSE_Segment ( set, sg, MOSE_domain, fluxv )
         set%fM(:,sg) = fluxv * set%wM(sg)
       enddo
     enddo
     !$omp end parallel do
 
+    ! Segments split between two ranks: each side gets the estimate of the other
+    call Exchange_Estimates ( set )
+
     ! Exchange as in 103, segment by segment: what one side takes, the other gives
-    !$omp parallel do schedule (static) private(e, k, sg, acc)
-    do e = 1, set%nF
+    !$omp parallel do schedule (static) private(m, e, k, sg, acc)
+    do m = 1, set%nmyF
+      e = set%myF(m)
       acc = 0d0
       do k = set%pF(e), set%pF(e+1) - 1
         sg = set%lF(k)
@@ -373,8 +457,9 @@ contains
     enddo
     !$omp end parallel do
 
-    !$omp parallel do schedule (static) private(e, k, sg, accv, accE, wsum)
-    do e = 1, set%nM
+    !$omp parallel do schedule (static) private(m, e, k, sg, accv, accE, wsum)
+    do m = 1, set%nmyM
+      e = set%myM(m)
       accv = 0d0
       accE = 0d0
       wsum = 0d0
@@ -395,11 +480,26 @@ contains
   end subroutine Compute_Coupling_Segment_Fluxes
 
 
-  !> Wall output of a FUSS 104 face: (Tw, qw) of its segments, averaged by area
-  subroutine Segment_Wall_Output_FUSS ( FUSS_domain, MOSE_domain, level, i, Ovar )
+  !> Fresh partner cells of the segments of one level, for the wall output.
+  !> Collective under MPI: every rank calls it.
+  subroutine Update_Coupling_Segment_Partners ( FUSS_domain, MOSE_domain, level )
+    implicit none
+    type(FUSS_domain_type), intent(in) :: FUSS_domain
+    type(MOSE_domain_type), intent(in) :: MOSE_domain
+    integer, intent(in)                :: level
+
+    if (level > max_levels) return
+    if (.not. segs(level)%ready) return
+    call Update_Partners ( segs(level), FUSS_domain, MOSE_domain )
+
+  end subroutine Update_Coupling_Segment_Partners
+
+
+  !> Wall output of a FUSS 104 face of this rank: (Tw, qw) of its segments,
+  !> averaged by area, with the partner cells of the last Update_Partners
+  subroutine Segment_Wall_Output_FUSS ( FUSS_domain, level, i, Ovar )
     implicit none
     type(FUSS_domain_type), intent(inout) :: FUSS_domain
-    type(MOSE_domain_type), intent(in)    :: MOSE_domain
     integer, intent(in)                   :: level, i
     real(R8), intent(out)                 :: Ovar(2)
     ! Local
@@ -417,7 +517,7 @@ contains
     wsum = 0d0
     do k = set%pF(e), set%pF(e+1) - 1
       sg = set%lF(k)
-      call Eval_FUSS_Segment ( set, sg, FUSS_domain, MOSE_domain, flux, O )
+      call Eval_FUSS_Segment ( set, sg, FUSS_domain, flux, O )
       Ovar = Ovar + set%wF(sg) * O
       wsum = wsum + set%wF(sg)
     enddo
@@ -426,11 +526,11 @@ contains
   end subroutine Segment_Wall_Output_FUSS
 
 
-  !> Wall output of a MOSE 104 face: the wall variables of its segments, averaged by area
-  subroutine Segment_Wall_Output_MOSE ( FUSS_domain, MOSE_domain, level, j, Ovar )
+  !> Wall output of a MOSE 104 face of this rank: the wall variables of its
+  !> segments, averaged by area, with the partner cells of the last Update_Partners
+  subroutine Segment_Wall_Output_MOSE ( MOSE_domain, level, j, Ovar )
     use MOSE_Global_m, only: nprim
     implicit none
-    type(FUSS_domain_type), intent(in)    :: FUSS_domain
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
     integer, intent(in)                   :: level, j
     real(R8), intent(out)                 :: Ovar(8)
@@ -449,7 +549,7 @@ contains
     wsum = 0d0
     do k = set%pM(e), set%pM(e+1) - 1
       sg = set%lM(k)
-      call Eval_MOSE_Segment ( set, sg, FUSS_domain, MOSE_domain, fluxv, O )
+      call Eval_MOSE_Segment ( set, sg, MOSE_domain, fluxv, O )
       Ovar = Ovar + set%wM(sg) * O
       wsum = wsum + set%wM(sg)
     enddo
@@ -459,39 +559,31 @@ contains
 
 
   !> FUSS side of segment sg: the 103 routine with the MOSE cell of the segment as
-  !> partner. new_flux is the flux through the whole FUSS face, as in 103.
-  subroutine Eval_FUSS_Segment ( set, sg, FUSS_domain, MOSE_domain, new_flux, Ovar )
+  !> partner (its state in xM). new_flux is the flux through the whole FUSS face, as in 103.
+  subroutine Eval_FUSS_Segment ( set, sg, FUSS_domain, new_flux, Ovar )
     use hydraMF_Lib_BC_Coupled_Wall_Temperature, only: FUSS_BC_Coupled_Wall_Temperature
-    use MOSE_Global_m, only: nsc, np
-    use FLINT_Lib_Thermodynamic
+    use MOSE_Global_m, only: nsc
     implicit none
     type(segment_set_type), intent(in)    :: set
     integer, intent(in)                   :: sg
     type(FUSS_domain_type), intent(inout) :: FUSS_domain
-    type(MOSE_domain_type), intent(in)    :: MOSE_domain
     real(R8), intent(out)                 :: new_flux
     real(R8), optional, intent(out)       :: Ovar(2)
     ! Local
-    integer  :: i, j, Bm, Im, Jm, Km, Fm, dir, Bs, Is, Js, Ks
-    real(R8) :: P_con(nsc), rho, Rgas, Tg(6)
+    integer  :: i, Bm, Im, Jm, Km, Fm, dir
+    real(R8) :: P_con(nsc), Tg(6)
     type(FUSS_tensor_3D_type) :: Mcon
 
     i  = set%sF(sg)
-    j  = set%sM(sg)
     Bm = FUSS_domain % bc(i) % b
     Im = FUSS_domain % bc(i) % i
     Jm = FUSS_domain % bc(i) % j
     Km = FUSS_domain % bc(i) % k
     Fm = FUSS_domain % bc(i) % f
-    Bs = MOSE_domain % bc(j) % b
-    Is = MOSE_domain % bc(j) % i
-    Js = MOSE_domain % bc(j) % j
-    Ks = MOSE_domain % bc(j) % k
 
     ! Partner: the MOSE cell that owns the other face of the segment
-    P_con = MOSE_domain % blk(Bs) % P (1:nsc,Is,Js,Ks)
-    call co_rotot_Rtot ( P_con, rho, Rgas )
-    Tg = EOS( p=MOSE_domain%blk(Bs)%P(np,Is,Js,Ks), rho=rho, R=Rgas )
+    Tg    = set%xM(1,sg)
+    P_con = set%xM(2:1+nsc,sg)
 
     ! Partner metric, normal distance only: the normal row of the own cell rescaled
     ! so that the routine sees the partner cell centre at dM; tangential rows zero
@@ -506,37 +598,31 @@ contains
 
 
   !> MOSE side of segment sg: the 103 routine with the FUSS cell of the segment as
-  !> partner. new_flux is the flux through the whole MOSE face, as in 103.
-  subroutine Eval_MOSE_Segment ( set, sg, FUSS_domain, MOSE_domain, new_flux, Ovar )
+  !> partner (its state in xF). new_flux is the flux through the whole MOSE face, as in 103.
+  subroutine Eval_MOSE_Segment ( set, sg, MOSE_domain, new_flux, Ovar )
     use hydraMF_Lib_BC_Coupled_Wall_Temperature, only: MOSE_BC_Coupled_Wall_Temperature
     use MOSE_Global_m, only: nprim
     implicit none
     type(segment_set_type), intent(in)    :: set
     integer, intent(in)                   :: sg
-    type(FUSS_domain_type), intent(in)    :: FUSS_domain
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
     real(R8), intent(out)                 :: new_flux(nprim)
     real(R8), optional, intent(out)       :: Ovar(8)
     ! Local
-    integer  :: i, j, Bm, Im, Jm, Km, Fm, dir, Bs, Is, Js, Ks
+    integer  :: j, Bm, Im, Jm, Km, Fm, dir
     real(R8) :: Pg(1,6), matID_con
     type(MOSE_tensor_3D_type) :: Mcon
 
     j  = set%sM(sg)
-    i  = set%sF(sg)
     Bm = MOSE_domain % bc(j) % b
     Im = MOSE_domain % bc(j) % i
     Jm = MOSE_domain % bc(j) % j
     Km = MOSE_domain % bc(j) % k
     Fm = MOSE_domain % bc(j) % f
-    Bs = FUSS_domain % bc(i) % b
-    Is = FUSS_domain % bc(i) % i
-    Js = FUSS_domain % bc(i) % j
-    Ks = FUSS_domain % bc(i) % k
 
     ! Partner: the FUSS cell that owns the other face of the segment
-    Pg = FUSS_domain % blk(Bs) % T (Is,Js,Ks)
-    matID_con = FUSS_domain % blk(Bs) % matID (Is,Js,Ks)
+    Pg        = set%xF(1,sg)
+    matID_con = set%xF(2,sg)
 
     ! Partner metric, normal distance only (see Eval_FUSS_Segment)
     dir = (Fm+1)/2
@@ -548,6 +634,221 @@ contains
                                            k_rough = MOSE_domain % bc(j) % k_rough )
 
   end subroutine Eval_MOSE_Segment
+
+
+  !> Partner cell of every segment of the faces of this rank: a FUSS face reads
+  !> T and P(1:nsc) of the MOSE cell (xM), a MOSE face T and matID of the FUSS cell
+  !> (xF). The rank that owns the partner cell reads it: in place when both faces
+  !> of the segment are here, and sends it over when they are not.
+  subroutine Update_Partners ( set, FUSS_domain, MOSE_domain )
+    use MOSE_Global_m, only: nsc
+    implicit none
+    type(segment_set_type), intent(inout) :: set
+    type(FUSS_domain_type), intent(in)    :: FUSS_domain
+    type(MOSE_domain_type), intent(in)    :: MOSE_domain
+    ! Local
+    integer :: m, e, k, sg, p, n, nxm
+
+    nxm = 1 + nsc
+
+    ! Both faces on this rank
+    !$omp parallel do schedule (dynamic, 16) private(m, e, k, sg)
+    do m = 1, set%nmyF
+      e = set%myF(m)
+      do k = set%pF(e), set%pF(e+1) - 1
+        sg = set%lF(k)
+        if (set%oM(sg) /= set%oF(sg)) cycle
+        call MOSE_State ( MOSE_domain, set%sM(sg), set%xM(:,sg) )
+        call FUSS_State ( FUSS_domain, set%sF(sg), set%xF(:,sg) )
+      enddo
+    enddo
+    !$omp end parallel do
+
+    if (set%npeer == 0) return
+
+    ! Faces on two ranks: each side sends the state of its own cell
+    do p = 1, set%npeer
+      associate ( pr => set%peer(p) )
+        n = 0
+        do k = 1, size(pr%sFM)
+          call FUSS_State ( FUSS_domain, set%sF(pr%sFM(k)), pr%sbuf(n+1:n+NXF) )
+          n = n + NXF
+        enddo
+        do k = 1, size(pr%sMF)
+          call MOSE_State ( MOSE_domain, set%sM(pr%sMF(k)), pr%sbuf(n+1:n+nxm) )
+          n = n + nxm
+        enddo
+      end associate
+    enddo
+
+    call Exchange ( set, NXF, nxm, TAG_SEG_STATE )
+
+    do p = 1, set%npeer
+      associate ( pr => set%peer(p) )
+        n = 0
+        do k = 1, size(pr%sMF)
+          set%xF(:,pr%sMF(k)) = pr%rbuf(n+1:n+NXF)
+          n = n + NXF
+        enddo
+        do k = 1, size(pr%sFM)
+          set%xM(:,pr%sFM(k)) = pr%rbuf(n+1:n+nxm)
+          n = n + nxm
+        enddo
+      end associate
+    enddo
+
+  end subroutine Update_Partners
+
+
+  !> The estimate of the other side, for the segments split between two ranks:
+  !> the FUSS face gets the MOSE energy flux fM(np), the MOSE face the FUSS flux qF
+  subroutine Exchange_Estimates ( set )
+    use MOSE_Global_m, only: np
+    implicit none
+    type(segment_set_type), intent(inout) :: set
+    ! Local
+    integer :: p, k
+
+    if (set%npeer == 0) return
+
+    do p = 1, set%npeer
+      associate ( pr => set%peer(p) )
+        do k = 1, size(pr%sFM)
+          pr%sbuf(k) = set%qF(pr%sFM(k))
+        enddo
+        do k = 1, size(pr%sMF)
+          pr%sbuf(size(pr%sFM)+k) = set%fM(np,pr%sMF(k))
+        enddo
+      end associate
+    enddo
+
+    call Exchange ( set, 1, 1, TAG_SEG_FLUX )
+
+    do p = 1, set%npeer
+      associate ( pr => set%peer(p) )
+        do k = 1, size(pr%sMF)
+          set%qF(pr%sMF(k)) = pr%rbuf(k)
+        enddo
+        do k = 1, size(pr%sFM)
+          set%fM(np,pr%sFM(k)) = pr%rbuf(size(pr%sMF)+k)
+        enddo
+      end associate
+    enddo
+
+  end subroutine Exchange_Estimates
+
+
+  !> Swap the packed buffers with every rank that shares segments with this one.
+  !> The message from rank a to rank b carries first the segments with the FUSS
+  !> face on a and the MOSE face on b (sFM on a, sMF on b), then those with the
+  !> MOSE face on a and the FUSS face on b (sMF on a, sFM on b): nf reals per
+  !> segment for what a FUSS face sends, nm for what a MOSE face sends. Both ranks
+  !> list the segments in increasing order, so the two sides line up.
+  subroutine Exchange ( set, nf, nm, tag )
+#ifdef USE_MPI
+    use mpi
+    use FUSS_Mod_MPI,     only: check_mpi_error
+    use hydra_Mod_Timers, only: timer_xchg_begin, timer_xchg_end
+#endif
+    implicit none
+    type(segment_set_type), intent(inout) :: set
+    integer, intent(in)                   :: nf, nm, tag
+#ifdef USE_MPI
+    ! Local
+    integer :: p, cnt, ierr
+    integer, allocatable :: req(:)
+
+    if (set%npeer == 0) return
+    allocate ( req(2*set%npeer) )
+
+    call timer_xchg_begin()
+    do p = 1, set%npeer
+      cnt = nf * size(set%peer(p)%sMF) + nm * size(set%peer(p)%sFM)
+      call MPI_IRECV ( set%peer(p)%rbuf, cnt, MPI_DOUBLE_PRECISION, set%peer(p)%rank, tag, &
+                       MPI_COMM_WORLD, req(p), ierr )
+      call check_mpi_error ( ierr )
+    enddo
+    do p = 1, set%npeer
+      cnt = nf * size(set%peer(p)%sFM) + nm * size(set%peer(p)%sMF)
+      call MPI_ISEND ( set%peer(p)%sbuf, cnt, MPI_DOUBLE_PRECISION, set%peer(p)%rank, tag, &
+                       MPI_COMM_WORLD, req(set%npeer+p), ierr )
+      call check_mpi_error ( ierr )
+    enddo
+    call MPI_WAITALL ( 2*set%npeer, req, MPI_STATUSES_IGNORE, ierr )
+    call check_mpi_error ( ierr )
+    call timer_xchg_end()
+#else
+    ! Serial: no other rank, npeer is always 0
+    if (set%npeer > 0 .and. nf + nm + tag < 0) return
+#endif
+
+  end subroutine Exchange
+
+
+  !> State of the MOSE cell of 104 face j, as the FUSS side reads it: T, P(1:nsc)
+  subroutine MOSE_State ( MOSE_domain, j, x )
+    use MOSE_Global_m, only: nsc, np
+    use FLINT_Lib_Thermodynamic, only: co_rotot_Rtot, EOS
+    implicit none
+    type(MOSE_domain_type), intent(in) :: MOSE_domain
+    integer, intent(in)                :: j
+    real(R8), intent(out)              :: x(:)
+    ! Local
+    integer  :: b, ic, jc, kc
+    real(R8) :: rho, Rgas
+
+    b  = MOSE_domain % bc(j) % b
+    ic = MOSE_domain % bc(j) % i
+    jc = MOSE_domain % bc(j) % j
+    kc = MOSE_domain % bc(j) % k
+    x(2:1+nsc) = MOSE_domain % blk(b) % P (1:nsc,ic,jc,kc)
+    call co_rotot_Rtot ( x(2:1+nsc), rho, Rgas )
+    x(1) = EOS( p=MOSE_domain%blk(b)%P(np,ic,jc,kc), rho=rho, R=Rgas )
+
+  end subroutine MOSE_State
+
+
+  !> State of the FUSS cell of 104 face i, as the MOSE side reads it: T, matID
+  subroutine FUSS_State ( FUSS_domain, i, x )
+    implicit none
+    type(FUSS_domain_type), intent(in) :: FUSS_domain
+    integer, intent(in)                :: i
+    real(R8), intent(out)              :: x(:)
+    ! Local
+    integer :: b, ic, jc, kc
+
+    b  = FUSS_domain % bc(i) % b
+    ic = FUSS_domain % bc(i) % i
+    jc = FUSS_domain % bc(i) % j
+    kc = FUSS_domain % bc(i) % k
+    x(1) = FUSS_domain % blk(b) % T     (ic,jc,kc)
+    x(2) = FUSS_domain % blk(b) % matID (ic,jc,kc)
+
+  end subroutine FUSS_State
+
+
+  !> Rank owning FUSS block b; this rank when the blocks are not partitioned (serial)
+  integer function FUSS_Owner ( b ) result ( r )
+    use FUSS_Mod_MPI, only: block_owner, mpi_rank_
+    implicit none
+    integer, intent(in) :: b
+
+    r = mpi_rank_
+    if (allocated(block_owner)) r = block_owner(b)
+
+  end function FUSS_Owner
+
+
+  !> Rank owning MOSE block b; this rank when the blocks are not partitioned (serial)
+  integer function MOSE_Owner ( b ) result ( r )
+    use MOSE_Mod_MPI, only: block_owner, mpi_rank_
+    implicit none
+    integer, intent(in) :: b
+
+    r = mpi_rank_
+    if (allocated(block_owner)) r = block_owner(b)
+
+  end function MOSE_Owner
 
 
   function FUSS_Face_Geometry ( domain, i ) result ( geo )
@@ -620,7 +921,7 @@ contains
     ! Local
     integer  :: dir, h, t1, t2
     real(R8) :: cc(3), mn
-    
+
     ! p(3,4)	i 4 nodi della faccia, ordinati lungo il bordo
     ! c(3)	il centro della faccia (media dei nodi)
     ! n(3)	la normale unitaria, uscente dalla cella proprietaria
@@ -628,7 +929,7 @@ contains
     ! ortho	il peso dei termini tangenziali rispetto a quello normale (0 se la mesh è ortogonale)
 
     dir = (Fm+1)/2        ! Direzione normale alla faccia
-    h   = 1 - mod(Fm,2)   ! 0 = faccia bassa/sinistra, 1 = faccia alta/destra  
+    h   = 1 - mod(Fm,2)   ! 0 = faccia bassa/sinistra, 1 = faccia alta/destra
     select case (dir)
       case (1)
         geo%p(:,1) = corner(:,h,0,0)
@@ -659,6 +960,35 @@ contains
     geo%ortho = max ( abs(dot_product(M(t1,:), N)), abs(dot_product(M(t2,:), N)) ) / mn ! indice non ortogonalità
 
   end function Face_Geometry
+
+
+  !> A face geometry as NGEO reals, for the sum over the ranks
+  pure subroutine Pack_Geo ( geo, buf )
+    implicit none
+    type(face_geo_type), intent(in) :: geo
+    real(R8), intent(out)           :: buf(NGEO)
+
+    buf(1:12)  = reshape ( geo%p, [12] )
+    buf(13:15) = geo%c
+    buf(16:18) = geo%n
+    buf(19)    = geo%d
+    buf(20)    = geo%ortho
+
+  end subroutine Pack_Geo
+
+
+  pure function Unpack_Geo ( buf ) result ( geo )
+    implicit none
+    real(R8), intent(in) :: buf(NGEO)
+    type(face_geo_type)  :: geo
+
+    geo%p     = reshape ( buf(1:12), [3,4] )
+    geo%c     = buf(13:15)
+    geo%n     = buf(16:18)
+    geo%d     = buf(19)
+    geo%ortho = buf(20)
+
+  end function Unpack_Geo
 
 
   !> Area of the overlap of two convex quads pa and pb, both projected on the plane
@@ -773,6 +1103,9 @@ contains
     set%ns = 0
     set%nF = 0
     set%nM = 0
+    set%nmyF = 0
+    set%nmyM = 0
+    set%npeer = 0
     if (allocated(set%sF))   deallocate ( set%sF, set%sM, set%wF, set%wM, set%dF, set%dM )
     if (allocated(set%eF))   deallocate ( set%eF )
     if (allocated(set%eM))   deallocate ( set%eM )
@@ -782,6 +1115,10 @@ contains
     if (allocated(set%pM))   deallocate ( set%pM, set%lM )
     if (allocated(set%qF))   deallocate ( set%qF )
     if (allocated(set%fM))   deallocate ( set%fM )
+    if (allocated(set%oF))   deallocate ( set%oF, set%oM )
+    if (allocated(set%myF))  deallocate ( set%myF, set%myM )
+    if (allocated(set%xM))   deallocate ( set%xM, set%xF )
+    if (allocated(set%peer)) deallocate ( set%peer )
 
   end subroutine Reset_Set
 
