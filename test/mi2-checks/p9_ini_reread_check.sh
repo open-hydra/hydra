@@ -1,7 +1,7 @@
 #!/bin/bash
 # Hot re-read of input.ini ([HYDRA-IO] ini-diter), on evap-box-ta with a re-read at every second coupling step:
-#  reread : the run ends (exit 0, GAME OVER) without an [ERROR] line -- the keys of the solvers MI2 does not run
-#           (FUSS-iter, the multigrid levels) are not required of an MI2 input;
+#  reread : the run ends (exit 0, GAME OVER) without an [ERROR] or LK-interface: line -- the keys of the solvers MI2
+#           does not run (FUSS-iter, the multigrid levels) are not required of an MI2 input;
 #  inert  : re-reading an unchanged file changes nothing, OUTPUT byte-identical to the run of the case as shipped.
 #   usage: p9_ini_reread_check.sh [scratch-root] [exe]
 set -u
@@ -21,6 +21,7 @@ grep -q '^ini-diter' "$d/input.ini" || { echo "FAIL  the case has no ini-diter l
 sed -i 's/^ini-diter *=.*/ini-diter = 2/' "$d/input.ini"
 "$RUN" "$d" "$T/reread" 1 "$T/reread.log" "$EXE" > /dev/null 2>&1; rc=$?
 [ $rc = 0 ] && grep -q "GAME OVER" "$T/reread.log" && ok "the run with the re-read ends (exit 0, GAME OVER)" || ko "the run with the re-read: exit=$rc"
-if grep -q '\[ERROR\]' "$T/reread.log"; then ko "an [ERROR] line: $(grep -m1 '\[ERROR\]' "$T/reread.log")"; else ok "no [ERROR] line"; fi
+if grep -q -e '\[ERROR\]' -e 'LK-interface:' "$T/reread.log"
+then ko "an [ERROR] or LK-interface: line: $(grep -m1 -e '\[ERROR\]' -e 'LK-interface:' "$T/reread.log")"; else ok "no [ERROR] or LK-interface: line"; fi
 diff -rq "$T/shipped/OUTPUT" "$T/reread/OUTPUT" > /dev/null && ok "OUTPUT byte-identical to the run without re-read" || ko "OUTPUT differs from the run without re-read"
 echo "== $pass passed, $fail failed"; [ $fail = 0 ]

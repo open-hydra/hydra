@@ -48,7 +48,7 @@ test/mi2-checks/p13_rans_slot_check.sh [scratch-root] [exe]                # run
 | R1 mass balance, species 1 | rel.err <= 1e-12, injected >= 5e-9 kg | 2.213e-16, 7.476495e-9 kg |
 | R2 energy bookkeeping | rel.err <= 1e-7, handed >= 1e-2 J | 2.281e-8, -0.1179 J |
 | R3 SA variable (last field, iteration 1000) | finite, within 5 % of the initial field's everywhere; `mut/mil` in [0.1, 0.4] | -8.1e-4 .. +6.1e-3; 0.199 .. 0.210 |
-| R4 log hygiene, RANS setup | exit 0, `GAME OVER`, no error markers; `Navier-Stokes`, `Turbulent, SA`; `rhoNuTilde` in the field | pass |
+| R4 log hygiene, RANS setup | exit 0, `GAME OVER`, no error markers, no `LK-interface:` warning; `Navier-Stokes`, `Turbulent, SA`; `rhoNuTilde` in the field | pass |
 
 The 5 % bound of R3: the vorticity production moves the SA variable by at most `cb1 |omega| t` (below 0.5 % with the
 0.02 m/s creep the evaporation drives), and the injected mass changes the density of an injection cell by at most 3 %;

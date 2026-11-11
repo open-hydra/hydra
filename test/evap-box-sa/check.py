@@ -19,7 +19,7 @@ EN_MIN      = 1e-2      # J handed to the gas (evap-box-ta: 0.236)
 SA_DEV      = 5e-2      # |mi_tilde/mi_tilde0 - 1| everywhere: production and the injection-cell density change
                         # move it by at most 3.5 % here (measured on the reference run: +1.2 % / -0.16 %)
 MUT_RATIO   = (0.1, 0.4)  # mit/mil: the far-field SA state chi about 3 gives 0.21 (reference run 0.199-0.221)
-BAD = ['[ERROR]', ' FAIL', 'on-physical state', 'Integration failed at', 'p<0 detected', 'ABORT:']
+BAD = ['[ERROR]', ' FAIL', 'on-physical state', 'Integration failed at', 'p<0 detected', 'ABORT:', 'LK-interface:']
 # The same three quantities under the names of either generation of MOSE and ATLAS.
 SA_NAMES  = ('mi_tilde', 'rhoNuTilde')   # the SA variable in MOSE's field
 SA_IC     = ('mi_t', 'rhoNuTilde')       # the SA variable in ATLAS's initial field

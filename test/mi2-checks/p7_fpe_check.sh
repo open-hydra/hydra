@@ -4,6 +4,7 @@
 # scratch build tree and runs test/evap-box-ord2 (gas-order = 2, 1 thread). PASS = GAME OVER; a trap prints the
 # traceback. RED on the pre-H5 source (2026-09-18): MOSExIGLOO evaluated Gas_State_From_Prim on MOSE's never-written
 # edge/corner ghosts -> f_Rtot 0/0 ("floating invalid" at CYCLE 1); GREEN after F5 (interior-only copy).
+# PASS also needs no LK-interface: line (IGLOO's warning that a Langmuir-Knudsen fixed point was not bracketed).
 # Every build tree links the same bin/hydra_MI2 (plain set() of CMAKE_RUNTIME_OUTPUT_DIRECTORY in src/app/CMakeLists.txt):
 # the production binary is saved first and restored on every exit path. ~1.5 min.
 set -u
@@ -27,10 +28,11 @@ cp "$T/hydra_MI2.saved" "$H/bin/hydra_MI2"
 
 "$H/test/mi2-checks/run_case.sh" "$H/test/evap-box-ord2" "$T/run" 1 "$T/run.log" "$T/hydra_MI2.fpe0"
 rc=$?
-if [ $rc -eq 0 ] && grep -q "GAME OVER" "$T/run.log"; then
+if [ $rc -eq 0 ] && grep -q "GAME OVER" "$T/run.log" && ! grep -q 'LK-interface:' "$T/run.log"; then
   echo "== p7 PASS: -fpe0 build of evap-box-ord2 reaches GAME OVER ($(grep '# wall' "$T/run.log"))"
   exit 0
 fi
 echo "== p7 FAIL: exit $rc"
+grep -m1 'LK-interface:' "$T/run.log"
 grep -n -A12 "forrtl" "$T/run.log" | head -20
 exit 1

@@ -34,6 +34,8 @@ mixing). Then, per sweep:
   G  last sweep: the source field against the injected mass, momentum and energy of the consumed parcels; the
      Eulerian field's sum n_p V and sum rho_p V against sum npdot t_life and sum npdot int m dt; the gas mass
      the coupler reports gained per species (run log) against the final gas field minus the initial one
+  L  the run log, every sweep: no line of IGLOO's LK-interface: warning (a parcel whose Langmuir-Knudsen fixed
+     point was not bracketed carries the bracket's estimate of its rate, not the model's)
 
 The last sweep's per-stream checks and the Eulerian integrals are gated only when OUTPUT/gas-field.tec was
 written at the MOSE iteration that sweep sampled (the last line of gas-residual-history.dat); otherwise they
@@ -851,6 +853,16 @@ def check_coupler(rep, run, inp, log, gated):
               % (os.path.basename(log), "; ".join(parts)), gated)
 
 
+def check_log(rep, log):
+    """IGLOO's LK-interface: warning in the run log, whatever the sweep."""
+    if not os.path.exists(log):
+        print("  [note] %s absent: its LK-interface: lines are not checked" % log)
+        return
+    hits = [l.strip() for l in open(log, errors="replace") if "LK-interface:" in l]
+    rep.check("L", not hits, "%s: %d LK-interface: line(s)%s" % (os.path.basename(log), len(hits),
+                                                                 " -- " + hits[0] if hits else ""))
+
+
 def cell_volumes(f, names):
     x, y, z = (f[n] for n in names[:3])
     dx = np.diff(x[0, 0, :])
@@ -873,7 +885,7 @@ def main():
     ap.add_argument("--psat", default="auto", choices=("auto", "cc", "table"))
     ap.add_argument("--interface", default="auto", choices=("auto", "LK", "VLE"))
     ap.add_argument("--props", default=None, help="properties table to model (default RUN/INPUT/<phase>-properties.dat)")
-    ap.add_argument("--log", default=None, help="run log carrying MI2's closed-domain lines (default RUN/run.log)")
+    ap.add_argument("--log", default=None, help="run log: MI2's closed-domain lines, IGLOO's warnings (default RUN/run.log)")
     a = ap.parse_args()
     run = a.run
     ini = read_ini(a.ini or os.path.join(run, "input.ini"))
@@ -944,6 +956,8 @@ def main():
         check_global(rep, run, tag, streams, results, drop, gated)
         if k == ncoup - 1 and k > 0:
             check_coupler(rep, run, inp, a.log or os.path.join(run, "run.log"), gated)
+    print("\n== run log")
+    check_log(rep, a.log or os.path.join(run, "run.log"))
     print("\n%s: %d check(s) failed" % ("PASS" if rep.nfail == 0 else "FAIL", rep.nfail))
     return 0 if rep.nfail == 0 else 1
 
