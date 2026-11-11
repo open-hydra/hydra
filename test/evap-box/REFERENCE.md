@@ -130,12 +130,13 @@ All runs at 1 thread. The figures of this section, of the closed-form table abov
 below are those of IGLOO before the burnout mass of 1e-20 kg, the samples placed inside the step and the L_v column
 (constant L_v 2.462478e6 J/kg, burnout at 1e-15 kg, a sample at the end of the step past its quantum).
 
-**At IGLOO cc125f0** (the four boxes, one thread): every check passes, E, S, Q, C, G and L, gated on sweep 0 of the
+**At IGLOO dc811fd** (cc125f0 with the LK failure flag passed as an argument, which gfortran requires; the same
+output bytes. The four boxes, one thread): every check passes, E, S, Q, C, G and L, gated on sweep 0 of the
 four and on the last sweep of evap-box (the other three write `gas-field.tec` at iteration 0: their last sweep is
 informational). The exit T is the reference's at the exit mass, 9.94e-21 to 9.99e-21 kg: 331.273957 K against 331.273959 K
 on sweep 0 and 329.77–330.31 K within 1e-6 K on the last sweep (evap-box, exit time within 7e-10 s, 8e-9 relative);
 331.267–331.276 K within 1.6e-5 K on sweep 0 of the boxes without `print-dtime`. IGLOO's damped Picard iteration of the
-LK interface ends unconverged on drops below 0.9 µm (the last 0.8 ms of the life); cc125f0 then bisects the fixed point.
+LK interface ends unconverged on drops below 0.9 µm (the last 0.8 ms of the life); since cc125f0 IGLOO then bisects the fixed point.
 Against bdb4b91 that moves the drop from about 0.9 µm down to burnout (the first sample that moves, with one every
 14 µs, at 0.55–0.59 µm); compiled at the default flags the live bisection also changes how the evaporation routines
 compile, so the samples differ in their last bits from early in the life (up to 5.8e-4 K where a solver step decision
