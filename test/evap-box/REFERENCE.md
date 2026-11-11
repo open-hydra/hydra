@@ -181,3 +181,10 @@ passes (exit T 302.048731 K and 303.687689 K inside their burnout brackets, S 0.
 A kept baseline is checked by linking its `INPUT`, `OUTPUT`, `input.ini` and log into one directory. `--ini` and
 `--props` fix the modelled case independently of the run. Exit 0 when every gated check passes. Python 3 with numpy;
 one to two minutes for the two sweeps.
+
+The gate runs the four evaporating boxes as shipped (evap-box, -ord2, -ta, -sa; one thread) and this check on each:
+
+    test/mi2-checks/p19_evap_reference_check.sh [scratch-root] [exe]
+
+one PASS/FAIL line per box for the run and one for the check (the number of failed rows and the first one quoted);
+exit 1 on a FAIL.
