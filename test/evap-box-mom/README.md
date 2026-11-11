@@ -29,22 +29,22 @@ bookkeeping (the mass channel of the same branch is gated by `evap-box-ta`).
 
 From the `[MI2-report]` lines of every block that had IGLOO sources in force (steps 2–6; step 1 has none):
 
-| id | check | tolerance | measured on G (2026-09-30) |
+| id | check | tolerance | measured at `cfl = 0.6` (2026-11-11) |
 |---|---|---|---|
-| M1x | px1 − px0 = Fx (t1 − t0) | 1e-8 relative | ≤ 1.2e-14 |
-| M1y, M1z | py, pz likewise, relative to \|Fx (t1 − t0)\| (Fy is 1e-4 of Fx, Fz = 0) | 1e-8 | ≤ 3.2e-10, 0 |
-| M1s, M1o | the sum over the gated blocks; no change over the sourceless block | 1e-8 | 4e-15, 0 |
-| M3a | E1 − E0 = Q (t1 − t0) | 1e-5 relative | 3.1–3.8e-6 (see below) |
-| M2a | Fx = Σ ṁ u_inj = 2e-6 N | 1e-2 (u_end is the gas velocity, < 1e-3 m/s) | ≤ 1.7e-4 |
-| M2b, M2c | Fx = Σ ṁ (u_inj − u_end), Fy = −Σ ṁ v_end, with the end velocities of the snapshot of the producing sweep | 1e-5 of Σ ṁ u_inj (the snapshot prints 1e-6 m/s) | ≤ 3e-7, ≤ 2e-6 |
-| M3b | Q = Σ ṁ [cp (T0 − T_end) + (u_inj² − \|v_end\|²)/2], T_end from the same snapshot | 1e-6 relative | ≤ 3e-8 |
+| M1x | px1 − px0 = Fx (t1 − t0) | 1e-8 relative | ≤ 5.3e-15 |
+| M1y, M1z | py, pz likewise, relative to \|Fx (t1 − t0)\| (Fy is 1e-4 of Fx, Fz = 0) | 1e-8 | ≤ 2.0e-10, 0 |
+| M1s, M1o | the sum over the gated blocks; no change over the sourceless block | 1e-8 | 0, 0 |
+| M3a | E1 − E0 = Q (t1 − t0) | 1e-5 relative | 3.2–3.9e-6 (see below) |
+| M2a | Fx = Σ ṁ u_inj = 2e-6 N | 1e-2 (u_end is the gas velocity, < 1e-3 m/s) | ≤ 1.8e-4 |
+| M2b, M2c | Fx = Σ ṁ (u_inj − u_end), Fy = −Σ ṁ v_end, with the end velocities of the snapshot of the producing sweep | 1e-5 of Σ ṁ u_inj (the snapshot prints 1e-6 m/s) | ≤ 4.7e-7, ≤ 3.1e-7 |
+| M3b | Q = Σ ṁ [cp (T0 − T_end) + (u_inj² − \|v_end\|²)/2], T_end from the same snapshot | 1e-6 relative | ≤ 9.7e-9 |
 | NV | \|px1 − px0\| ≥ ½ Σ ṁ u_inj (t1 − t0); Fx ≥ ½ Σ ṁ u_inj; \|Q\| ≥ ½ Σ ṁ cp (T_gas − T0) = 0.25 W; one snapshot row per stream at time-end; blocks contiguous in time | — | ratios 1.0, 1.0, 2.0 |
 
 A log without report lines, or without a block with sources, is a FAIL (no vacuous pass).
 
-**The energy floor.** E1 − E0 misses Q (t1 − t0) by +3.1 to +3.8e-10 J per block (3.1–3.8e-6 relative), always
-with the same sign. Measured: 2× that with 100 MOSE iterations per block, the same amount per iteration at
-CFL 0.1 (blocks 3× shorter), 1700× less with `heat = NoHeat` (same momentum source, no thermal change), and
+**The energy floor.** E1 − E0 misses Q (t1 − t0) by +3.2 to +3.8e-10 J per block (3.2–3.9e-6 relative), always
+with the same sign. Measured: 2× that with 100 MOSE iterations per block, 0.7× that per iteration at `cfl = 0.2`
+(blocks 3× shorter), 1500× less with `heat = NoHeat` (same momentum source, no thermal change), and
 nothing of the kind in the momentum channel (1e-14). That is a per-iteration loss of about 7e-12 J inside MOSE's
 energy update, consistent with its round trip: `integration-variables = cons` stores primitives, and at every RK
 stage `prim2cons` rebuilds ρE from the pressure that FLINT's `cons2prim` obtained by a Newton iteration on T

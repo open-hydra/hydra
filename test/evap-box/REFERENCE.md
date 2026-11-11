@@ -26,7 +26,7 @@ Each of the four DB streams (x = 0.02 m; y = 0.03, 0.045, 0.055, 0.07 m; z = 0.0
 A closed box fed a continuous mass source has **no steady state**. With `time-accurate = false` the gas after
 N pseudo-iterations is not a physical state, and MI2's closed-domain lines print `injected 0.000000E+00` and
 `rel.err 1.000E+00`; MI2 itself labels them pseudo-time integrals. Even the N2, which has no source, gains
-9.5e-11 kg over the run (1.9e-6 of the 4.877e-5 kg in the box). The coupler's mass and energy balance is the
+9.3e-11 kg over the run (1.9e-6 of the 4.877e-5 kg in the box). The coupler's mass and energy balance is the
 time-accurate twin's (`test/evap-box-ta`), not this case's.
 
 What *is* well posed in steady mode is each IGLOO sweep: the droplet ODE in a given gas.
@@ -92,7 +92,7 @@ written.
 | C | the scatter clock: IGLOO places sample k of stream n at t_k = dt_q (k − frac(nφ)), with dt_q = L_box/(v_inj · fsample-traj) = 2.830194 ms, inside the solver step that spans it; the reference reaches the sample's mass within 1e-6 s of t_k, before or after | 1e-6 s; the sample's mass is linear on the step, so it pairs a little early where m(t) is convex |
 | G | last sweep: source field against the injected mass, momentum and energy of the consumed parcels, Σ ṁ (1, u0, c_l T0 + h_off + u0²/2) | 1e-9 relative; measured exact to the print, 4.000000000e-6 kg/s, 2.000000000e-6 N, −63.09831790 W |
 | G | last sweep: Eulerian Σ n_p V = Σ ṅ_p t_life and Σ ρ_p V = Σ ṅ_p ∫m dt | 1e-4; measured 1.2e-5 / 2.7e-6 (CC), 7.2e-6 / 2.7e-6 (Psat column) |
-| G | last sweep: the gas mass the coupler reports gained per species (`[MI2] closed-domain mass balance` in the run log) against Σ (ρ_i − ρ_i,0) V of the final gas field | the E13.6 print; measured exact to it (1.261670e-8 kg H2O, 9.476101e-11 kg N2). Bookkeeping, not conservation: see above |
+| G | last sweep: the gas mass the coupler reports gained per species (`[MI2] closed-domain mass balance` in the run log) against Σ (ρ_i − ρ_i,0) V of the final gas field | the E13.6 print; measured exact to it (1.261672e-8 kg H2O, 9.299382e-11 kg N2). Bookkeeping, not conservation: see above |
 | L | the run log (`--log`, else `RUN_DIR/run.log`), whatever the sweeps: no line of IGLOO's `LK-interface:` warning, which IGLOO prints once per material and sweep when the Langmuir–Knudsen fixed point of a parcel was not bracketed (that parcel's rate is the bracket's estimate, not the model's) | none; measured none (the four boxes) |
 
 **Gating.** The last sweep's per-stream checks, the Eulerian integrals and the coupler's lines count only when
@@ -134,7 +134,7 @@ below are those of IGLOO before the burnout mass of 1e-20 kg, the samples placed
 output bytes. The four boxes, one thread): every check passes, E, S, Q, C, G and L, gated on sweep 0 of the
 four and on the last sweep of evap-box (the other three write `gas-field.tec` at iteration 0: their last sweep is
 informational). The exit T is the reference's at the exit mass, 9.94e-21 to 9.99e-21 kg: 331.273957 K against 331.273959 K
-on sweep 0 and 329.77–330.31 K within 1e-6 K on the last sweep (evap-box, exit time within 7e-10 s, 8e-9 relative);
+on sweep 0 and 328.32–329.38 K within 2e-6 K on the last sweep (evap-box, exit time within 8e-10 s, 1e-8 relative);
 331.267–331.276 K within 1.6e-5 K on sweep 0 of the boxes without `print-dtime`. IGLOO's damped Picard iteration of the
 LK interface ends unconverged on drops below 0.9 µm (the last 0.8 ms of the life); since cc125f0 IGLOO then bisects the fixed point.
 Against bdb4b91 that moves the drop from about 0.9 µm down to burnout (the first sample that moves, with one every
