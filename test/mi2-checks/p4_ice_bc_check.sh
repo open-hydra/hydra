@@ -2,10 +2,10 @@
 # P4 checks on the ICE BC reader (JPL-Eulerian, short schedule, 1 thread):
 #  301 : face-4 records 300 -> 301 (ATLAS dispersed wall) -> run OK and OUTPUT byte-identical to the 300 run
 #        (ICE's type 3 already absorbs toward-moving particles: 300 and 301 coincide in ICE)
-#  403 : face-1 records 401 -> 403 with gp = 94.105 kg/m2/s (= krho/(1-krho)*mean(rho_g u_g)|inlet of the CONVERGED
+#  403 : face-1 records 401 -> 403 with gp = 91.811 kg/m2/s (= krho/(1-krho)*mean(rho_g u_g)|inlet of the CONVERGED
 #        401 run) -> the inlet-column condensed flux must equal gp within 1 %. The 401 run is checked against ITS OWN
 #        prescription, krho/(1-krho)*mean(rho_g u_g) from the same run's gas field (a short run is not converged to
-#        94.1, so the two inlets are not compared with each other).
+#        91.8, so the two inlets are not compared with each other).
 #  403z: same with gp = 0 -> the inlet column drains (mass flux < 50 % of the 401 run). Before P4, 402/403 mapped
 #        to ICE type 0 = NO boundary condition, i.e. exactly this "open face" behaviour.
 #  grp : INPUT/<prefix>phase.txt declaring 2 populations while [ICE-Family*] has 1 -> WARNING printed; shipped -> none
@@ -18,7 +18,7 @@ S=$H/test/JPL-Eulerian-20micron
 EXE=${2:-$H/bin/hydra_MI2}
 RUN=$H/test/mi2-checks/run_case.sh
 TEC=$H/test/mi2-checks/tec_cc.py
-GP=94.105
+GP=91.811
 mkdir -p "$T"; pass=0; fail=0
 ok() { pass=$((pass+1)); echo "PASS  $1"; }
 ko() { fail=$((fail+1)); echo "FAIL  $1"; }
@@ -63,7 +63,8 @@ f403=$(flux "$d/run/OUTPUT/part-field.tec"); echo "  403 (gp=$GP) inlet-column c
 python3 -c "import sys; a,b=float('$f403'),$GP; sys.exit(0 if abs(a-b)/b < 0.01 else 1)" && ok "403 inlet reproduces gp within 1 % (was an open face before P4)" || ko "403 inlet flux off gp"
 
 # --- 403 with gp = 0 (open face) ---
-d=$(mk inlet403zero); sed 's/^    9.41050E+01 /    0.00000E+00 /' "$T/inlet403/INPUT/part-bc.txt" > "$d/INPUT/part-bc.txt"
+d=$(mk inlet403zero); gpE=$(printf '%.5E' "$GP")
+sed "s/^    $gpE /    0.00000E+00 /" "$T/inlet403/INPUT/part-bc.txt" > "$d/INPUT/part-bc.txt"
 echo "  gp=0 payload lines: $(grep -c '^    0.00000E+00 ' "$d/INPUT/part-bc.txt")"
 "$RUN" "$d" "$d/run" 1 "$d/run.log" "$EXE" > /dev/null 2>&1; rc=$?
 f403z=$(flux "$d/run/OUTPUT/part-field.tec"); echo "  403 (gp=0) inlet-column condensed flux: $f403z"
