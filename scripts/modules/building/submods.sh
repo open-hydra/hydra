@@ -27,15 +27,22 @@ fi
 log_info "Building $PROG"
 log_info "Passing jurisdiction to install.sh in $HYDRADIR/$where/$PROG"
 echo
+# hydra's libraries, once its configure has checked their releases out in lib/: the module builds on the same ones;
+# before that, it selects its own
+include() { [[ -e "$HYDRADIR/$2/.git" ]] && echo "--include-$1=$HYDRADIR/$2"; true; }
 if [[ $PROG == "ATLAS" ]]; then
-  # ATLAS selects its own ORION release (2.1 or later, cloned at its first configure) and refuses an older checkout,
-  # which hydra's lib/ORION still is
-  ./install.sh build "${@:2}"
+  # ATLAS requires ORION 2.1 or later, which deps.lock selects; it builds with its own pinned FiNeR
+  ./install.sh build $(include orion lib/ORION) "${@:2}"
+elif [[ $PROG == "MOSE" || $PROG == "ARES" ]]; then
+  ./install.sh build $(include orion lib/ORION) \
+                    $(include finer lib/third_party/FiNeR) \
+                    $(include oslo lib/OSLO) \
+                    $(include flint lib/FLINT) \
+                  "${@:2}"
 else
-  ./install.sh build --include-orion=$HYDRADIR/lib/ORION \
-                    --include-finer=$HYDRADIR/lib/third_party/FiNeR \
-                    --include-oslo=$HYDRADIR/lib/OSLO \
-                    --include-flint=$HYDRADIR/lib/FLINT \
+  # FUSS and GROOT read neither OSLO nor FLINT, and their install.sh refuse those options
+  ./install.sh build $(include orion lib/ORION) \
+                    $(include finer lib/third_party/FiNeR) \
                   "${@:2}"
 fi
 echo

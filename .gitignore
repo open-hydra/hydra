@@ -1,5 +1,9 @@
 # Building file
 CMakePresets.json
+# ORION, OSLO and FLINT, checked out by the configure at the releases of deps.lock (which is tracked)
+lib/ORION
+lib/OSLO
+lib/FLINT
 scripts/setvars.sh
 build
 site

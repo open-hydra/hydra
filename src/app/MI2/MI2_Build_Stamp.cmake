@@ -1,5 +1,7 @@
-# Writes OUT, the Fortran module hydraMI2_Build_Stamp: the commit of each repository hydra-MI2 is built from.
-# Script mode: cmake -DSRC=<hydra root> -DOUT=<file.f90> -P MI2_Build_Stamp.cmake
+# Writes OUT, the Fortran module hydraMI2_Build_Stamp: the commit of each repository hydra-MI2 is built from, and for
+# ORION, OSLO and FLINT their release tag. Script mode: cmake -DSRC=<hydra root> -DOUT=<file.f90>
+# [-DDIR_ORION=<dir> -DDIR_OSLO=<dir> -DDIR_FLINT=<dir>] -P MI2_Build_Stamp.cmake (the folders the build used; default
+# lib/<name>)
 find_program(GIT_EXE git)
 set(repos "hydra=." "MOSE=src/lib/MOSE" "ICE=src/lib/ICE" "IGLOO=src/lib/IGLOO"
           "ORION=lib/ORION" "OSLO=lib/OSLO" "FLINT=lib/FLINT" "FiNeR=lib/third_party/FiNeR")
@@ -9,13 +11,25 @@ foreach(entry ${repos})
   list(GET pair 0 name)
   list(GET pair 1 rel)
   set(stamp "unknown")
-  if(GIT_EXE AND EXISTS "${SRC}/${rel}/.git")
-    execute_process(COMMAND ${GIT_EXE} -C "${SRC}/${rel}" rev-parse --short=7 HEAD
+  set(dir "${SRC}/${rel}")
+  if(DIR_${name})
+    set(dir "${DIR_${name}}")
+  endif()
+  if(GIT_EXE AND EXISTS "${dir}/.git")
+    execute_process(COMMAND ${GIT_EXE} -C "${dir}" rev-parse --short=7 HEAD
                     OUTPUT_VARIABLE sha RESULT_VARIABLE rc OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     if(rc EQUAL 0)
       set(stamp "${sha}")
+      # a library at a release: its tag first
+      if(name MATCHES "^(ORION|OSLO|FLINT)$")
+        execute_process(COMMAND ${GIT_EXE} -C "${dir}" describe --tags --exact-match HEAD
+                        OUTPUT_VARIABLE tag RESULT_VARIABLE rc OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
+        if(rc EQUAL 0)
+          set(stamp "${tag} ${sha}")
+        endif()
+      endif()
       # modified tracked files only; a submodule's own state is its own line
-      execute_process(COMMAND ${GIT_EXE} --no-optional-locks -C "${SRC}/${rel}" status --porcelain
+      execute_process(COMMAND ${GIT_EXE} --no-optional-locks -C "${dir}" status --porcelain
                               --untracked-files=no --ignore-submodules=all
                       OUTPUT_VARIABLE dirty RESULT_VARIABLE rc OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
       if(rc EQUAL 0 AND NOT dirty STREQUAL "")
