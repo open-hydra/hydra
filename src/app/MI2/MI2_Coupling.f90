@@ -17,6 +17,7 @@ module hydraMI2_Mod_Coupling
   public :: Gas_Total_Energy
   public :: Gas_Mean_Temperature
   public :: Check_ICE_Mass_Channel
+  public :: Check_ICE_No_Combustion
   public :: Check_ICE_Source_Finite
   public :: Check_IGLOO_Source_Finite
   public :: Check_IGLOO_Euler_Finite
@@ -757,6 +758,27 @@ contains
     endif
 
   end subroutine Check_ICE_Mass_Channel
+
+
+  !> Refuse a burning ICE material (combustion = direct): its heat of reaction (cond_phase%heat) and its mass
+  !  (source(1)) would not reach the gas, since ICExMOSE hands it -source(2:4) and -source(nbase-1) only.
+  subroutine Check_ICE_No_Combustion ()
+    use ICE_Config_Types_m, only: obj_condensed
+    use ICE_Global_m,       only: ICE_phase_prefix
+    implicit none
+    integer :: m
+
+    if (.not. allocated(obj_condensed)) return
+    do m = 1, size(obj_condensed)
+      if (obj_condensed(m)%combSelect /= 1) cycle
+      write(*,'(A,I0,7A)') ' [ERROR] MI2: ICE material ', m, ' (', trim(obj_condensed(m)%name), ') of INPUT/', &
+        trim(ICE_phase_prefix), 'phase.txt burns (combustion = direct), and the coupler hands the gas neither its ', &
+        'heat of reaction (cond_phase%heat) nor its mass (source(1)): run ICE on its own, or wait for the ', &
+        'combustion coupling'
+      error stop 1
+    enddo
+
+  end subroutine Check_ICE_No_Combustion
 
 
   !> Stop on a value that is not finite in what ICE hands the gas, the slots ICExMOSE reads: MOSE's conservative update
