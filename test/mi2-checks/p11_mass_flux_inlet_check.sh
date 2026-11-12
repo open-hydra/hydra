@@ -6,7 +6,7 @@
 # face-cell area for 403/404/420 and passes the others as they are. JPL-Lagrangian-20micron (MOSE + IGLOO, gas
 # inlet 401 on face 1, dispersed 401, krho = 0.30) in a short schedule (N-coupling 2, MOSE-iter 100, 1 thread),
 # three runs:
-#  inlet403 : the 40 gas inlet records 401 -> 403 with g = 219.39 kg/(s m2) (the converged rho*u of the 401 case),
+#  inlet403 : the 40 gas inlet records 401 -> 403 with g = 213.16 kg/(s m2) (the converged rho*u of the 401 case),
 #             part-bc.txt untouched -> every ' [MI2-report] igloo-inlet-mdot <sum> <n>' line has n = 40 and
 #             sum = g * SUM(cell%area) to 1e-8 (the areas recomputed from MESH/mesh.tec as IGLOO does), and the
 #             inlet-column condensed mass flow of IGLOO's Eulerian projection is k x the gas mass flow of the same
@@ -30,8 +30,8 @@ S=$H/test/JPL-Lagrangian-20micron
 EXE=${2:-$H/bin/hydra_MI2}
 RUN=$H/test/mi2-checks/run_case.sh
 PY=$H/test/mi2-checks/p11_mass_flux_inlet.py
-G=219.39               # prescribed mass flux of the 403 records [kg/(s m2)]
-GTXT=0.219390E+03      # the same number as written in gas-bc.txt
+G=213.16               # prescribed mass flux of the 403 records [kg/(s m2)]
+GTXT=0.213160E+03      # the same number as written in gas-bc.txt
 MOSE_ITER=100
 mkdir -p "$T"; pass=0; fail=0
 ok() { pass=$((pass+1)); echo "PASS  $1"; }

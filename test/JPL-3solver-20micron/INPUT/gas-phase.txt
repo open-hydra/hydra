@@ -1,2 +1,2 @@
 ideal-gas phase
-mix 28.966846
+mix 27.196840
