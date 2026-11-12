@@ -26,7 +26,7 @@ Each of the four DB streams (x = 0.02 m; y = 0.03, 0.045, 0.055, 0.07 m; z = 0.0
 A closed box fed a continuous mass source has **no steady state**. With `time-accurate = false` the gas after
 N pseudo-iterations is not a physical state, and MI2's closed-domain lines print `injected 0.000000E+00` and
 `rel.err 1.000E+00`; MI2 itself labels them pseudo-time integrals. Even the N2, which has no source, gains
-9.5e-11 kg over the run (1.9e-6 of the 4.877e-5 kg in the box). The coupler's mass and energy balance is the
+9.3e-11 kg over the run (1.9e-6 of the 4.877e-5 kg in the box). The coupler's mass and energy balance is the
 time-accurate twin's (`test/evap-box-ta`), not this case's.
 
 What *is* well posed in steady mode is each IGLOO sweep: the droplet ODE in a given gas.
@@ -36,7 +36,7 @@ What *is* well posed in steady mode is each IGLOO sweep: the droplet ODE in a gi
 Per stream, with d = (6m/(π ρ_l))^(1/3), ρ_l = 997 and c_l = 4184 from `INPUT/part-properties.dat`:
 
     dx/dt = u,   du/dt = 3π μ_g d (u_g − u)/m                              Stokes drag [CGW78]
-    m c_l dT/dt = π d k_g Nu (T_g − T) + ṁ L_v,   Nu = 2 + 0.6 Re^½ Pr^⅓        Ranz–Marshall [RM52]
+    m c_l dT/dt = π d k_g Nu (T_g − T) + ṁ L_v(T),   Nu = 2 + 0.6 Re^½ Pr^⅓     Ranz–Marshall [RM52]
     dm/dt = ṁ = −π d k_g/(c_pg Le) Sh ln(1 + B_M),   Sh = 2 + 0.6 Re^½ Sc^⅓     CEM (Spalding) [Spa53]
     B_M = (Y_s − Y_∞)/(1 − Y_s),   Y_s = X_s M_v/(X_s M_v + (1 − X_s) M_g)
     X_s = X_s,eq − (2 L_K/d) β,   β = −ṁ Pr/(2π μ_g d),   2L_K = 2 μ_g √(2π T R_u/M_v)/(α_e Sc p)    LK [MHB98]
@@ -44,13 +44,17 @@ Per stream, with d = (6m/(π ρ_l))^(1/3), ρ_l = 997 and c_l = 4184 from `INPUT
 
 These are the equations of IGLOO's `rhsEvaporation`, `interphase`, `Lib_Drag`/`Lib_Heat`, `evaporation` and
 `lkCorrection`, re-typed with IGLOO's constants: R_u 8314.46, boiling clamp X_s ≤ 1 − 1e-12, the Psat column
-linear between integer-kelvin nodes as `tableValue`, and burnout at m = 1e-15 kg. The inputs are L_v 2.462478e6,
-M_v 18.015, T_boil 373.15, Le 1, Y_∞ 0 and α_e 1. The p_sat source is the one IGLOO uses: the Psat column when
-the properties table carries a non-zero one, else Clausius–Clapeyron.
+linear between integer-kelvin nodes as `tableValue`, and burnout at m = min(1e-6 m0, 1e-20 kg) (1e-20 kg here).
+The inputs are T_boil 373.15, Le 1, Y_∞ 0 and α_e 1 from `input.ini`, and L_v, M_v where IGLOO takes them: the
+`Lv` and `Mv` columns ATLAS GPB writes into the properties table for the `psat-vapour` pair (L_v at the droplet
+temperature, linear between the integer-kelvin rows, 2.4383e6 J/kg at 300 K; M_v 18.015), or an
+`[IGLOO-Properties]` value for a table without them (IGLOO refuses both). The p_sat source is the one IGLOO uses:
+the Psat column when the properties table carries a non-zero one, else Clausius–Clapeyron with L_v(298.15 K).
 
 The independent parts:
 - an adaptive Dormand–Prince 5(4) integrator at rtol 1e-11, against IGLOO's SDIRK4;
-- an exact bracketed solve of the LK fixed point, against IGLOO's damped Picard iteration;
+- an exact solve of the LK fixed point by regula falsi on the bracket [ṁ_eq, 0], against IGLOO's damped Picard
+  iteration, which IGLOO ends by bisection on the same bracket where 30 passes do not converge;
 - face crossings located by bisection;
 - the gas state rebuilt from `INPUT/gas-{phase.txt,thermo.dat,transport.dat}` as the gas solver builds it: FLINT
   R_u 8314.46261815324, integer-kelvin tables, Wilke mixing. For the initial gas (pure N2, T 350.000 K) this gives
@@ -80,15 +84,16 @@ written.
 | id | check | tolerance and measured floor |
 |---|---|---|
 | E | per stream: the exit point (the stop point) | 1.5e-6 m (F12.6 rounding) |
-| E | the exit T at burnout: paired with the exit mass when a final trajectory row carries it (`print-dtime` set), else inside the reference's T over m ∈ [0.9, 1.0]·1e-15 kg | the print budget; measured 1e-6 K |
-| E | the exit time, when `out-time = on` prints it: at the exit mass as above, else inside the reference's times over the same mass range (a 23 µs bracket) | 1e-6 relative; measured 2e-10 to 1.2e-9 s at the exit mass; 0.07 to 1.2 µs past t(1e-15 kg) without it |
-| E | the number of scatter samples against the lifetime | N − 1 … N: the step that ends the drop at burnout is never followed by a sample. Measured within it on both sweeps (the last sweep's drops cross 2–3 faces) |
-| S | every scatter sample paired with the reference state at the same droplet mass: x, y, u, v, T | within 2× the print budget (\|d(·)/dm\| × the E13.6 rounding of m, + the F12.6 rounding); measured 0.99 of it on sweep 0. On a cell-wise gas 10×: measured 5.1 (CC) and 1.6 (Psat column), at a sample just after a face crossing, where IGLOO's 1e-8 m containment tolerance shifts the cell switch by ~1e-6 s. On the plateau, a sample within 5 thermal relaxation times after the drop temperature crosses a node of the Psat column has added to its T budget what a solver step across the node can leave, because the implicit step can go across a node whole: the distance at equal mass between the reference and the reference with the line of the interval it left continued, while the crossing step can last (taken as one relaxation time past the node), and the largest such distance decayed at the relaxation rate afterwards. Measured on sweep 0 with the gas at 350 K: a 2.5e-5 s step (half a relaxation time) across 300 K, where the slope of the column rises by 5.2 %, ends 0.24 relaxation times past the node with T 5.1e-6 K high (4.6 print budgets; allowance 7.6e-6 K there) and is back within twice the print 1.5 relaxation times past the node, six steps later; the allowance peaks at 1e-4 K one relaxation time past that node and is 2e-6 K at five. With the gas 1e-6 K colder the step before the node is halved and T stays within the print |
+| E | the exit T at burnout: paired with the exit mass when a final trajectory row carries it (`print-dtime` set) or the exit row's diameter (IGLOO writes `d_p` on its exit rows), else inside the reference's T over m ∈ [0.9, 1.0] × the burnout mass; the reference integrates on to 1e-3 of the burnout mass, since the step that crosses it can end well below it | the print budget |
+| E | the exit time, when `out-time = on` prints it: at the exit mass as above, else inside the reference's times over the same mass range | 1e-6 relative |
+| E | the number of scatter samples: one at each quantum up to the exit, ⌊frac(nφ) + t_exit/dt_q⌋ | exact at a paired exit mass; else between the bracket's ends |
+| S | every scatter sample paired with the reference state at the same droplet mass: x, y, u, v, T | within 2× the budget: \|d(·)/dm\| × the E13.6 rounding of m, + the F12.6 rounding, + what a sample placed inside a solver step carries: IGLOO's columns are linear on the step (the position cubic), so paired by mass a column y is off by δ (m′y″/m″ − y′) and the position by δ y′, δ the sample's offset from its quantum (from t_k to the reference's time at the sample's mass, capped at C's 1e-6 s): the terms \|δ\| (\|m′y″/m″\| + \|y′\|) and \|δ y′\|. On a cell-wise gas 10× (measured with IGLOO 2133e13: 5.1 (CC) and 1.6 (Psat column), at a sample just after a face crossing, where IGLOO's 1e-8 m containment tolerance shifts the cell switch by ~1e-6 s). On the plateau, a sample within 5 thermal relaxation times after the drop temperature crosses a node of the Psat column has added to its T budget what a solver step across the node can leave, because the implicit step can go across a node whole: the distance at equal mass between the reference and the reference with the line of the interval it left continued, while the crossing step can last (taken as one relaxation time past the node), and the largest such distance decayed at the relaxation rate afterwards. Measured with IGLOO 2133e13 on sweep 0 with the gas at 350 K: a 2.5e-5 s step (half a relaxation time) across 300 K, where the slope of the column rises by 5.2 %, ends 0.24 relaxation times past the node with T 5.1e-6 K high (4.6 print budgets; allowance 7.6e-6 K there) and is back within twice the print 1.5 relaxation times past the node, six steps later; the allowance peaks at 1e-4 K one relaxation time past that node and is 2e-6 K at five. With the gas 1e-6 K colder the step before the node is halved and T stays within the print. Not covered at the default sampling (a sample every 2.83 ms): with `fsample-traj = 20000` (one every 14 µs; IGLOO cc125f0, sweep 0, first stream) the row fails at 13 samples on the approach to the plateau (d 19.2–18.4 µm) at 2.0–3.9× (T 1.6e-6 to 2.6e-5 K from the reference against budgets of 6.2e-7 to 1.1e-5 K), the same values as with IGLOO bdb4b91, which also failed it in the last ~60 µs of the life (45× at d 0.46 µm, 37× at 0.39 µm: its unconverged LK iteration); with cc125f0 those pass |
 | Q | plateau samples against the closed-form quasi-steady (wet-bulb) balance at their diameter, beyond the reference's own lag | 1e-3 K; measured 2.7e-6 / 3.0e-6 K (sweep 0), 1.1e-4 / 8.7e-5 K (cell gas) |
-| C | the scatter clock: sample k of stream n is written at the end of the first solver step that stays in its cell past t_k = dt_q (k − frac(nφ)), with dt_q = L_box/(v_inj · fsample-traj) = 2.830194 ms; the reference reaches the sample's mass no earlier than t_k and within 0.5 dt_q after | measured: every sample at least 0.9 µs (sweep 0) and 1.6 µs (last sweep) after its t_k, at most 0.229 dt_q |
+| C | the scatter clock: IGLOO places sample k of stream n at t_k = dt_q (k − frac(nφ)), with dt_q = L_box/(v_inj · fsample-traj) = 2.830194 ms, inside the solver step that spans it; the reference reaches the sample's mass within 1e-6 s of t_k, before or after | 1e-6 s; the sample's mass is linear on the step, so it pairs a little early where m(t) is convex |
 | G | last sweep: source field against the injected mass, momentum and energy of the consumed parcels, Σ ṁ (1, u0, c_l T0 + h_off + u0²/2) | 1e-9 relative; measured exact to the print, 4.000000000e-6 kg/s, 2.000000000e-6 N, −63.09831790 W |
 | G | last sweep: Eulerian Σ n_p V = Σ ṅ_p t_life and Σ ρ_p V = Σ ṅ_p ∫m dt | 1e-4; measured 1.2e-5 / 2.7e-6 (CC), 7.2e-6 / 2.7e-6 (Psat column) |
-| G | last sweep: the gas mass the coupler reports gained per species (`[MI2] closed-domain mass balance` in the run log) against Σ (ρ_i − ρ_i,0) V of the final gas field | the E13.6 print; measured exact to it (1.261670e-8 kg H2O, 9.476101e-11 kg N2). Bookkeeping, not conservation: see above |
+| G | last sweep: the gas mass the coupler reports gained per species (`[MI2] closed-domain mass balance` in the run log) against Σ (ρ_i − ρ_i,0) V of the final gas field | the E13.6 print; measured exact to it (1.261672e-8 kg H2O, 9.299382e-11 kg N2). Bookkeeping, not conservation: see above |
+| L | the run log (`--log`, else `RUN_DIR/run.log`), whatever the sweeps: no line of IGLOO's `LK-interface:` warning, which IGLOO prints once per material and sweep when the Langmuir–Knudsen fixed point of a parcel was not bracketed (that parcel's rate is the bracket's estimate, not the model's) | none; measured none (the four boxes) |
 
 **Gating.** The last sweep's per-stream checks, the Eulerian integrals and the coupler's lines count only when
 `gas-field.tec` was written at the MOSE iteration the sweep sampled (the last line of `gas-residual-history.dat`).
@@ -105,11 +110,11 @@ the older gas the drop velocities are 1–2 % off, because the pseudo-time flow 
   reference does too.
 - The steady gas field, which has no physical meaning.
 - The time history between injection and burnout, except through the droplet mass. The scatter rows carry no
-  time, so the history is checked against the mass (S) and against the sample clock (C). The clock is one-sided:
-  a drop that evaporates more slowly than the reference is caught at 1 µs, one that evaporates faster only past
-  0.5 dt_q. IGLOO writes a trajectory row per segment, not per step, and the evaporation is a single segment, so
-  `print-dtime` adds no intermediate rows. Without `out-time` the lifetime is known to one scatter quantum
-  (3.4 %) through the count, and on the last sweep to 1e-4 through the Eulerian integral.
+  time, so the history is checked against the mass (S) and against the sample clock (C), which holds a drop that
+  evaporates faster or more slowly than the reference to 1e-6 s at every sample. IGLOO writes a trajectory row per
+  segment, not per step, and the evaporation is a single segment, so `print-dtime` adds no intermediate rows.
+  Without `out-time` the lifetime is known to one scatter quantum (3.4 %) through the count, and on the last sweep
+  to 1e-4 through the Eulerian integral.
 
 **Output keys.** The case's `input.ini` sets three keys that change what is written, not what is computed; they make
 the last sweep checkable and the lifetimes exact:
@@ -121,7 +126,22 @@ the last sweep checkable and the lifetimes exact:
 
 ## Measured
 
-All runs at 1 thread.
+All runs at 1 thread. The figures of this section, of the closed-form table above and of the falsification table
+below are those of IGLOO before the burnout mass of 1e-20 kg, the samples placed inside the step and the L_v column
+(constant L_v 2.462478e6 J/kg, burnout at 1e-15 kg, a sample at the end of the step past its quantum).
+
+**At IGLOO dc811fd** (cc125f0 with the LK failure flag passed as an argument, which gfortran requires; the same
+output bytes. The four boxes, one thread): every check passes, E, S, Q, C, G and L, gated on sweep 0 of the
+four and on the last sweep of evap-box (the other three write `gas-field.tec` at iteration 0: their last sweep is
+informational). The exit T is the reference's at the exit mass, 9.94e-21 to 9.99e-21 kg: 331.273957 K against 331.273959 K
+on sweep 0 and 328.32–329.38 K within 2e-6 K on the last sweep (evap-box, exit time within 8e-10 s, 1e-8 relative);
+331.267–331.276 K within 1.6e-5 K on sweep 0 of the boxes without `print-dtime`. IGLOO's damped Picard iteration of the
+LK interface ends unconverged on drops below 0.9 µm (the last 0.8 ms of the life); since cc125f0 IGLOO then bisects the fixed point.
+Against bdb4b91 that moves the drop from about 0.9 µm down to burnout (the first sample that moves, with one every
+14 µs, at 0.55–0.59 µm); compiled at the default flags the live bisection also changes how the evaporation routines
+compile, so the samples differ in their last bits from early in the life (up to 5.8e-4 K where a solver step decision
+flips, inside the S budget), which `-fp-model=strict` builds of both do not show. IGLOO bdb4b91 kept the last Picard pass, which overstates the evaporation rate (4.4 times at 100 nm, 13.6 times at
+27 nm): E failed on every stream of both sweeps, the drop burning out 4.3–4.7 µs early at 298.3–299.1 K.
 
 **The stored baseline** (`OUTPUT/`: Psat column, output keys, scatter files from `hydra_MI2` `137de966`, IGLOO with the
 scatter fix): every check passes, every check gated on both sweeps.
@@ -149,6 +169,7 @@ passes (exit T 302.048731 K and 303.687689 K inside their burnout brackets, S 0.
 | the solver run with `time-end = 0.05` (parcels stopped alive) | E (no exit records), G source (Σ wdot 2.89e-6 vs 4.00e-6 kg/s) |
 | the stored run with its scatter files from a binary without the scatter fix (`OUTPUT.pre-scatter-fix-2026-09-27/` swapped in) | E last sweep (streams 1 and 3: 31 and 32 samples against at most 30 and 31), C last sweep (samples up to 0.61 ms before their quantum); every other check passes |
 | the Psat-column run with the Clausius–Clapeyron run's log (`--log`) | G coupler (N2 9.475749e-11 vs 9.476101e-11 kg; the H2O agrees: both runs put 1.261670e-8 kg into the gas) |
+| the run (IGLOO cc125f0) with IGLOO's `LK-interface:` warning line planted in its log (`--log`) | L (1 line, quoted) |
 
 ## Use
 
@@ -160,3 +181,10 @@ passes (exit T 302.048731 K and 303.687689 K inside their burnout brackets, S 0.
 A kept baseline is checked by linking its `INPUT`, `OUTPUT`, `input.ini` and log into one directory. `--ini` and
 `--props` fix the modelled case independently of the run. Exit 0 when every gated check passes. Python 3 with numpy;
 one to two minutes for the two sweeps.
+
+The gate runs the four evaporating boxes as shipped (evap-box, -ord2, -ta, -sa; one thread) and this check on each:
+
+    test/mi2-checks/p19_evap_reference_check.sh [scratch-root] [exe]
+
+one PASS/FAIL line per box for the run and one for the check (the number of failed rows and the first one quoted);
+exit 1 on a FAIL.

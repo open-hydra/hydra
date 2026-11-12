@@ -17,21 +17,25 @@ sweep (cell-wise constant, gas-order 1, faces crossed as IGLOO crosses them). Ga
 thermodynamics are rebuilt from INPUT/gas-*.dat as the gas solver builds them (integer-kelvin tables, Wilke
 mixing). Then, per sweep:
 
-  E  per stream: exit position (the stop point); exit T and, when out-time prints it, exit time at burnout,
-     paired with the exit mass when a final trajectory row carries it (print-dtime), else bracketed by the
-     reference over m in [0.9e-15, 1e-15]; the number of scatter samples against the reference lifetime,
-     N-1 to N
+  E  per stream: exit position (the stop point); exit T and, when out-time prints it, exit time at burnout
+     (IGLOO consumes a drop at m <= min(1e-6 m0, 1e-20 kg)), paired with the exit mass when a final trajectory
+     row (print-dtime) or the exit row's diameter carries it, else bracketed by the reference over m in
+     [0.9, 1] x the burnout mass; the number of scatter samples, one at every quantum up to the exit
   S  every scatter sample, paired with the reference state at the same droplet mass: x, y, u, v, T within
-     their print budget (the E13.6 mass rounding times d(.)/dm, plus the F12.6 rounding); on the plateau, for a
-     few thermal relaxation times after the drop temperature crosses a node of the Psat column, plus what a
-     solver step across the node can leave in T (the change of slope of the table over that step, relaxing after)
+     their print budget (the E13.6 mass rounding times d(.)/dm, plus the F12.6 rounding) plus what a sample on
+     a solver step's chord, t from its quantum (t within the C tolerance), carries: t (|m' y''/m''| + |y'|), and
+     t |y'| on x, y (the position is cubic on the step); on the plateau, for a few thermal relaxation times after
+     the drop temperature crosses a node of the Psat column, plus what a solver step across the node can leave in
+     T (the change of slope of the table over that step, relaxing after)
   Q  plateau samples against the closed-form wet-bulb balance at their diameter, beyond the reference's lag
-  C  the sample clock: the k-th sample of stream n is written at the end of the first solver step past
-     t_k = dt_q (k - frac(n phi)), dt_q = L_box/(v_inj fsample-traj); the reference reaches the sample's mass
-     no earlier than t_k
+  C  the sample clock: IGLOO places the k-th sample of stream n at t_k = dt_q (k - frac(n phi)),
+     dt_q = L_box/(v_inj fsample-traj), inside the solver step that spans it (the columns linear on the step,
+     the position cubic); the reference reaches the sample's mass within 1e-6 s of t_k
   G  last sweep: the source field against the injected mass, momentum and energy of the consumed parcels; the
      Eulerian field's sum n_p V and sum rho_p V against sum npdot t_life and sum npdot int m dt; the gas mass
      the coupler reports gained per species (run log) against the final gas field minus the initial one
+  L  the run log, every sweep: no line of IGLOO's LK-interface: warning (a parcel whose Langmuir-Knudsen fixed
+     point was not bracketed carries the bracket's estimate of its rate, not the model's)
 
 The last sweep's per-stream checks and the Eulerian integrals are gated only when OUTPUT/gas-field.tec was
 written at the MOSE iteration that sweep sampled (the last line of gas-residual-history.dat); otherwise they
@@ -55,8 +59,9 @@ RU_IGLOO = 8314.46        # IGLOO's universal gas constant (Lib_Evaporation, IO)
 RU_FLINT = 8314.46261815324   # the gas solver's (FLINT Lib_ThermoTransport: the exact SI value)
 PATM = 101325.0
 XS_CAP = 1.0e-12
-M_BURN = 1.0e-15          # IGLOO burnout mass [kg]
-TRAJ_SAMPLE = 100         # [IGLOO-General] fsample-traj default: scatter points per stream over L_box/v_inj
+EPS_BURN, M_BURN_ABS = 1.0e-6, 1.0e-20   # IGLOO consumes a drop at m <= min(EPS_BURN m0, M_BURN_ABS) [kg]
+M_TAIL = 1.0e-3           # the reference integrates down to M_TAIL x the burnout mass
+TRAJ_SAMPLE = 100         # IGLOO's default of [IGLOO-General] fsample-traj: scatter points per stream over L_box/v_inj
 PHI = 0.6180339887498949  # scatter phase offset per ID
 
 # ------------------------------------------------------------------ tolerances (measured floors, REFERENCE.md)
@@ -65,7 +70,7 @@ TOL = {
     "ratio_cells": 10.0,   # S on a cell-wise gas: plus the face-crossing switch time (measured 5.1)
     "T_qs": 1.0e-3,        # Q: K beyond the reference's own quasi-steady lag
     "t_lead": 1.0e-6,      # C: s a sample may precede its quantum time
-    "t_lag": 0.50,         # C: dt_q a sample may trail it (the solver step that ends past it)
+    "t_lag": 1.0e-6,       # C: s a sample may trail it (IGLOO places it at the quantum, inside its step)
     "t_exit": 1.0e-6,      # E: relative exit time, when out-time prints it
     "src_rel": 1.0e-9,     # G: source-field sums vs the injected fluxes of consumed parcels
     "eul_rel": 1.0e-4,     # G: Eulerian residence and mass integrals vs the reference
@@ -143,11 +148,15 @@ def read_tec_block(path):
 
 
 def read_particles(path):
-    """IGLOO trajectory/scatter (10 or 11 columns) or outloc (9 or 10 columns) rows by ID, file order kept."""
-    rows = {}
+    """IGLOO trajectory, scatter or outloc rows by ID, file order kept, and {name: column} of the file's variables=
+    line: the ID (and the exit time t) are found by name, so further columns (bc, d_p, weight) do not matter."""
+    rows, cols = {}, {}
     if not os.path.exists(path):
-        return rows
+        return rows, cols
     for raw in open(path):
+        if raw.lstrip().lower().startswith("variables"):
+            cols = {n: i for i, n in enumerate(re.findall(r'"([^"]*)"', raw))}
+            continue
         c = raw.split()
         if len(c) < 9 or not c[0][0] in "0123456789-":
             continue
@@ -155,9 +164,9 @@ def read_particles(path):
             v = [float(t) for t in c]
         except ValueError:
             continue
-        idcol = 9 if len(c) in (10, 11) and "outloc" not in os.path.basename(path) else 8
+        idcol = cols.get("ID", 9 if len(c) in (10, 11) and "outloc" not in os.path.basename(path) else 8)
         rows.setdefault(int(v[idcol]), []).append(v)
-    return rows
+    return rows, cols
 
 
 # ------------------------------------------------------------------ gas properties (FLINT's evaluation)
@@ -213,22 +222,42 @@ class GasTables:
 class Droplet:
     def __init__(self, ini, phase_tokens, props, psat_mode, interface):
         prop = ini.get("IGLOO-Properties", {})
-        self.Lv = float(prop["Lv"])
-        self.Mv = float(prop["Mv"])
+        names, zones = props
+        tab = zones[0]
+        col = {n: i for i, n in enumerate(names)}
+        self.tmin = int(round(tab[0, 0]))
+        # L_v and M_v as IGLOO takes them: the [IGLOO-Properties] value, else the table's Lv and Mv columns when their
+        # first row is non-zero; a value given both ways is refused, as IGLOO refuses it. L_v(T) at the droplet
+        # temperature, its value at 298.15 K in the Clausius-Clapeyron constant
+        self.lv_tab = None
+        ini_v = {key: float(prop.get(key, "0")) for key in ("Lv", "Mv")}
+        for key in ("Lv", "Mv"):
+            if ini_v[key] != 0.0 and key in col and np.any(tab[:, col[key]] != 0.0):
+                raise SystemExit("[FAIL] %s given both in [IGLOO-Properties] and as a column of the properties table "
+                                 "(IGLOO refuses it)" % key)
+        if ini_v["Lv"] != 0.0:
+            self.Lv = ini_v["Lv"]
+        elif "Lv" in col and tab[0, col["Lv"]] != 0.0:
+            self.lv_tab = tab[:, col["Lv"]]
+            self.Lv = self.table_at(self.lv_tab, 298.15)
+        else:
+            raise SystemExit("[FAIL] no latent heat: neither [IGLOO-Properties] Lv nor an Lv column in the table")
+        if ini_v["Mv"] != 0.0:
+            self.Mv = ini_v["Mv"]
+        elif "Mv" in col and tab[0, col["Mv"]] != 0.0:
+            self.Mv = float(tab[0, col["Mv"]])
+        else:
+            raise SystemExit("[FAIL] no vapour molar mass: neither [IGLOO-Properties] Mv nor an Mv column in the table")
         tb = prop.get("boiling-temperature", prop.get("Tboil"))
         self.Tboil = float(tb)
         self.Le = float(prop.get("Le", "1.0"))
         self.Yinf = float(prop.get("Yinf", "0.0"))
         self.alphaE = float(phase_tokens.get("alpha-e", "1.0"))
         self.lvmv = self.Lv * self.Mv / RU_IGLOO
-        names, zones = props
-        tab = zones[0]
-        col = {n: i for i, n in enumerate(names)}
         self.rho_l = tab[0, col["Density"]]
         self.cp_l = tab[0, col["Cp"]]
         if np.ptp(tab[:, col["Density"]]) != 0.0 or np.ptp(tab[:, col["Cp"]]) != 0.0:
             raise SystemExit("[FAIL] the reference assumes constant liquid cp and density (the case's table)")
-        self.tmin = int(round(tab[0, 0]))
         hcol = col["Enthalpy_abs"] if "Enthalpy_abs" in col else col["Enthalpy"]
         self.hoff = tab[0, hcol] - self.cp_l * tab[0, 0]      # IGLOO: hOff = h(Tmin) - cp*Tmin
         self.psat_tab = tab[:, col["Psat"]] if "Psat" in col else None
@@ -247,16 +276,23 @@ class Droplet:
         if models.get("blowing", "none") != "none":
             raise SystemExit("[FAIL] the reference implements blowing = none")
 
+    def table_at(self, tab, T):
+        """A table column at T, linear between the integer-kelvin rows (IGLOO's tableValue)."""
+        lo, hi = self.tmin, self.tmin + len(tab) - 1
+        tc = min(max(T, float(lo)), float(hi))
+        if tc >= hi:
+            return tab[-1]
+        i = int(tc)
+        a = tab[i - lo]
+        return a + (tab[i + 1 - lo] - a) * (tc - i)
+
+    def lv(self, T):
+        return self.Lv if self.lv_tab is None else self.table_at(self.lv_tab, T)
+
     def psat(self, T):
         if self.psat_mode == "cc":
             return PATM * math.exp(-self.lvmv * (1.0 / T - 1.0 / self.Tboil))
-        lo, hi = self.tmin, self.tmin + len(self.psat_tab) - 1
-        tc = min(max(T, float(lo)), float(hi))
-        if tc >= hi:
-            return self.psat_tab[-1]
-        i = int(tc)
-        a = self.psat_tab[i - lo]
-        return a + (self.psat_tab[i + 1 - lo] - a) * (tc - i)
+        return self.table_at(self.psat_tab, T)
 
     def mdot(self, gas, T, d, Re):
         rho_g, _, _, _, Tg, mu, k, gam, R = gas
@@ -304,15 +340,20 @@ class Droplet:
         return 0.5 * (lo + hi)
 
     def continued(self, node, rising):
-        """The drop with the line of the table interval it leaves at `node` continued over the next interval."""
+        """The drop with the line of the table interval it leaves at `node` continued over the next interval, in every
+        column the reference reads at the drop temperature (Psat, and L_v when tabulated)."""
         other = copy.copy(self)
-        tab = self.psat_tab.copy()
         i = node - self.tmin
-        if rising:
-            tab[i + 1] = 2.0 * tab[i] - tab[i - 1]
-        else:
-            tab[i - 1] = 2.0 * tab[i] - tab[i + 1]
-        other.psat_tab = tab
+        for name in ("psat_tab", "lv_tab"):
+            tab = getattr(self, name)
+            if tab is None:
+                continue
+            tab = tab.copy()
+            if rising:
+                tab[i + 1] = 2.0 * tab[i] - tab[i - 1]
+            else:
+                tab[i - 1] = 2.0 * tab[i] - tab[i + 1]
+            setattr(other, name, tab)
         return other
 
     def h(self, T):
@@ -320,6 +361,9 @@ class Droplet:
 
     def diameter(self, m):
         return (6.0 * m / (math.pi * self.rho_l)) ** (1.0 / 3.0) if m > 0.0 else 0.0
+
+    def mass(self, d):
+        return math.pi / 6.0 * self.rho_l * d ** 3
 
     def rhs(self, s, gas):
         x, y, u, v, T, m = s
@@ -333,10 +377,10 @@ class Droplet:
         nu = 2.0 + 0.6 * math.sqrt(Re) * pr ** (1.0 / 3.0)
         md = self.mdot(gas, T, d, Re)
         q = nu * k * math.pi * d * (Tg - T)
-        return np.array([u, v, fac * du, fac * dv, (q + md * self.Lv) / (m * self.cp_l), md])
+        return np.array([u, v, fac * du, fac * dv, (q + md * self.lv(T)) / (m * self.cp_l), md])
 
     def t_quasi_steady(self, gas, d, u=0.0, v=0.0):
-        """T at which pi d k Nu (Tg - T) + mdot(T) Lv = 0 (the wet-bulb balance at diameter d, slip from u, v)."""
+        """T at which pi d k Nu (Tg - T) + mdot(T) Lv(T) = 0 (the wet-bulb balance at diameter d, slip from u, v)."""
         rho_g, ug, vg, _, Tg, mu, k, gam, R = gas
         slip = math.hypot(ug - u, vg - v)
         Re = rho_g * slip * d / mu
@@ -344,7 +388,7 @@ class Droplet:
         nu = 2.0 + 0.6 * math.sqrt(Re) * pr ** (1.0 / 3.0)
 
         def f(T):
-            return nu * k * math.pi * d * (Tg - T) + self.mdot(gas, T, d, Re) * self.Lv
+            return nu * k * math.pi * d * (Tg - T) + self.mdot(gas, T, d, Re) * self.lv(T)
 
         lo, hi = 200.0, Tg
         for _ in range(200):
@@ -422,9 +466,14 @@ def dp_step(f, y, h):
     return ynew, err
 
 
-def integrate(drop, field, s0, rtol=1e-11, tmax=1.0):
-    """Adaptive DP45 from s0 until m <= M_BURN; the gas cell switches when the drop leaves it.
-    Returns the list of (t, state) at every accepted step, the last one at burnout."""
+def burnout_mass(m0):
+    return min(EPS_BURN * m0, M_BURN_ABS)
+
+
+def integrate(drop, field, s0, m_stop, rtol=1e-11, tmax=1.0):
+    """Adaptive DP45 from s0 until m <= m_stop; the gas cell switches when the drop leaves it.
+    Returns the list of (t, state) at every accepted step, the last one at m = m_stop (check_sweep stops at
+    M_TAIL x the burnout mass: IGLOO's exit step can end below the burnout mass)."""
     atol = np.array([1e-13, 1e-13, 1e-12, 1e-12, 1e-9, 1e-26])
     t, s = 0.0, np.array(s0, dtype=float)
     cell = field.cell_of(s[0], s[1], s[2], s[3])
@@ -463,12 +512,12 @@ def integrate(drop, field, s0, rtol=1e-11, tmax=1.0):
                 raise SystemExit("[FAIL] reference: more than 1e5 cell crossings (chattering on a face)")
             out.append((t, s.copy(), cell))
             continue
-        if ynew[5] <= M_BURN:
-            lo, hi = 0.0, h                                    # land the last step on m = M_BURN
+        if ynew[5] <= m_stop:
+            lo, hi = 0.0, h                                    # land the last step on m = m_stop
             for _ in range(80):
                 mid = 0.5 * (lo + hi)
                 ym, _ = dp_step(f, s, mid)
-                if ym[5] > M_BURN:
+                if ym[5] > m_stop:
                     lo = mid
                 else:
                     hi = mid
@@ -505,6 +554,13 @@ def state_at(drop, field, traj, i, dt):
     return y
 
 
+def second_derivative(drop, gas, s, h=1.0e-7):
+    """d2(state)/dt2 at s, by a central difference of the right-hand side over +-h along the reference."""
+    f = lambda z: drop.rhs(z, gas)
+    sp, sm = dp_step(f, s, h)[0], dp_step(f, s, -h)[0]
+    return (f(sp) - f(sm)) / (2.0 * h)
+
+
 def pair_by_mass(drop, field, traj, m_target):
     """Reference time, state and gas cell at which m = m_target (m decreases along traj)."""
     ms = [p[1][5] for p in traj]
@@ -529,19 +585,19 @@ def pair_by_mass(drop, field, traj, m_target):
     return traj[lo][0] + 0.5 * (a + b), state_at(drop, field, traj, lo, 0.5 * (a + b)), traj[lo][2]
 
 
-def node_windows(drop, field, traj):
-    """Plateau crossings of the nodes of the Psat column by the reference: a list of (m_hi, m_lo, m[], dT[]).
+def node_windows(drop, field, traj, m_b):
+    """Plateau crossings of the nodes of the Psat and L_v columns by the reference: (m_hi, m_lo, m[], dT[]) each.
 
-    The slope of the tabulated p_sat changes at every node, and the solver's implicit step can go across one whole:
-    at the end of that step the drop sits between the reference and the reference with the line of the interval it
-    left continued, and from there it relaxes onto the former at the thermal rate. dT[] bounds that along the mass
-    m[]: the distance between the two references at equal mass while the crossing step can last (NODE_STEP
+    The slopes of the tabulated p_sat and L_v change at every node, and the solver's implicit step can go across one
+    whole: at the end of that step the drop sits between the reference and the reference with the line of the
+    interval it left continued, and from there it relaxes onto the former at the thermal rate. dT[] bounds that along
+    the mass m[]: the distance between the two references at equal mass while the crossing step can last (NODE_STEP
     relaxation times past the node), and the largest such distance, decayed at the relaxation rate, afterwards;
     the window ends NODE_TIMES relaxation times after the step that crosses. m_hi and m_lo are its ends."""
     wins = []
-    if drop.psat_mode != "table":
+    if drop.psat_mode != "table" and drop.lv_tab is None:
         return wins
-    lo, hi = drop.tmin, drop.tmin + len(drop.psat_tab) - 1
+    lo, hi = drop.tmin, drop.tmin + len(drop.lv_tab if drop.lv_tab is not None else drop.psat_tab) - 1
     for i in range(len(traj) - 1):
         s, cell = traj[i][1], traj[i][2]
         n0, n1 = int(math.floor(s[4])), int(math.floor(traj[i + 1][1][4]))
@@ -563,7 +619,7 @@ def node_windows(drop, field, traj):
         for _ in range(200):
             ya, _ = dp_step(lambda z: alt.rhs(z, gas), ya, h)
             yr, _ = dp_step(lambda z: drop.rhs(z, gas), yr, h)
-            if not (np.all(np.isfinite(ya)) and np.all(np.isfinite(yr))) or min(ya[5], yr[5]) <= M_BURN:
+            if not (np.all(np.isfinite(ya)) and np.all(np.isfinite(yr))) or min(ya[5], yr[5]) <= m_b:
                 break
             ma.append(ya[5])
             ta.append(ya[4])
@@ -603,17 +659,18 @@ def box_length(run):
 def check_sweep(rep, run, drop, field, sweep_tag, streams, dt_q, gated, label):
     """Per-stream comparison of one sweep's IGLOO output with the reference integration."""
     out = os.path.join(run, "OUTPUT")
-    scat = read_particles(os.path.join(out, "part-scatter-A%s.dat" % sweep_tag))
-    exits = read_particles(os.path.join(out, "part-outloc-A%s.dat" % sweep_tag))
-    trajrows = read_particles(os.path.join(out, "part-trajectories-A%s.dat" % sweep_tag))
+    scat, _ = read_particles(os.path.join(out, "part-scatter-A%s.dat" % sweep_tag))
+    exits, ecol = read_particles(os.path.join(out, "part-outloc-A%s.dat" % sweep_tag))
+    trajrows, _ = read_particles(os.path.join(out, "part-trajectories-A%s.dat" % sweep_tag))
     print("\n== %s (%s)%s" % ("sweep 0" if not sweep_tag else sweep_tag.strip("-"), label,
                               "" if gated else " -- per-stream checks informational"))
     results = {}
     w = {"ratio": 0.0, "arg": "", "qs": 0.0, "lead": -1e300, "lag": 0.0, "n": 0, "node": 0}
     for sid, s0, mdot in streams:
-        traj = integrate(drop, field, s0)
-        wins = node_windows(drop, field, traj)
-        t_life, s_end = traj[-1][0], traj[-1][1]
+        m_b = burnout_mass(s0[5])
+        traj = integrate(drop, field, s0, M_TAIL * m_b)    # on past the burnout mass: an exit step may end below it
+        wins = node_windows(drop, field, traj, m_b)
+        t_life, s_end, _ = pair_by_mass(drop, field, traj, m_b)
         results[sid] = (t_life, traj)
         frac = math.modf(sid * PHI)[0]
         rows = scat.get(sid, [])
@@ -624,22 +681,31 @@ def check_sweep(rep, run, drop, field, sweep_tag, streams, dt_q, gated, label):
             tt, st, cell = pair_by_mass(drop, field, traj, mm)
             gas = field.gas(cell)
             der = drop.rhs(st, gas)
+            d2 = second_derivative(drop, gas, st)
             dm = e_half(mm)
             ref = {"x": st[0], "y": st[1], "u": st[2], "v": st[3], "T": st[4]}
             idx = {"x": 0, "y": 1, "u": 2, "v": 3, "T": 4}
             # just after a node of the Psat column: what a solver step across it can leave in T at this mass
             node = max([float(np.interp(mm, wm, wd)) for m_hi, m_lo, wm, wd in wins if m_lo <= mm <= m_hi], default=0.0)
             w["node"] += node > 1e-7
+            tk = dt_q * (k - frac)
+            off = min(abs(tt - tk), max(TOL["t_lead"], TOL["t_lag"]))    # the sample's offset from its quantum
             for key in ref:
                 floor = 1e-7 if key == "T" else 1e-9
-                budget = abs(der[idx[key]] / der[5]) * dm + F_HALF + floor + (node if key == "T" else 0.0)
+                i = idx[key]
+                # the print rounding, plus what the offset carries on the step: the position is cubic on the step
+                # (off |y'|), the other columns linear (off |m' y''/m'' - y'| at most)
+                if key in ("x", "y"):
+                    place = off * abs(der[i])
+                else:
+                    place = off * (abs(der[5] * d2[i] / d2[5]) + abs(der[i])) if d2[5] != 0.0 else 0.0
+                budget = abs(der[i] / der[5]) * dm + F_HALF + floor + place + (node if key == "T" else 0.0)
                 rr = abs(meas[key] - ref[key]) / budget
                 if rr > w["ratio"]:
                     w["ratio"], w["arg"] = rr, "stream %d sample %d %s: %.6f vs %.6f (budget %.1e)" % (
                         sid, k, key, meas[key], ref[key], budget)
-            tk = dt_q * (k - frac)
             w["lead"] = max(w["lead"], tk - tt)
-            w["lag"] = max(w["lag"], (tt - tk) / dt_q)
+            w["lag"] = max(w["lag"], tt - tk)
             d_meas = drop.diameter(mm)
             tqs_ref = drop.t_quasi_steady(gas, drop.diameter(st[5]), st[2], st[3])
             if abs(st[4] - tqs_ref) < 0.02:                     # the plateau: the reference sits on its QS balance
@@ -655,28 +721,41 @@ def check_sweep(rep, run, drop, field, sweep_tag, streams, dt_q, gated, label):
             continue
         e = ex[-1]
         dx = max(abs(e[0] - s_end[0]), abs(e[1] - s_end[1]))
-        last = [r for r in trajrows.get(sid, []) if r[8] <= M_BURN]
-        if last:
-            m_exit = last[-1][8]
+        # the exit mass: a final trajectory row's (print-dtime), else the exit row's diameter, else the burnout bracket
+        last = [r for r in trajrows.get(sid, []) if r[8] <= m_b]
+        dcol = ecol.get("d<sub>p</sub>")
+        m_exit, dm_exit = None, 0.0
+        if last and last[-1][8] > 0.0:                       # IGLOO clamps the mass slot at 0: no exit mass then
+            m_exit, dm_exit = last[-1][8], e_half(last[-1][8])
+        elif dcol is not None and e[dcol] > 0.0:
+            m_exit = drop.mass(e[dcol])
+            dm_exit = 3.0 * m_exit * e_half(e[dcol]) / e[dcol]
+        if m_exit is not None:
             te, se, ce = pair_by_mass_beyond(drop, field, traj, m_exit)
             der = drop.rhs(se, field.gas(ce))
-            bT = abs(der[4] / der[5]) * e_half(m_exit) + F_HALF + 1e-6
+            bT = abs(der[4] / der[5]) * dm_exit + F_HALF + 1e-6
             okT = abs(e[3] - se[4]) <= bT
             tdesc = "T %.6f vs %.6f at the exit mass %.6e (budget %.1e)" % (e[3], se[4], m_exit, bT)
             t_lo = t_hi = te
         else:
-            t9, s9, _ = pair_by_mass_beyond(drop, field, traj, 0.9 * M_BURN)
-            okT = s_end[4] - 1e-6 <= e[3] <= s9[4] + 1e-6
-            tdesc = "T %.6f in [%.6f, %.6f] (the reference over m in [0.9e-15, 1e-15])" % (e[3], s_end[4], s9[4])
+            # no exit mass printed: the exit step ends somewhere in [M_TAIL, 1] x m_b, where the reference is carried
+            t9 = traj[-1][0]
+            tb = [st[4] for t, st, _ in traj if t >= t_life] + [s_end[4]]
+            okT = min(tb) - 1e-6 <= e[3] <= max(tb) + 1e-6
+            tdesc = "T %.6f in [%.6f, %.6f] (the reference over m in [%.0e, 1] x %.3e)" % (
+                e[3], min(tb), max(tb), M_TAIL, m_b)
             t_lo, t_hi = t_life, t9
-        n_expect = int(math.floor(t_life / dt_q + frac))
-        okn = n_expect - 1 <= len(rows) <= n_expect
-        text = "stream %d: exit (%.6f, %.6f) vs (%.6f, %.6f); %s; %d samples (expect %d or %d)" % (
-            sid, e[0], e[1], s_end[0], s_end[1], tdesc, len(rows), n_expect - 1, n_expect)
+        # a sample at every quantum up to the exit: (k - frac) dt_q <= t_exit, on IGLOO's clock when it prints it
+        et = e[ecol["t"]] if "t" in ecol else None
+        n_lo, n_hi = (int(math.floor(t / dt_q + frac)) for t in ((et, et) if et is not None else (t_lo, t_hi)))
+        okn = n_lo <= len(rows) <= n_hi
+        text = "stream %d: exit (%.6f, %.6f) vs (%.6f, %.6f); %s; %d samples (expect %s)" % (
+            sid, e[0], e[1], s_end[0], s_end[1], tdesc, len(rows),
+            "%d" % n_lo if n_lo == n_hi else "%d to %d" % (n_lo, n_hi))
         okt = True
-        if len(e) >= 10:                                     # out-time: the exit time is printed
-            okt = t_lo * (1 - TOL["t_exit"]) <= e[9] <= t_hi * (1 + TOL["t_exit"])
-            text += "; exit time %.8e s vs %s" % (e[9], "%.8e" % t_lo if t_lo == t_hi else "[%.8e, %.8e]" % (t_lo, t_hi))
+        if et is not None:                                   # out-time: the exit time is printed
+            okt = t_lo * (1 - TOL["t_exit"]) <= et <= t_hi * (1 + TOL["t_exit"])
+            text += "; exit time %.8e s vs %s" % (et, "%.8e" % t_lo if t_lo == t_hi else "[%.8e, %.8e]" % (t_lo, t_hi))
         rep.check("E", dx <= F_HALF + 1e-6 and okT and okn and okt, text, gated)
         if tplat:
             print("        plateau: T %.4f..%.4f K over d %.2f..%.2f um; reference lifetime %.8e s, x-stop %.6f m"
@@ -689,7 +768,7 @@ def check_sweep(rep, run, drop, field, sweep_tag, streams, dt_q, gated, label):
               "plateau samples vs the closed-form wet-bulb balance at their diameter: excess over the reference's "
               "own lag %.2e K (tol %.0e)" % (w["qs"], TOL["T_qs"]), gated)
     rep.check("C", w["lead"] <= TOL["t_lead"] and w["lag"] <= TOL["t_lag"],
-              "sample clock: at most %.2e s before its quantum (tol %.0e), %.3f dt_q after (tol %.2f)"
+              "sample clock: at most %.2e s before its quantum (tol %.0e), %.2e s after (tol %.0e)"
               % (w["lead"], TOL["t_lead"], w["lag"], TOL["t_lag"]), gated)
     return results
 
@@ -764,7 +843,7 @@ def check_coupler(rep, run, inp, log, gated):
     names, f, _ = read_tec_block(os.path.join(run, "OUTPUT", "gas-field.tec"))
     vol = cell_volumes(f, names)
     _, g, _ = read_tec_block(os.path.join(inp, "gas-ic.tec"))
-    ric = [float(g[n].flat[0]) for n in g if n.startswith("rho")]
+    ric = [float(g[n].flat[0]) for n in g if re.match(r"rho\d+$", n)]   # the partial densities (not rhoNuTilde)
     ok, parts = True, []
     for isp, inj, gained in rows:
         field = float(((f["rho(%d)" % isp] - ric[isp - 1]) * vol).sum())
@@ -772,6 +851,16 @@ def check_coupler(rep, run, inp, log, gated):
         parts.append("species %d %.6e vs %.9e" % (isp, gained, field))
     rep.check("G", ok, "gas gained as the coupler reports it (%s) vs the final gas field minus the initial: %s"
               % (os.path.basename(log), "; ".join(parts)), gated)
+
+
+def check_log(rep, log):
+    """IGLOO's LK-interface: warning in the run log, whatever the sweep."""
+    if not os.path.exists(log):
+        print("  [note] %s absent: its LK-interface: lines are not checked" % log)
+        return
+    hits = [l.strip() for l in open(log, errors="replace") if "LK-interface:" in l]
+    rep.check("L", not hits, "%s: %d LK-interface: line(s)%s" % (os.path.basename(log), len(hits),
+                                                                 " -- " + hits[0] if hits else ""))
 
 
 def cell_volumes(f, names):
@@ -796,7 +885,7 @@ def main():
     ap.add_argument("--psat", default="auto", choices=("auto", "cc", "table"))
     ap.add_argument("--interface", default="auto", choices=("auto", "LK", "VLE"))
     ap.add_argument("--props", default=None, help="properties table to model (default RUN/INPUT/<phase>-properties.dat)")
-    ap.add_argument("--log", default=None, help="run log carrying MI2's closed-domain lines (default RUN/run.log)")
+    ap.add_argument("--log", default=None, help="run log: MI2's closed-domain lines, IGLOO's warnings (default RUN/run.log)")
     a = ap.parse_args()
     run = a.run
     ini = read_ini(a.ini or os.path.join(run, "input.ini"))
@@ -828,7 +917,11 @@ def main():
         streams.append((i + 1, np.array([xs[i], ys[i], ups[i], vps[i], t0s[i], m0]), mds[i]))
     ncoup = int(ini.get("HYDRA-Parameters", {}).get("N-coupling", "1"))
     vref = sum(math.sqrt(s[1][2] ** 2 + s[1][3] ** 2) for s in streams) / n
-    dt_q = box_length(run) / vref / TRAJ_SAMPLE
+    # the scatter quantum: fsample-traj of the INI the run read, IGLOO's default when it is absent
+    run_ini = os.path.join(run, "input.ini")
+    nsample = int((read_ini(run_ini) if os.path.exists(run_ini) else ini).get("IGLOO-General", {}).get(
+        "fsample-traj", TRAJ_SAMPLE))
+    dt_q = box_length(run) / vref / nsample
     rep = Report()
     print("evap-box reference: %s   p_sat %s   interface %s" % (os.path.abspath(run), drop.psat_mode,
                                                                    "LK" if drop.lk else "VLE"))
@@ -838,7 +931,7 @@ def main():
         if k == 0:
             _, f, _ = read_tec_block(os.path.join(inp, "gas-ic.tec"))
             names = list(f.keys())
-            rn = [nm for nm in names if nm.startswith("rho")]
+            rn = [nm for nm in names if re.match(r"rho\d+$", nm)]   # the partial densities (not rhoNuTilde)
             st = tables.state([float(f[nm].flat[0]) for nm in rn], float(f["u"].flat[0]), float(f["v"].flat[0]),
                               float(f["w"].flat[0]), float(f["p"].flat[0]))
             for nm in names[3:]:
@@ -863,6 +956,8 @@ def main():
         check_global(rep, run, tag, streams, results, drop, gated)
         if k == ncoup - 1 and k > 0:
             check_coupler(rep, run, inp, a.log or os.path.join(run, "run.log"), gated)
+    print("\n== run log")
+    check_log(rep, a.log or os.path.join(run, "run.log"))
     print("\n%s: %d check(s) failed" % ("PASS" if rep.nfail == 0 else "FAIL", rep.nfail))
     return 0 if rep.nfail == 0 else 1
 

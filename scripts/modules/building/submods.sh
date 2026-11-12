@@ -28,8 +28,9 @@ log_info "Building $PROG"
 log_info "Passing jurisdiction to install.sh in $HYDRADIR/$where/$PROG"
 echo
 if [[ $PROG == "ATLAS" ]]; then
-  ./install.sh build --include-orion=$HYDRADIR/lib/ORION \
-                  "${@:2}"
+  # ATLAS selects its own ORION release (2.1 or later, cloned at its first configure) and refuses an older checkout,
+  # which hydra's lib/ORION still is
+  ./install.sh build "${@:2}"
 else
   ./install.sh build --include-orion=$HYDRADIR/lib/ORION \
                     --include-finer=$HYDRADIR/lib/third_party/FiNeR \

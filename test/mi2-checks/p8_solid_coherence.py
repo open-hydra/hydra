@@ -108,8 +108,10 @@ def write_iglo(d, leg):
         for _, v in gas:
             f.writelines(['  %.15E\n' % v] * ncell)
     ranges = {1: (NY, NZ), 2: (NY, NZ), 3: (NX, NZ), 4: (NX, NZ), 5: (NX, NY), 6: (NX, NY)}
-    inlet = '   %.5E   %.5E   normal,   normal,   %.5E   %.5E   %.5E   Dirac   %.5E\n' \
-            % (KRHO, 1.0, p['T_0'] / p['T_g'], 0.5 * D_P, 0.0, 0.0)
+    # field 1 is krho/(1 - krho_tot) over the dispersed phases of the cell (one here), field 10 G the cell's fixed
+    # mass flux (none): IGLOO injects field 1 times (mdotGas + G area)
+    inlet = '   %.16E   %.5E   normal,   normal,   %.5E   %.5E   %.5E   Dirac   %.5E   %.5E\n' \
+            % (KRHO / (1.0 - KRHO), 1.0, p['T_0'] / p['T_g'], 0.5 * D_P, 0.0, 0.0, 0.0)
     with open(os.path.join(d, 'INPUT/bc.txt'), 'w') as f:
         for face in range(1, 7):
             mend, nend = ranges[face]

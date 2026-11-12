@@ -412,7 +412,7 @@ program hydra_MI2_program
       write(*,'(A)') '   rate, so the two runs evaporate different amounts. The falsifiable invariant'
       write(*,'(A)') '   is the per-kg offset printed at setup, not this linearised delta-T.'
       write(*,'(A)') '   Scope: this validates the COUPLER''s datum bookkeeping, not the evaporation'
-      write(*,'(A)') '   model -- IGLOO''s constant Lv cancels on both sides of the comparison.'
+      write(*,'(A)') '   model -- IGLOO''s latent heat cancels on both sides of the comparison.'
     endif
     write(*,*)
   endif

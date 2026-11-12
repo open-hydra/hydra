@@ -35,9 +35,9 @@ W      = rho_p u_p (u_p - u_g) / tau · V                drag work on the partic
 and over cycle 2, of duration `t`: `Δ(Σ rho u V) = F t`, `Δ(Σ rho E V) = (W - Q_heat) t`.
 `mu_g` and `k_g` are interpolated from `INPUT/gas-transport.dat` as FLINT does (linear between
 the integer-kelvin rows) at `T_g = p/(rho R)` of `INPUT/gas-ic.tec`. Everything is independent
-of both integrators and of the time step. Numbers (2026-11-10, MOSE `b3e2ba8`): `tau = 9.98871e-4 s`,
-`F = 1.28168e-2 N`, `Q_heat = 1234.93 W`, `t = 3.7159e-4 s`, gas velocity gain 0.1116 m/s,
-gas energy loss 0.4589 J (the gas cools by 14.4 K; the source is frozen, so it does not relax).
+of both integrators and of the time step. Numbers (2026-11-11, MOSE `b3e2ba8`, `cfl = 0.6`): `tau = 9.98871e-4 s`,
+`F = 1.28168e-2 N`, `Q_heat = 1234.93 W`, `t = 7.5009e-4 s`, gas velocity gain 0.2253 m/s,
+gas energy loss 0.9263 J (the gas cools by 29.1 K; the source is frozen, so it does not relax).
 
 `check.py` (run by the gate) compares, from the `[MI2-report]` lines of cycle 2 and the output
 fields: A0 the reported `tau` (uniform) with the closed form to 1e-10; A1 the gas momentum
@@ -62,7 +62,7 @@ python3 -B test/ice-box/check.py <run-dir> <log>              # the numeric chec
 ## Regenerate the inputs
 
 ```bash
-export ATLASDIR=<ATLAS tree at e0c7e71>  ATLAS_PYTHON=<python with cantera>
+export ATLASDIR=<ATLAS tree at 34c128e>  ATLAS_PYTHON=<python with cantera>
 test/mi2-checks/regen_case.sh test/ice-box <scratch> GPB BCB ICB --install
 python3 -B test/ice-box/make_case.py
 ```
