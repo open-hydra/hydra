@@ -20,7 +20,7 @@ program hydra_MI2_program
                                      Accumulate_Injected_Mass, massInjected, Gas_Species_Mass, &
                                      nMassLimited, Accumulate_Injected_Energy, Gas_Total_Energy, &
                                      Gas_Mean_Temperature, energyInjected, energyDatumPart, &
-                                     energyAudited, Check_ICE_Mass_Channel, &
+                                     energyAudited, Check_ICE_Mass_Channel, Check_ICE_No_Combustion, &
                                      Check_ICE_Source_Finite, Check_IGLOO_Source_Finite, &
                                      Check_IGLOO_Euler_Finite, &
                                      Gas_Momentum, ICE_To_Gas_Totals, IGLOO_To_Gas_Totals, &
@@ -115,6 +115,8 @@ program hydra_MI2_program
 
   ! ICE and IGLOO ingest the gas field as ORION data; each is set up only when enabled
   if (hydra_MI2_obj%run_ICE)   call ICE%setup( ICE_simulation, MOSE_simulation%IOfield(1) )
+  ! the coupler cannot hand the gas what a burning ICE material releases
+  if (hydra_MI2_obj%run_ICE)   call Check_ICE_No_Combustion()
   ! IGLOO%setup includes the reset_state of the first solve; every later solve needs its own
   if (hydra_MI2_obj%run_IGLOO) then
     call Gas_Field_For_IGLOO( MOSE_simulation%domain(1), MOSE_simulation%IOfield(1), gas_for_igloo )
