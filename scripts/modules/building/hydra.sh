@@ -12,6 +12,7 @@ USE_MPI="false"
 USE_TECIO="false"
 USE_SUNDIALS="false"
 USE_CANTERA="false"
+UPDATE_DEPS="false"
 BUILD_TYPE="Release"
 SUFFIX=""
 
@@ -33,6 +34,7 @@ while [[ $# -gt 0 ]]; do
         --use-tecio)     USE_TECIO="true" ;;
         --use-sundials)  USE_SUNDIALS="true" ;;
         --use-cantera)   USE_CANTERA="true" ;;
+        --update-deps)   UPDATE_DEPS="true" ;;
         --type=*)        BUILD_TYPE="${1#*=}" ;;
         *)
             error "Unknown option '$1'"
@@ -65,9 +67,7 @@ log_info "Build dir: $BUILD_DIR"
 
 rm -rf "$BUILD_DIR"
 
-git submodule update --init lib/ORION
-git submodule update --init lib/OSLO
-git submodule update --init lib/FLINT
+# ORION, OSLO and FLINT are no submodules: the configure checks the releases of deps.lock out in lib/ (CMakeLists.txt)
 git submodule update --init --recursive lib/third_party/FiNeR
 source "$SCRIPT_DIR/utils/finer_deps.sh"
 fill_finer_deps "$HYDRADIR"
@@ -87,6 +87,12 @@ fi
 # -------------------------
 # Configure + build
 # -------------------------
+# --update-deps: the newest releases in the ranges of CMakeLists.txt, written to deps.lock
+SEMVER_ARGS=()
+if [[ "$UPDATE_DEPS" == "true" ]]; then
+    SEMVER_ARGS+=(-DSEMVER_UPDATE=ALL)
+fi
+
 cmake -S "$HYDRADIR" -B "$BUILD_DIR" \
     -DEXE_NAME="$SUFFIX" \
     -DCMAKE_BUILD_TYPE="$BUILD_TYPE" \
@@ -94,7 +100,8 @@ cmake -S "$HYDRADIR" -B "$BUILD_DIR" \
     -DUSE_MPI="$USE_MPI" \
     -DUSE_TECIO="$USE_TECIO" \
     -DUSE_SUNDIALS="$USE_SUNDIALS" \
-    -DUSE_CANTERA="$USE_CANTERA"
+    -DUSE_CANTERA="$USE_CANTERA" \
+    "${SEMVER_ARGS[@]}"
 
 cmake --build "$BUILD_DIR"
 

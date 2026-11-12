@@ -60,22 +60,28 @@ include(GNUInstallDirs)
 set (CMAKE_Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/modules")
 
 set(MASTER "hydra")
-set ( ORION_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/ORION/")
-set ( FINER_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/third_party/FiNeR/")
-set ( OSLO_PATH  "${CMAKE_CURRENT_SOURCE_DIR}/lib/OSLO/")
-set ( FLINT_PATH "${CMAKE_CURRENT_SOURCE_DIR}/lib/FLINT/")
+
+# ORION, OSLO and FLINT by release range (cmake/SemVerDeps.cmake), checked out in lib/ORION, lib/OSLO and lib/FLINT.
+# hydra is the top of its build tree: these requirements select the releases, before any solver or library checks
+# its own. deps.lock (tracked) holds the releases a build takes; -DSEMVER_UPDATE=ALL selects the newest ones in the
+# ranges again, -DFETCHCONTENT_SOURCE_DIR_<NAME>=<path> builds a local checkout instead. FLINT sets FLINT_SRC, the
+# sources MOSE and ARES compile, in this directory
+include(${CMAKE_SOURCE_DIR}/cmake/SemVerDeps.cmake)
+# Without the submodules lib/sundials of OSLO and lib/cantera of FLINT, which they clone only when they build them
+semver_dependency(OSLO GIT_REPOSITORY https://github.com/MarcoGrossi92/OSLO.git VERSION 1.1 GIT_SUBMODULES ""
+                  SOURCE_DIR lib/OSLO)
+semver_dependency(ORION GIT_REPOSITORY https://github.com/MarcoGrossi92/ORION.git VERSION 2.1 SOURCE_DIR lib/ORION)
+semver_dependency(FLINT GIT_REPOSITORY https://github.com/MarcoGrossi92/FLINT.git VERSION 2.0 GIT_SUBMODULES ""
+                  SOURCE_DIR lib/FLINT)
+add_subdirectory(lib/third_party/FiNeR/)
+FetchContent_MakeAvailable(OSLO ORION FLINT)
+
 IF(EXE_NAME STREQUAL "MF")
-    add_subdirectory(lib/ORION)
-    add_subdirectory(lib/third_party/FiNeR/)
     add_subdirectory(src/lib/FUSS/)
-    add_subdirectory(lib/FLINT/)
     add_subdirectory(src/lib/MOSE/)
     add_subdirectory(src/app)
 ELSEIF(EXE_NAME STREQUAL "AF")
-    add_subdirectory(lib/ORION)
-    add_subdirectory(lib/third_party/FiNeR/)
     add_subdirectory(src/lib/FUSS/)
-    add_subdirectory(lib/FLINT/)
     add_subdirectory(src/lib/ARES/)
     add_subdirectory(src/app)
 ELSEIF(EXE_NAME STREQUAL "MI2")
@@ -95,12 +101,6 @@ ELSEIF(EXE_NAME STREQUAL "MI2")
             "Rebuild without --use-mpi.")
     ENDIF()
 
-    add_subdirectory(lib/ORION)
-    add_subdirectory(lib/third_party/FiNeR/)
-    # OSLO is required by IGLOO (target OSLO) and pulled in early by FLINT; add it once here so
-    # both see the same target rather than each trying to add_subdirectory it.
-    add_subdirectory(lib/OSLO/)
-    add_subdirectory(lib/FLINT/)
     add_subdirectory(src/lib/MOSE/)
     add_subdirectory(src/lib/ICE/)
     add_subdirectory(src/lib/IGLOO/)

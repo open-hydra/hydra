@@ -85,6 +85,8 @@ Hydra build options:
 - `--use-sundials`
 - `--use-cantera`
 - `--type=<BuildType>`
+- `--update-deps`: select again the newest releases of ORION, OSLO and FLINT in the ranges of `CMakeLists.txt`,
+  written to `deps.lock` (commit it to take them)
 
 Example:
 

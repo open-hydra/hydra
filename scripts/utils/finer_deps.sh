@@ -2,15 +2,15 @@
 # finer_deps.sh [hydra-dir] - makes lib/third_party/FiNeR buildable: FiNeR tracks none of its five dependencies, yet
 # its CMakeLists adds them. Puts each one at the pinned commit below (cloned, or moved there if it is a checkout at
 # another commit). Sourced by building/hydra.sh and building/submods.sh; run it alone before any other build that is
-# handed hydra's FiNeR (e.g. ICE's install.sh --include-finer=...). The same five commits are pinned by IGLOO, ICE and
-# ATLAS for their own FiNeR.
+# handed hydra's FiNeR (e.g. ICE's install.sh --include-finer=...). The five releases MOSE, ARES and FUSS pin for their
+# own FiNeR v2.3.0, and the BACKUP set of ATLAS and ICE.
 
 FINER_DEPS=(
-    "PENF       34e10af852f81822bac0df7c5f73936e0655f54f"
-    "StringiFor 77b75b1d7f7012d2984135b231008f751ab32dda"
-    "FACE       95226cd6135b9daeb8ff2c748d2065deee230358"
-    "FLAP       7f5ec8e1f26be5e2a263fdd2118501b340c0d461"
-    "BeFoR64    40d19c5f6127088126606b90448e99e02d8b641c"
+    "PENF       4cb9d326c08f109ed5126d83c27e8e70c98b7eaa"   # v2.0.1
+    "StringiFor b12f62bab32dde9fed99b697ef6eff4c120d77ec"   # v1.8.0
+    "FACE       da7b7407b51e56257a09970099997098e3a52d99"   # v1.1.17
+    "FLAP       a3741e61f360addf4772833d078619cb8b72e0e1"   # v2.5.3
+    "BeFoR64    c90ce9507a24e166ebaeed53d67bf26512bb9263"   # v1.2.4
 )
 
 fill_finer_deps() {

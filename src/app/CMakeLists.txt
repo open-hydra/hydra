@@ -101,6 +101,7 @@ if(EXE_NAME STREQUAL "MI2")
     # The commit of each repository the executable is built from, written again at every build
     set(MI2_STAMP ${CMAKE_BINARY_DIR}/generated/MI2_Build_Stamp.f90)
     set(MI2_STAMP_CMD ${CMAKE_COMMAND} -DSRC=${CMAKE_SOURCE_DIR} -DOUT=${MI2_STAMP}
+                      -DDIR_ORION=${orion_SOURCE_DIR} -DDIR_OSLO=${oslo_SOURCE_DIR} -DDIR_FLINT=${flint_SOURCE_DIR}
                       -P ${CMAKE_SOURCE_DIR}/src/app/MI2/MI2_Build_Stamp.cmake)
     execute_process(COMMAND ${MI2_STAMP_CMD})
     add_custom_target(hydra_MI2_stamp COMMAND ${MI2_STAMP_CMD} BYPRODUCTS ${MI2_STAMP} VERBATIM)
