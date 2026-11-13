@@ -7,9 +7,10 @@
 # the values of its MEASURED block (one-thread runs of the three cases). Byte identity of these runs is the business of
 # the one-thread references, not of this gate: at 4 threads every judged row stays within 1.6e-7 of one thread.
 # RED on: MOSE alone (R3, R4, R5 and R6 of the ICE case: axis exit M +1.08, margins 0.06 and 0.35); particles of
-# dp 2e-6 in the ICE case (R3, R4, R5, R6: margins 0.06 and 0.38, axis mean -0.19); 0.17647 per phase, 27 % more
-# loading (R3, R4 axis 1.20, R5 axis mean -0.116 against -0.027, R6 loading 0.5455); NoDrag in IGLOO's phase of the
-# three-solver case (R3, R4 axis 1.83, R5, R6 SUM rho_p 1.37). Ranz-Marshall in ICE stays green. Twice as long: green.
+# dp 2e-6 in the ICE case (R2 axis range 2.1e-5, R3, R4, R5, R6: margins 0.06 and 0.38, axis mean -0.19); 0.17647 per
+# phase, 27 % more loading (R3, R4 axis 1.20, R5 axis mean -0.116 against -0.027, R6 loading 0.5455); NoDrag in IGLOO's
+# phase of the three-solver case (R3, R4 axis 1.83, R5, R6 SUM rho_p 1.37); the ICE case cut at half length (R2 axis
+# range 1.2e-6). Ranz-Marshall in ICE stays green. Twice as long: green.
 # The three runs take 520 to 550 s at a load of about 20 on 96 cores.
 #   usage: p18_jpl_chang_check.sh [scratch-root] [exe]
 set -u

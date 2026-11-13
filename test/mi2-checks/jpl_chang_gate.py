@@ -28,10 +28,11 @@ Rows of the live mode:
   R1 health: '# exit=0', GAME OVER, none of the failure signatures; with IGLOO one 'All particles out of domain' per
      coupling step (N-coupling of the run's input.ini) and no 'marking gone'.
   R2 steady: the two exit probes written (OUTPUT/exit_axis.txt, exit_wall.txt; with --require-probes); the range of
-     their M over the last MOSE block and the density residual's last-block maximum over its first-block maximum are
-     printed, not judged: on a converged run the range is the floor, which moves by up to a factor 10 from block to
-     block and with the thread count (1e-10 to 2e-8 with IGLOO, 1e-14 to 1e-12 without), against 1e-6 to 2e-5 on the
-     axis of a run that is not steady.
+     the axis probe's M over the last MOSE block below an absolute bound: on a converged run the range is the floor,
+     which moves by up to a factor 10 from block to block and with the thread count (1e-10 to 2e-8 with IGLOO, 1e-14
+     to 1e-12 without), against 1e-6 to 2e-5 on the axis of a run that is not steady. The wall probe's range (no such
+     gap: 2e-9 on a half-length run) and the density residual's last-block maximum over its first-block maximum are
+     printed, not judged.
   R3 absolute: |run - MPL| rows: axis rms outside the reference's drop, axis exit M, wall rms, wall exit M, the drop's
      place (half height X) and depth (maximum - minimum), each within its bound.
   R4 class: rms against MPL below half the smaller rms against MPS and OG, both rows.
@@ -68,7 +69,8 @@ R5_AXIS = 0.010   # R5: plan 7.3, axis outside the drop; smallest RED move 0.088
 R5_WALL = 0.006   # R5: plan 7.3, wall; smallest RED move 0.0218 (27 % loading), 2x run and threads 3.6e-10
 R5_STD = 1.2      # R5: std of run - MPL within 1.2 x the measured std (plan 7.3: 'std bounded', no number; R3's factor)
 R6_FACTOR = 1.4   # R6: |ratio - 1| within 1.4 x the measured |ratio - 1| (round plan 7.3, R6)
-R2_FACTOR = 1.2   # R2: printed beside the range, not judged: the range is the floor (with IGLOO 1e-10 to 2e-8)
+R2_AXIS = 1e-7    # R2: 6 x the converged floor 1.7e-8 (1, 4 threads, 2x runs), 1/12 of the half-length ICE case 1.2e-6
+R2_FACTOR = 1.2   # R2, wall: printed beside the range, not judged: the range is the floor (with IGLOO 1e-10 to 2e-8)
 K_PRESCRIBED = 0.30 / 0.70  # R6: the cases' loading krho 0.30 (0.15 per phase with two) as share k = krho/(1 - krho)
 K_TOL = 1e-12     # R6: relative; the 401 records print k with 17 digits
 # MEASURED: the values of the reference runs, printed by --measure; re-taken there when a pin moves a JPL row
@@ -87,7 +89,7 @@ MEASURED = {
         'axis_out_std': 0.0110498,  # R5: its std
         'wall_mean': -0.0167405,  # R5: mean of run - MPL, wall
         'wall_std': 0.00921278,  # R5: its std
-        'r2_axis': 4.51484e-09,  # R2 (printed only): range of the axis exit probe M over the last block
+        'r2_axis': 4.51484e-09,  # R2, reference only (R2_AXIS bounds it): axis probe M range, last block
         'r2_wall': 6.6024e-10,  # R2 (printed only): range of the wall exit probe M over the last block
         'r6_igloo_lo': 0.986009,  # R6: lowest ratio of IGLOO's 38 inner inlet cells
         'r6_igloo_hi': 1.02792,  # R6: highest ratio of IGLOO's 38 inner inlet cells
@@ -105,7 +107,7 @@ MEASURED = {
         'axis_out_std': 0.0109574,  # R5: its std
         'wall_mean': -0.00957433,  # R5: mean of run - MPL, wall
         'wall_std': 0.00899832,  # R5: its std
-        'r2_axis': 3.8991e-13,  # R2 (printed only): range of the axis exit probe M over the last block
+        'r2_axis': 3.8991e-13,  # R2, reference only (R2_AXIS bounds it): axis probe M range, last block
         'r2_wall': 3.9968e-14,  # R2 (printed only): range of the wall exit probe M over the last block
         'r6_ice': 0.000761028,  # R6: max |ratio - 1| of ICE's inlet cells (part, 1.0000..1.0008)
     },
@@ -120,7 +122,7 @@ MEASURED = {
         'axis_out_std': 0.00924327,  # R5: its std
         'wall_mean': -0.0134274,  # R5: mean of run - MPL, wall
         'wall_std': 0.00911957,  # R5: its std
-        'r2_axis': 1.23669e-09,  # R2 (printed only): range of the axis exit probe M over the last block
+        'r2_axis': 1.23669e-09,  # R2, reference only (R2_AXIS bounds it): axis probe M range, last block
         'r2_wall': 3.3231e-10,  # R2 (printed only): range of the wall exit probe M over the last block
         'r6_ice': 0.000743324,  # R6: max |ratio - 1| of ICE's inlet cells (partE, 1.0000..1.0007)
         'r6_igloo_lo': 0.985568,  # R6: lowest ratio of IGLOO's 38 inner inlet cells
@@ -420,6 +422,10 @@ def live(runs, ref, xmin, require_probes):
                 else:
                     print('  %s R2 %s exit probe: no probe file, not judged' % (lab, row))
                 continue
+            if row == 'axis':
+                v(p[row] <= R2_AXIS, '%s R2 axis exit Mach, range over the last block %.3e <= %.0e'
+                  % (lab, p[row], R2_AXIS))
+                continue
             if require_probes:
                 v(True, '%s R2 %s exit probe: written' % (lab, row))
             print('  %s R2 %s exit Mach, range over the last block %.3e (1.2 x the reference run %.3e): reported, not '
@@ -515,7 +521,7 @@ def measure(runs, ref, xmin):
                 ('axis_out_std', a['out_std'], 'R5: its std'),
                 ('wall_mean', w['mean'], 'R5: mean of run - MPL, wall'),
                 ('wall_std', w['std'], 'R5: its std'),
-                ('r2_axis', p['axis'], 'R2 (printed only): range of the axis exit probe M over the last block'),
+                ('r2_axis', p['axis'], 'R2, reference only (R2_AXIS bounds it): axis probe M range, last block'),
                 ('r2_wall', p['wall'], 'R2 (printed only): range of the wall exit probe M over the last block')):
             print("        '%s': %s,  # %s" % (key, 'None' if val is None else '%.6g' % val, what))
         if 'ice' in i:
