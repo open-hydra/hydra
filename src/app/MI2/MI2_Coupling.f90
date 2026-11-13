@@ -616,7 +616,11 @@ contains
       end associate
 
       ! gas inflow mass flow on the inlet faces (MOSE_domain%bc is flat over blocks and faces);
-      ! other records carry no mass flow and leave IGLOO's value alone
+      ! other records carry no mass flow and leave IGLOO's value alone. A solid-propellant grain in its
+      ! inflow mode (ATLAS 502, grain-wall = F: a 404 with srm_inflow) hands the gas mass flux MOSE last
+      ! computed at the face, bc%g_srm = mdot_ref (p/p_ref)^n at the pressure of the boundary cell (its
+      ! mdot_ref already carries 1 - krho_tot, ATLAS), not the flux at p_ref: IGLOO then injects
+      ! krho/(1 - krho_tot) times it.
       do f = 1, 6
         lower = upper + 1
         upper = upper + MOSE_domain%n_bf(b,f)
@@ -628,21 +632,6 @@ contains
             b, ' face ', f, ': the gas boundary records must be grouped by block, then by face (1 to 6), in that order'
           error stop 1
         enddo
-        ! the record of a grain applied as an inlet holds the reference mass flux of its burning law, not the flow of
-        ! the face: particles injected in proportion to the gas mass flow cannot sit on it
-        if (any(MOSE_domain%bc(lower:upper)%srm_inflow)) then
-          do i = lower, upper
-            if (.not. MOSE_domain%bc(i)%srm_inflow) cycle
-            call IGLOO%geoblock(b)%ijk2fmn ( MOSE_domain%bc(i)%i, MOSE_domain%bc(i)%j, &
-                                             MOSE_domain%bc(i)%k, f, m, n )
-            if (m<=0 .or. n<=0) cycle
-            if (IGLOO%geoblock(b)%face(f)%cell(m,n)%bcdef /= 401) cycle
-            write(*,'(A,I0,A,I0,A)') ' [ERROR] MI2: block ', b, ' face ', f, ': particles injected in proportion to '// &
-              'the gas mass flow (particle BC 401) on a propellant grain applied as an inlet (MOSE BC 502, mode 2): '// &
-              'its record holds the reference mass flux of the burning law, not the mass flow of the face'
-            error stop 1
-          enddo
-        endif
         mSum = 0._R8; nSum = 0; noFlow = 0
         !$OMP PARALLEL DEFAULT(SHARED), PRIVATE(i,m,n,mdot)
         !$OMP DO REDUCTION(+:mSum,nSum) REDUCTION(max:noFlow)
@@ -655,9 +644,12 @@ contains
             mdot = abs(MOSE_domain%bc(i)%mdot)   ! negative for an inflow on faces 2, 4 and 6
           case (406, 407)
             mdot = MOSE_domain%bc(i)%mdot
-          case (403, 404, 420)             ! mdot is the prescribed mass flux [kg/(s m2)], an inflow whatever its sign
-            if (MOSE_domain%bc(i)%srm_inflow) cycle   ! a grain: no mass flow in its record, IGLOO's value stays
-            mdot = abs(MOSE_domain%bc(i)%mdot) * IGLOO%geoblock(b)%face(f)%cell(m,n)%area
+          case (403, 404, 420)             ! mdot is the prescribed mass flux [kg/(s m2)], an inflow whatever its sign,
+            if (MOSE_domain%bc(i)%srm_inflow) then   ! or for a grain the burn law's at the cell pressure (g_srm >= 0)
+              mdot = abs(MOSE_domain%bc(i)%g_srm) * IGLOO%geoblock(b)%face(f)%cell(m,n)%area
+            else
+              mdot = abs(MOSE_domain%bc(i)%mdot) * IGLOO%geoblock(b)%face(f)%cell(m,n)%area
+            end if
           case default                     ! no mass flow in the record: a particle inlet that scales with it is refused below
             if (IGLOO%geoblock(b)%face(f)%cell(m,n)%bcdef == 401) noFlow = max(noFlow, i)
             cycle
