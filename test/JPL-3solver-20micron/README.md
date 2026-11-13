@@ -17,6 +17,7 @@ its own file (`[ICE-Parameters] phase`, `[IGLOO-General] phase`); that routing i
 phases: field 1 krho/(1 - krho_tot), field 10 G, which ICE and IGLOO require); the hand-copied files of 2026-09-16 are
 history.
 
-Run: `figaro hydra-MI2 -p 4 solve` (≈ 15 min). Compare: `python3 jpl_compare.py`.
+Run: `figaro hydra-MI2 -p 4 solve` (≈ 7 min). Compare: `python3 jpl_compare.py`. Gate:
+`test/mi2-checks/p18_jpl_chang_check.sh` runs the three JPL cases at 4 threads and judges them against Chang's curves.
 Full loading in each phase instead: `krho`, `partE-krho` and `partL-krho` at 0.30 in `input.ini`, then
 `regen_case.sh` with BCB and ICB.

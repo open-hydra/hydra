@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""Axis and wall Mach number of a JPL nozzle run vs Chang (1980).
+"""Axis and wall Mach number of a JPL nozzle run vs Chang, Hourng & Chien (1996), Fig. 11.
 
 Usage:
     jpl_compare.py [FIELD ...] [--ref JPL_chang.dat] [--xmin 0.2] [--plot]
 
 FIELD defaults to OUTPUT/gas-field.tec next to this script; with several fields, each one is
 reported. For every field, the axis (first cell row) is compared with "Chang MPL Axis" and the wall
-(last cell row) with "Chang MPL Wall" (MPL = the 20 micron particles), over X > xmin:
+(last cell row) with "Chang MPL Wall" (MPL = particles of 10 micron radius, the 20 micron diameter of the cases), over X > xmin:
 
     M = |u| / sqrt(g R T)          X = (x - x_throat) / D*
 
@@ -116,7 +116,7 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument('fields', nargs='*', default=[str(HERE / 'OUTPUT' / 'gas-field.tec')],
                         help='MOSE gas field(s) (default: OUTPUT/gas-field.tec next to this script)')
-    parser.add_argument('--ref', default=str(HERE / 'JPL_chang.dat'), help='Chang (1980) reference curves')
+    parser.add_argument('--ref', default=str(HERE / 'JPL_chang.dat'), help='reference curves, Chang, Hourng & Chien (1996), Fig. 11')
     parser.add_argument('--xmin', type=float, default=0.2, help='compare over X > xmin (default 0.2)')
     parser.add_argument('--plot', action='store_true', help='plot Mach vs X with the reference')
     args = parser.parse_args()
