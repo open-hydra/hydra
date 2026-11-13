@@ -921,8 +921,9 @@ contains
 
   !> Inject ICE's reaction on the gas into MOSE's residual, from MOSE's per-RK-stage callback:
   !  runs inside MOSE's parallel region, orphaned !$OMP DO only. cond_phase%source is the per-unit-
-  !  volume rate on the condensed phase, so the gas receives -source (times vol); source(1) is the
-  !  mass (not coupled), source(2:4) the momentum, source(nbase-1) the energy.
+  !  volume rate on the condensed phase over ICE's last step (its RK stages weighted as its update
+  !  weighs them), so the gas receives -source (times vol); source(1) is the mass (not coupled),
+  !  source(2:4) the momentum, source(nbase-1) the energy.
   subroutine ICExMOSE ( MOSE_domain, ICE_domain )
     use MOSE_Advanced_Types_m, only: MOSE_domain_type
     use MOSE_Global_m,         only: nsc, nu, nw, np, nprim

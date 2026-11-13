@@ -277,7 +277,7 @@ program hydra_MI2_program
           if ( ICE_obj_sim_param%TODO <= 2 ) then
             call ICE%solve( ICE_simulation, Dummy_Function )
             if ( ICE_obj_sim_param%TODO <= 2 ) call ICE%postprocess( ICE_simulation )
-            ! cond_phase%source is valid after a solve with twcoupled set
+            ! after a solve with twcoupled set, cond_phase%source holds the rates of ICE's step
             ICE_has_sources = .true.
             ICE_src_cycle   = n_cycle
             ICE_src_step    = n_couple
