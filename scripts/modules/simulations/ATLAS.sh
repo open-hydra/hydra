@@ -45,6 +45,17 @@ function ATLAS_ops () {
 }
 
 function import_from_ATLAS {
+  # a phase GPB wrote now without a models file has no constant of a burning model left: the file of an earlier
+  # import must not stay in INPUT/, where the solvers would read it
+  local p
+  for p in fromATLAStoSolver/*phase.txt; do
+    [[ -f $p ]] || continue
+    p=${p#fromATLAStoSolver/}; p=${p%phase.txt}
+    if [[ ! -f fromATLAStoSolver/${p}models.txt && -f INPUT/${p}models.txt ]]; then
+      rm -f "INPUT/${p}models.txt"
+      log_warn "INPUT/${p}models.txt removed: GPB writes no constants of a burning model for this phase any more"
+    fi
+  done
   cp -r fromATLAStoSolver/* INPUT/. 2>/dev/null || :
   rm -rf fromATLAStoSolver mesh.tec mesh.p3d
   rm -f *phase.txt
