@@ -12,6 +12,7 @@ contains
     use hydra_Get_File_List_m, only: Get_File_List
     use FUSS_Global_m, only: FUSS_phase_prefix
     use ARES_Global_m, only: ARES_phase_prefix
+    use ARES_Mod_MPI, only: mpi_stop_all
     use strings, only: parse
     implicit none
     character(len=llen_)              :: filename, stringa(2), substringa(2), type
@@ -38,8 +39,8 @@ contains
         elseif (index(type,'real-fluid')>0) then
           ARES_phase_prefix = trim(substringa(2))//'-'
         else
-          write(*,*) 'Error: unknown phase type'
-          stop
+          ! Every rank reads the same phase files: they stop here together, with exit code 1
+          call mpi_stop_all ( 'unknown phase type in '//trim(filename) )
         endif
         close(u)
     endif

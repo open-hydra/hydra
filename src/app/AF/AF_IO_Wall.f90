@@ -181,6 +181,7 @@ contains
       call parse(hydra_obj_io%coupling_format,' ', format)
       
       ! Write the IOwall accordingly to the solution format
+      E_IO = 0
       select case(trim(format(1)))
         case('vtk')
         IOwall(level)%vtk%format = trim(format(2))
@@ -193,6 +194,10 @@ contains
         IOwall(level)%tec%format = trim(format(2))
         E_IO = tec_write_structured_multiblock(orion=IOwall(level),varnames=hydra_obj_io%Owallnames,filename=trim(path)//trim(file)//trim(IOwall(level)%tec%extension))
       end select
+      ! A failed write (disk full, quota, permission) leaves a cut file: say so, and go on (the next output may
+      ! succeed), as the writers of ARES
+      if ( E_IO /= 0 ) write(*,'(A,I0,A)') ' [WARNING] '//trim(path)//trim(file)//' was not written (status ', E_IO, &
+                                           '): disk full, quota or permission?'
     endif
 
   end subroutine Write_Wall_Solution
@@ -209,7 +214,8 @@ contains
                                              Update_Coupling_Segment_Partners
     use hydraAF_Mod_CouplingExchange, only: is_FUSS_bc_local_local, is_ARES_bc_local_local, &
                                             get_F_remote_P, get_M_remote_matID, &
-                                            get_k_wall_FUSS, get_k_wall_ARES
+                                            get_k_wall_FUSS, get_k_wall_ARES, &
+                                            get_partner_half_FUSS, get_partner_half_ARES
 #ifdef USE_MPI                                      
     use FUSS_Mod_MPI, only: FUSS_block_owner => block_owner, mpi_rank_, mpi_is_root, mpi_reduce_sum_r8_array
     use ARES_Mod_MPI, only: ARES_block_owner => block_owner
@@ -224,7 +230,7 @@ contains
     integer :: n_wall_total, ARES_n_wall_total, wall_i
     real(R8), allocatable :: FUSS_wall_buf(:), ARES_wall_buf(:)
     real(R8) :: FUSS_new_flux, ARES_new_flux(nprim)
-    real(R8) :: P_con(np), matID_con
+    real(R8) :: P_con(np), matID_con, A_con, Teff_con
     real(R8), pointer :: p_remote(:)
 
     ! 104: current partner cells for the segments, also across ranks (collective)
@@ -285,11 +291,12 @@ contains
 #else
               P_con(1:np) = ARES_domain % blk(Bs) % P(1:np, Is, Js, Ks)
 #endif
-              ! Same mirrored wall conductivity the solver used, so the wall file
-              ! reports the temperature and the flux that were actually applied.
+              ! Same mirrored wall conductivity and same partner half of the balance
+              ! the solver used, so the wall file reports the temperature and the flux
+              ! that were actually applied.
+              call get_partner_half_FUSS(level, i, A_con, Teff_con)
               call FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
-                                          Is, Js, Ks, Fs, P_con, &
-                                          FUSS_domain%bc(i)%Mg(1), FUSS_domain%bc(i)%Tg, &
+                                          P_con, FUSS_domain%bc(i)%Tg(1), A_con, Teff_con, &
                                           FUSS_new_flux, Ovar(6:7), &
                                           k_fluid_wall = get_k_wall_FUSS(level, i) )
            
@@ -401,9 +408,9 @@ contains
               matID_con = FUSS_domain % blk(Bs) % matID(Is, Js, Ks)
 #endif
               ! k_fluid_wall only: the store must not be advanced from the I/O path.
+              call get_partner_half_ARES(level, i, A_con, Teff_con)
               call ARES_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, ARES_domain % blk(Bm), &
-                                          Is, Js, Ks, Fs, matID_con, &
-                                          ARES_domain%bc(i)%Mg(1), ARES_domain%bc(i)%Pg, &
+                                          matID_con, ARES_domain%bc(i)%Pg(1,1), A_con, Teff_con, &
                                           ARES_new_flux, Ovar, &
                                           k_fluid_wall = get_k_wall_ARES(level, i) )
              

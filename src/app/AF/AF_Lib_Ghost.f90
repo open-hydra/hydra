@@ -5,7 +5,9 @@ module hydraAF_Lib_Ghost
   use ARES_Advanced_Types_m
   use FUSS_Advanced_Types_m
   use hydraAF_Mod_CouplingExchange, only: is_FUSS_bc_local_local, is_ARES_bc_local_local, &
-                                          own103_FUSS, own103_ARES
+                                          own103_FUSS, own103_ARES, &
+                                          set_partner_half_FUSS, set_partner_half_ARES
+  use hydraAF_Lib_Metrics,          only: FUSS_Wall_Half, ARES_Wall_Half
 
   implicit none
   private
@@ -14,7 +16,10 @@ module hydraAF_Lib_Ghost
 contains
 
 
-  !> Fill the coupling ghost cells for entries this rank can serve locally.
+  !> Fill the coupling ghost cells for entries this rank can serve locally: the
+  !> temperatures of the partner cells across the face (Tg / Pg, 1..gc_) and the
+  !> half (A, Teff) of the interface balance of the partner face, computed in the
+  !> partner's own index frame with its own metric (hydraAF_Lib_Metrics).
   !>
   !> Driven by the per-rank type(103) lists rather than by a sweep of the whole
   !> bc array: the array is global and grows with the block count, so the old
@@ -28,7 +33,8 @@ contains
     type(ARES_domain_type), intent(inout) :: ARES_domain
     integer, intent(in) :: level
     ! Local
-    integer :: k, n_F, n_A, i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
+    integer :: k, n_F, n_A, i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs
+    real(R8) :: A, Teff
     integer, pointer :: ownF(:), ownA(:)
 
     call own103_FUSS(level, n_F, ownF)
@@ -59,8 +65,9 @@ contains
       enddo
       !$omp end parallel do
 
+      ! Half of the balance of the ARES partner face
       !$omp parallel do schedule (static) &
-      !$omp private(k, i, Bs, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s)
+      !$omp private(k, i, Bs, Is, Js, Ks, Fs, A, Teff)
       do k = 1, n_F
         i = ownF(k)
         if (.not. is_FUSS_bc_local_local(FUSS_domain, i)) cycle
@@ -69,12 +76,8 @@ contains
         Js = FUSS_domain % bc(i) % js
         Ks = FUSS_domain % bc(i) % ks
         Fs = FUSS_domain % bc(i) % fs
-        d11s = FUSS_domain % bc(i) % d11
-        d12s = FUSS_domain % bc(i) % d12
-        d21s = FUSS_domain % bc(i) % d21
-        d22s = FUSS_domain % bc(i) % d22
-        call Fill_BC_Ghost_Coupling_FUSS ( Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, &
-                                           ARES_domain % blk(Bs), FUSS_domain % bc(i) % Tg )
+        call ARES_Wall_Half ( ARES_domain % blk(Bs), Is, Js, Ks, Fs, A, Teff )
+        call set_partner_half_FUSS ( level, i, A, Teff )
       enddo
       !$omp end parallel do
     end if
@@ -102,8 +105,9 @@ contains
       enddo
       !$omp end parallel do
 
+      ! Half of the balance of the FUSS partner face
       !$omp parallel do schedule (static) &
-      !$omp private(k, i, Bs, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s)
+      !$omp private(k, i, Bs, Is, Js, Ks, Fs, A, Teff)
       do k = 1, n_A
         i = ownA(k)
         if (.not. is_ARES_bc_local_local(ARES_domain, i)) cycle
@@ -112,12 +116,8 @@ contains
         Js = ARES_domain % bc(i) % js
         Ks = ARES_domain % bc(i) % ks
         Fs = ARES_domain % bc(i) % fs
-        d11s = ARES_domain % bc(i) % d11
-        d12s = ARES_domain % bc(i) % d12
-        d21s = ARES_domain % bc(i) % d21
-        d22s = ARES_domain % bc(i) % d22
-        call Fill_BC_Ghost_Coupling_ARES ( Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, &
-                                           FUSS_domain % blk(Bs), ARES_domain % bc(i) % Pg )
+        call FUSS_Wall_Half ( FUSS_domain % blk(Bs), Is, Js, Ks, Fs, A, Teff )
+        call set_partner_half_ARES ( level, i, A, Teff )
       enddo
       !$omp end parallel do
     end if
@@ -151,72 +151,6 @@ contains
   end subroutine Ghost_Coupling_FUSS
   
 
-  subroutine Fill_BC_Ghost_Coupling_FUSS ( Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, blks, Tg )
-    use FLINT_Lib_Thermodynamic
-    use ARES_Global_m, only: np, nh
-    implicit none
-    integer, intent(in)               :: Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
-    type(ARES_block_type), intent(in) :: blks
-    real(R8), intent(inout)           :: Tg(6)
-    ! Local
-    integer  :: i1, j1, k1, i2, j2, k2, i3, j3, k3, i4, j4, k4
-    real(R8) :: Ts1, Ts2, Ts3, Ts4
-
-    select case(Fs)
-      case(1:2)
-        i1 = Is
-        j1 = Js - d11s
-        k1 = Ks - d12s
-        i2 = Is
-        j2 = Js + d11s
-        k2 = Ks + d12s
-        i3 = Is
-        j3 = Js - d21s
-        k3 = Ks - d22s
-        i4 = Is
-        j4 = Js + d21s
-        k4 = Ks + d22s
-      case(3:4)
-        i1 = Is - d11s
-        j1 = Js 
-        k1 = Ks - d12s
-        i2 = Is + d11s
-        j2 = Js 
-        k2 = Ks + d12s
-        i3 = Is - d21s
-        j3 = Js
-        k3 = Ks - d22s
-        i4 = Is + d21s
-        j4 = Js 
-        k4 = Ks + d22s
-      case(5:6)
-        i1 = Is - d11s
-        j1 = Js - d12s
-        k1 = Ks 
-        i2 = Is + d11s
-        j2 = Js + d12s
-        k2 = Ks
-        i3 = Is - d21s
-        j3 = Js - d22s
-        k3 = Ks
-        i4 = Is + d21s
-        j4 = Js + d22s
-        k4 = Ks
-    end select
-
-    Ts1 = ph2vars( blks%P(np,i1,j1,k1), blks%P(nh,i1,j1,k1), T_tab )
-    Ts2 = ph2vars( blks%P(np,i2,j2,k2), blks%P(nh,i2,j2,k2), T_tab )
-    Ts3 = ph2vars( blks%P(np,i3,j3,k3), blks%P(nh,i3,j3,k3), T_tab )
-    Ts4 = ph2vars( blks%P(np,i4,j4,k4), blks%P(nh,i4,j4,k4), T_tab )
-
-    Tg (3) = Ts1
-    Tg (4) = Ts2
-    Tg (5) = Ts3
-    Tg (6) = Ts4
-
-  end subroutine Fill_BC_Ghost_Coupling_FUSS
-
-
   subroutine Ghost_Coupling_ARES ( Im, Jm, Km, Fm, blkm, Is, Js, Ks, Fs, blks, Pg )
     use FLINT_Lib_Thermodynamic
     use ARES_Global_m, only: np, nh
@@ -241,61 +175,4 @@ contains
   end subroutine Ghost_Coupling_ARES
 
 
-  subroutine Fill_BC_Ghost_Coupling_ARES ( Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, blks, Pg )
-    implicit none
-    integer, intent(in)               :: Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
-    type(FUSS_block_type), intent(in) :: blks
-    real(R8), intent(inout)           :: Pg(1,6)
-    ! Local
-    integer  :: i1, j1, k1, i2, j2, k2, i3, j3, k3, i4, j4, k4
-    
-    select case(Fs)
-      case(1:2)
-        i1 = Is
-        j1 = Js - d11s
-        k1 = Ks - d12s
-        i2 = Is
-        j2 = Js + d11s
-        k2 = Ks + d12s
-        i3 = Is
-        j3 = Js - d21s
-        k3 = Ks - d22s
-        i4 = Is
-        j4 = Js + d21s
-        k4 = Ks + d22s
-      case(3:4)
-        i1 = Is - d11s
-        j1 = Js 
-        k1 = Ks - d12s
-        i2 = Is + d11s
-        j2 = Js 
-        k2 = Ks + d12s
-        i3 = Is - d21s
-        j3 = Js
-        k3 = Ks - d22s
-        i4 = Is + d21s
-        j4 = Js 
-        k4 = Ks + d22s
-      case(5:6)
-        i1 = Is - d11s
-        j1 = Js - d12s
-        k1 = Ks 
-        i2 = Is + d11s
-        j2 = Js + d12s
-        k2 = Ks
-        i3 = Is - d21s
-        j3 = Js - d22s
-        k3 = Ks
-        i4 = Is + d21s
-        j4 = Js + d22s
-        k4 = Ks
-    end select
-
-    Pg (1,3) = blks % T (i1,j1,k1)
-    Pg (1,4) = blks % T (i2,j2,k2)
-    Pg (1,5) = blks % T (i3,j3,k3)
-    Pg (1,6) = blks % T (i4,j4,k4)
-
-  end subroutine Fill_BC_Ghost_Coupling_ARES
-    
 end module hydraAF_Lib_Ghost

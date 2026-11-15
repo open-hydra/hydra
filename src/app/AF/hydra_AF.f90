@@ -8,7 +8,7 @@ program hydra_program
   use hydra_Config_Types_m
   use hydraAF_Mod_Import,            only: Assign_Phases
   use hydraAF_IO_Wall
-  use hydraAF_Lib_Metrics,           only: Setup_Coupled_Metrics
+  use hydraAF_Lib_Metrics,           only: Setup_Interface_Metric
   use hydraAF_Lib_Ghost,             only: Fill_Coupled_Ghost_Cell
   use hydraAF_Lib_Coupling_Segments, only: Setup_Coupling_Segments
   use hydraAF_Mod_dt,                only: Fix_Global_dt
@@ -21,7 +21,7 @@ program hydra_program
   use ARES_Procedures_m,     only: ARES_type
   use FUSS_Mod_MPI,          only: FUSS_mpi_init => mpi_init_env, FUSS_mpi_finalize => mpi_finalize_env, &
                                    mpi_is_root, mpi_size_
-  use ARES_Mod_MPI,          only: ARES_mpi_init => mpi_init_env
+  use ARES_Mod_MPI,          only: ARES_mpi_init => mpi_init_env, ARES_mpi_stop_all => mpi_stop_all
   use hydraAF_Mod_CouplingExchange, only: build_coupling_schedule, cleanup_coupling_schedule
   use hydra_Mod_Timers,      only: timer_run_begin, timer_summary, timer_report, &
                                    timer_step_begin, timer_step_end, &
@@ -36,7 +36,7 @@ program hydra_program
   use IR_precision
   implicit none
   type(ARES_type)            :: ARES
-  type(ARES_simulation_type) :: ARES_simulation
+  type(ARES_simulation_type), target :: ARES_simulation   ! TARGET: the probes of ARES point at the state of their cells
   type(FUSS_type)            :: FUSS
   type(FUSS_simulation_type) :: FUSS_simulation
   ! Local
@@ -54,8 +54,11 @@ program hydra_program
   call ARES_mpi_init()
 
 #if defined (_OPENMP)
+  ! The size of the team: one thread writes it (every thread of the team writing it would be a data race)
   !$omp parallel
+  !$omp single
   nthreads = OMP_GET_NUM_THREADS()
+  !$omp end single
   !$omp end parallel
   FUSS_obj_sim_param%nthreads = nthreads
   ARES_obj_sim_param%nthreads = nthreads
@@ -102,6 +105,9 @@ program hydra_program
   ! Coupling Initializations
   if (hydra_obj_io%coupling_wall) then
     allocate(IOwall(1:hydra_obj_multigrid%MGL))
+    ! Metric of the coupled walls: no set-up, each side computes its half of the
+    ! interface balance when needed (hydraAF_Lib_Metrics); report which metric it is
+    call Setup_Interface_Metric()
     do m = 1, hydra_obj_multigrid%MGL
       if (index(hydra_obj_io%coupling_format,'ascii')>0) then
         extension = '.tec'
@@ -115,7 +121,6 @@ program hydra_program
       ! setup routine that may iterate over type(103) BCs. The schedule builds
       ! the partner_of_* indices even in serial.
       call build_coupling_schedule( FUSS_simulation%domain(m), ARES_simulation%domain(m), m )
-      call Setup_Coupled_Metrics( FUSS_simulation%domain(m), ARES_simulation%domain(m), m )
       ! Type 104 segments (collective under MPI: every rank builds the same list)
       call Setup_Coupling_Segments( FUSS_simulation%domain(m), ARES_simulation%domain(m), m )
       call Fill_Coupled_Ghost_Cell( FUSS_simulation%domain(m), ARES_simulation%domain(m), m )
@@ -180,8 +185,8 @@ program hydra_program
     ! Set Global dt for time-accurate
     if ( hydra_obj_sim_param%time_accurate ) then
       if ( hydra_obj_multigrid%MGL > 1 ) then
-        if (mpi_is_root) write(*,*) 'Multi-Grid can not be used for time-accurate simulations for now!'
-        stop
+        ! Every rank reads the same input: they stop here together, with exit code 1
+        call ARES_mpi_stop_all ( 'Multi-Grid can not be used for time-accurate simulations for now' )
       else
         call Fix_Global_dt ( FUSS_simulation, ARES_simulation, hydra_time )
       endif
