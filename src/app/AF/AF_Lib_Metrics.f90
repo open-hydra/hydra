@@ -28,7 +28,8 @@
 !> wall lie at different distances from it, their differences also carry the normal gradient,
 !> large next to a wall, which would otherwise be read as a variation along the wall.
 !>
-!> The metric M follows diffusive-metric of FUSS (the only solver of hydra AF with the key):
+!> The metric M of each side follows diffusive-metric of its own solver (FUSS for the solid side, ARES for the fluid
+!> side): each side computes its half alone, so the two keys need not agree:
 !>  - mean: the cell metric (the inverse of the mean edges of the cell) and central differences
 !>    with the ghost cells along the wall. This is the former coupling metric.
 !>  - stencil: the metric of the same differences of the positions as those of the values,
@@ -37,7 +38,9 @@
 !>    stretched). Along the wall the differences stay inside the block, one-sided at the edges
 !>    of the block (the positions of the ghost cells of the other blocks are not known here);
 !>    an index direction with one cell, or the third one of a 2-D mesh, keeps the cell edge and
-!>    no difference. It is the wall metric of FUSS (Wall_Face_Metric, one-sided variant).
+!>    no difference. On the solid side it is the wall metric of FUSS (Wall_Face_Metric, one-sided variant), which
+!>    keeps the cell metric when the face has no tangential difference at all; the fluid side replaces the normal
+!>    column in that case too, as the wall metric of ARES (Wall_Face_Stencils).
 !>    On the fluid side the velocity and the turbulence variables, whose tangential differences
 !>    are zero at the wall, take the metric Mu whose tangential columns are the edges of the
 !>    cell projected on the plane of the face: their gradient is then normal to the wall,
@@ -47,7 +50,7 @@ module hydraAF_Lib_Metrics
 
   implicit none
   private
-  public :: Setup_Interface_Metric, Interface_Stencil
+  public :: Setup_Interface_Metric, Interface_Stencil, Interface_Stencil_ARES
   public :: FUSS_Wall_Half, ARES_Wall_Half
   public :: Compute_Modfm, Face_Index
 
@@ -62,16 +65,14 @@ contains
     implicit none
 
     if ( .not. mpi_is_root ) return
-    if ( Interface_Stencil() ) then
-      write(*,'(A,T35,A)') '   Coupled wall metric (103, 104)', 'stencil'
-    else
-      write(*,'(A,T35,A)') '   Coupled wall metric (103, 104)', 'mean'
-    end if
+    write(*,'(A,T35,A)') '   Coupled wall metric (103, 104)', &
+      'solid '//trim(merge('stencil','mean   ',Interface_Stencil()))//', fluid '// &
+      trim(merge('stencil','mean   ',Interface_Stencil_ARES()))
 
   end subroutine Setup_Interface_Metric
 
 
-  !> .true. when the coupled walls take the stencil metric: diffusive-metric = stencil in FUSS.
+  !> .true. when the solid side of the coupled walls takes the stencil metric: diffusive-metric = stencil in FUSS.
   logical function Interface_Stencil ()
     use FUSS_Config_Types_m, only: FUSS_obj_space_scheme => obj_space_scheme
     implicit none
@@ -79,6 +80,16 @@ contains
     Interface_Stencil = FUSS_obj_space_scheme % stencil_metric
 
   end function Interface_Stencil
+
+
+  !> .true. when the fluid side of the coupled walls takes the stencil metric: diffusive-metric = stencil in ARES.
+  logical function Interface_Stencil_ARES ()
+    use ARES_Config_Types_m, only: ARES_obj_space_scheme => obj_space_scheme
+    implicit none
+
+    Interface_Stencil_ARES = ARES_obj_space_scheme % stencil_metric
+
+  end function Interface_Stencil_ARES
 
 
   !> Half of the interface balance of face Fm of FUSS cell (Im,Jm,Km): A = 1/d, Teff and, if
@@ -127,7 +138,7 @@ contains
     enddo
 
     call Wall_Half_Core ( dir, Fm, stencil, blk % M(Im,Jm,Km) % c, blk % dir(dir) % f(fi,fj,fk) % N, &
-                          blk % T(Im,Jm,Km), has, dT, xc, xf, xt, A, Teff )
+                          blk % T(Im,Jm,Km), has, dT, xc, xf, xt, A, Teff, cell_if_none=.true. )
 
     ! Gradient of T in the plane of the face (104 only). Along the wall: with stencil the
     ! differences just taken (inside the block, one-sided at its edges); with mean those took
@@ -180,7 +191,7 @@ contains
     logical  :: stencil, has(3)
     real(R8) :: dT(3), xc(3), xf(3), xt(3,3), Tc, Tlo, Thi
 
-    stencil = Interface_Stencil()
+    stencil = Interface_Stencil_ARES()
     call Face_Index ( Fm, dir, Im, Jm, Km, fi, fj, fk )
     c   = [Im, Jm, Km]
     has = .false.
@@ -255,17 +266,20 @@ contains
   !> The part of FUSS_Wall_Half and ARES_Wall_Half that does not depend on the solver.
   !> M: cell metric (rows grad(xi_a)), N: unit normal of the face (growing index), Tc: cell
   !> temperature, has(d)/dT(d): tangential differences per index, xc/xf/xt: centre of the cell,
-  !> of the face and differences of the centres per index (stencil only).
-  subroutine Wall_Half_Core ( dir, Fm, stencil, M, N, Tc, has, dT, xc, xf, xt, A, Teff, Mu )
+  !> of the face and differences of the centres per index (stencil only). cell_if_none: a face with no tangential
+  !> difference keeps the cell metric (the wall metric of FUSS); without it the normal column is still the position
+  !> difference across the half cell (the wall metric of ARES).
+  subroutine Wall_Half_Core ( dir, Fm, stencil, M, N, Tc, has, dT, xc, xf, xt, A, Teff, Mu, cell_if_none )
     implicit none
     integer, intent(in)             :: dir, Fm
     logical, intent(in)             :: stencil, has(3)
     real(R8), intent(in)            :: M(3,3), N(3), Tc, dT(3), xc(3), xf(3), xt(3,3)
     real(R8), intent(out)           :: A, Teff
     real(R8), intent(out), optional :: Mu(3,3)
+    logical, intent(in), optional   :: cell_if_none
     ! Local
     integer  :: d, modfm2
-    logical  :: ok
+    logical  :: ok, keep
     real(R8) :: Ac(3,3), J(3,3), Mw(3,3), Minv(3,3), C
 
     modfm2 = 1 - 2*mod(Fm,2)
@@ -276,7 +290,9 @@ contains
     ! Metric of the temperature gradient
     Mw = M
     J  = Ac
-    if ( stencil ) then
+    keep = .false.
+    if ( present(cell_if_none) ) keep = cell_if_none .and. .not. any ( has )
+    if ( stencil .and. .not. keep ) then
       J(:,dir) = 2d0 * modfm2 * ( xf - xc )
       do d = 1, 3
         if ( d /= dir .and. has(d) ) J(:,d) = xt(:,d)
