@@ -6,17 +6,15 @@
 !> partitions), the primary-side rank needs data about the secondary-side
 !> cell (Is,Js,Ks) and its surrounding coupling stencil.
 !>
-!> Stencil layout (matches Tg(6) and Pg(1,6) in Advanced_Types_m):
-!>   indices 1..gc_       : normal-direction ghost cells (gc_=2 by default)
-!>   indices gc_+1..gc_+4 : 4 tangential corner cells
-!>   Total NSTENC = gc_+4 = 6 entries.
-!>
 !> Payloads bundled per BC entry:
 !>   - FUSS recv (data from ARES-side Bs):
-!>       Tg(1..NSTENC)        [NSTENC reals]
-!>       P(1:np, Is,Js,Ks)   [np reals, needed by FUSS wall-T routine]
+!>       Tg(1..gc_)           [gc_ reals: T of the cells across the face]
+!>       A, Teff              [2 reals: half of the interface balance of the ARES
+!>                             face, hydraAF_Lib_Metrics, computed by the ARES owner]
+!>       P(1:np, Is,Js,Ks)    [np reals, needed by FUSS wall-T routine]
 !>   - ARES recv (data from FUSS-side Bs):
-!>       Pg(1, 1..NSTENC)     [NSTENC reals]
+!>       Pg(1, 1..gc_)        [gc_ reals]
+!>       A, Teff              [2 reals, of the FUSS face, computed by the FUSS owner]
 !>       matID(Is,Js,Ks)      [1 real, needed by ARES wall-T routine]
 !>
 !> The schedule is built once per MG level (both solvers share BC ordering
@@ -52,34 +50,26 @@ module hydraAF_Mod_CouplingExchange
   public :: partner_of_FUSS_bc, partner_of_ARES_bc
   public :: is_FUSS_bc_local_local, is_ARES_bc_local_local
   public :: get_F_remote_P, get_M_remote_matID
-  public :: coupled_secondary_node_indices
-  public :: exchange_coupling_metric_nodes, free_coupling_metric_nodes
   public :: own103_FUSS, own103_ARES
-  public :: n_F_meta_entries, n_M_meta_entries
-  public :: get_F_meta_entry, get_M_meta_entry
+  public :: set_partner_half_FUSS, set_partner_half_ARES
+  public :: get_partner_half_FUSS, get_partner_half_ARES
   public :: set_k_wall_ARES, get_k_wall_ARES, get_k_wall_FUSS, sync_k_fluid_wall
 
-  ! Coupling stencil size: gc_ ghost cells (normal) + 4 corner cells (tangential)
-  ! Matches Tg(6) and Pg(1,6) in Advanced_Types_m for the default gc_=2.
-  integer, parameter, public :: NSTENC = 6
+  ! Reals of the half of the interface balance a partner face sends: A, Teff
+  ! (hydraAF_Lib_Metrics). The in-plane gradient is not needed on a conforming face.
+  integer, parameter :: NHALF103 = 2
 
   ! MPI message tags (distinct per direction + quantity)
   integer, parameter :: TAG_TG_P    = 7001
   integer, parameter :: TAG_PG_MID  = 7002
   integer, parameter :: TAG_RFLUX_F = 7003  ! reverse flux into ARES%ext_flux(nh)
   integer, parameter :: TAG_RFLUX_M = 7004  ! reverse flux into FUSS%ext_flux
-  integer, parameter :: TAG_META_F   = 7005  ! secondary node coords, ARES -> FUSS
-  integer, parameter :: TAG_META_M   = 7006  ! secondary node coords, FUSS -> ARES
   integer, parameter :: TAG_K_FLUID  = 7007  ! k_l+k_t at the coupled wall, ARES -> FUSS
 
   !> Flags "the fluid side has not produced a wall conductivity yet": each wall
   !> routine then falls back to its own local estimate. Negative, so it can never
   !> be mistaken for a physical conductivity.
   real(R8), parameter, public :: K_WALL_UNSET = -1.0d0
-
-  !> Node coordinates a primary rank needs from the secondary block to build the
-  !> coupling metric tensor: 4 nodes per ghost level, 3 components each.
-  integer, parameter :: NMETA_NODE = 4
 
 
   !> Entry on the primary-side ("recv") rank: local BC needing remote stencil data.
@@ -176,12 +166,14 @@ module hydraAF_Mod_CouplingExchange
     type(dir_t) :: RF_ARES_recv   !< FUSS-owner receives (applied to FUSS partner ext_flux)
     integer, allocatable :: RF_ARES_recv_fussbc(:) !< maps recv slot -> FUSS bc idx
 
-    ! One-off exchange of the secondary-block node coordinates that
-    ! BC_Coupled_Metrics_* needs to build Mg. Same rank pairing as the forward
-    ! directions, so the groups are copied from them. Allocated during setup
-    ! and released again as soon as the metrics have been built.
-    type(dir_t) :: F_meta_recv, F_meta_send
-    type(dir_t) :: M_meta_recv, M_meta_send
+    ! Half of the interface balance of the PARTNER face, (A, Teff) of
+    ! hydraAF_Lib_Metrics, computed in the partner's own index frame with its own
+    ! metric by the rank that owns the partner cell: in place for local-local
+    ! entries (Fill_Coupled_Ghost_Cell), through exchange_coupling_Tg_P /
+    ! exchange_coupling_Pg_matID otherwise. half_FUSSbc(:,i) is the ARES face
+    ! coupled to FUSS bc i, half_ARESbc(:,i) the FUSS face coupled to ARES bc i.
+    real(R8), allocatable :: half_FUSSbc(:,:)   !< (NHALF103, FUSS%nbound)
+    real(R8), allocatable :: half_ARESbc(:,:)   !< (NHALF103, ARES%nbound)
 
     ! TOTAL conductivity OF THE FLUID on the coupled wall FACE, k_l(p,T_wall) + k_t, as
     ! the ARES-side wall routine evaluates it for its own heat flux. The solid has no
@@ -322,89 +314,6 @@ contains
 
 
   !---------------------------------------------------------------------------
-  !> Indices, inside the SECONDARY block, of the four nodes that feed ghost
-  !> level g of a type(103) coupling BC.
-  !>
-  !> They depend only on secondary-side data (Is,Js,Ks,Fs and the four
-  !> orientation flags d11s..d22s) and never on the primary block, which is what
-  !> lets the rank owning the secondary block pack these coordinates for a
-  !> primary block it knows nothing about.  BC_Coupled_Metrics_* and the
-  !> metric-node packers all call this, so they cannot drift apart.
-  !>
-  !> Node order: 1 = the connected node itself, 2 = its (i1-1,i2) neighbour,
-  !> 3 = (i1,i2-1), 4 = (i1-1,i2-1).
-  pure subroutine coupled_secondary_node_indices(g, Is, Js, Ks, Fs, &
-                                                 d11s, d12s, d21s, d22s, idx)
-    implicit none
-    integer, intent(in)  :: g, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
-    integer, intent(out) :: idx(3,NMETA_NODE)
-    ! Local
-    integer :: Is1, Js1, Ks1, II, JJ, KK
-    integer :: guides(6,3), guides2(6,3)
-
-    guides(1,1)= 0 ; guides(1,2)= 0 ; guides(1,3)= 0 ; guides(2,1)=-1 ; guides(2,2)= 0 ; guides(2,3)= 0
-    guides(3,1)= 0 ; guides(3,2)= 0 ; guides(3,3)= 0 ; guides(4,1)= 0 ; guides(4,2)=-1 ; guides(4,3)= 0
-    guides(5,1)= 0 ; guides(5,2)= 0 ; guides(5,3)= 0 ; guides(6,1)= 0 ; guides(6,2)= 0 ; guides(6,3)=-1
-
-    guides2(1,1)= 1 ; guides2(1,2)= 0 ; guides2(1,3)= 0 ; guides2(2,1)=-2 ; guides2(2,2)= 0 ; guides2(2,3)= 0
-    guides2(3,1)= 0 ; guides2(3,2)= 1 ; guides2(3,3)= 0 ; guides2(4,1)= 0 ; guides2(4,2)=-2 ; guides2(4,3)= 0
-    guides2(5,1)= 0 ; guides2(5,2)= 0 ; guides2(5,3)= 1 ; guides2(6,1)= 0 ; guides2(6,2)= 0 ; guides2(6,3)=-2
-
-    ! connected cell node index
-    Is1 = Is + (gc_-g)*guides(Fs,1) + (g-1)*guides2(Fs,1)
-    Js1 = Js + (gc_-g)*guides(Fs,2) + (g-1)*guides2(Fs,2)
-    Ks1 = Ks + (gc_-g)*guides(Fs,3) + (g-1)*guides2(Fs,3)
-
-    select case(Fs)
-      case(1:2) ! i-faces
-        II = Is1
-        JJ = (2*Js1+d11s+d21s)/2
-        KK = (2*Ks1+d12s+d22s)/2
-      case(3:4) ! j-faces
-        II = (2*Is1+d11s+d21s)/2
-        JJ = Js1
-        KK = (2*Ks1+d12s+d22s)/2
-      case default ! k-faces
-        II = (2*Is1+d11s+d21s)/2
-        JJ = (2*Js1+d12s+d22s)/2
-        KK = Ks1
-    end select
-    idx(1,1) = II ; idx(2,1) = JJ ; idx(3,1) = KK
-
-    ! node i1-1,i2
-    select case(Fs)
-      case(1:2)
-        idx(1,2) = II            ; idx(2,2) = JJ-d11s       ; idx(3,2) = KK-d12s
-      case(3:4)
-        idx(1,2) = II-d11s       ; idx(2,2) = JJ            ; idx(3,2) = KK-d12s
-      case default
-        idx(1,2) = II-d11s       ; idx(2,2) = JJ-d12s       ; idx(3,2) = KK
-    end select
-
-    ! node i1,i2-1
-    select case(Fs)
-      case(1:2)
-        idx(1,3) = II            ; idx(2,3) = JJ-d21s       ; idx(3,3) = KK-d22s
-      case(3:4)
-        idx(1,3) = II-d21s       ; idx(2,3) = JJ            ; idx(3,3) = KK-d22s
-      case default
-        idx(1,3) = II-d21s       ; idx(2,3) = JJ-d22s       ; idx(3,3) = KK
-    end select
-
-    ! node i1-1,i2-1
-    select case(Fs)
-      case(1:2)
-        idx(1,4) = II            ; idx(2,4) = JJ-d11s-d21s  ; idx(3,4) = KK-d12s-d22s
-      case(3:4)
-        idx(1,4) = II-d11s-d21s  ; idx(2,4) = JJ            ; idx(3,4) = KK-d12s-d22s
-      case default
-        idx(1,4) = II-d11s-d21s  ; idx(2,4) = JJ-d12s-d22s  ; idx(3,4) = KK
-    end select
-
-  end subroutine coupled_secondary_node_indices
-
-
-  !---------------------------------------------------------------------------
   !> Type-103 interface entries whose solid block belongs to this rank.
   integer function count_owned_interface(FUSS_domain) result(n)
     implicit none
@@ -465,6 +374,10 @@ contains
     allocate(L%k_fluid_wall_ARESbc(ARES_domain%nbound)); L%k_fluid_wall_ARESbc = K_WALL_UNSET
     allocate(L%k_fluid_wall_FUSSbc(FUSS_domain%nbound)); L%k_fluid_wall_FUSSbc = K_WALL_UNSET
 
+    ! Partner halves of the interface balance (needed in serial too)
+    allocate(L%half_FUSSbc(NHALF103, max(FUSS_domain%nbound,1))); L%half_FUSSbc = 0.0d0
+    allocate(L%half_ARESbc(NHALF103, max(ARES_domain%nbound,1))); L%half_ARESbc = 0.0d0
+
     ! Built before the serial/single-rank early returns below: the coupling loops
     ! iterate these lists in every build, MPI or not.
     call build_own103_lists(FUSS_domain, ARES_domain, L)
@@ -513,10 +426,10 @@ contains
     L%M_recv%n_entries = n_M_recv
     L%M_send%n_entries = n_M_send
 
-    L%F_recv%payload_per_entry = NSTENC + np
-    L%F_send%payload_per_entry = NSTENC + np
-    L%M_recv%payload_per_entry = NSTENC + 1
-    L%M_send%payload_per_entry = NSTENC + 1
+    L%F_recv%payload_per_entry = gc_ + NHALF103 + np
+    L%F_send%payload_per_entry = gc_ + NHALF103 + np
+    L%M_recv%payload_per_entry = gc_ + NHALF103 + 1
+    L%M_send%payload_per_entry = gc_ + NHALF103 + 1
 
     allocate(L%F_recv_ent(max(n_F_recv,1)))
     allocate(L%F_send_ent(max(n_F_send,1)))
@@ -758,9 +671,10 @@ contains
 
 
   !---------------------------------------------------------------------------
-  !> Exchange Tg(6) + P(1:np,Is,Js,Ks) for every FUSS-primary BC with remote Bs.
-  !> ARES-owner of Bs packs and sends; FUSS-owner of Bm receives and writes into
-  !> bc(i)%Tg and L%F_remote_P(:, bc_idx).  Must be called BEFORE the local
+  !> Exchange Tg(1:gc_) + the half (A, Teff) of the ARES face + P(1:np,Is,Js,Ks)
+  !> for every FUSS-primary BC with remote Bs. ARES-owner of Bs packs and sends;
+  !> FUSS-owner of Bm receives and writes into bc(i)%Tg, L%half_FUSSbc(:, bc_idx)
+  !> and L%F_remote_P(:, bc_idx).  Must be called BEFORE the local
   !> Fill_Coupled_Ghost_Cell loop, which is then guarded to skip remote entries.
   subroutine exchange_coupling_Tg_P(FUSS_domain, ARES_domain, level)
     use ARES_Global_m, only: np
@@ -784,13 +698,12 @@ contains
     ! Post all receives first
     call post_recvs(L%F_recv, TAG_TG_P)
 
-    ! Pack send buffer: loop over local F_send entries, compute Tg from ARES block,
-    ! append P(1:np, Is,Js,Ks).
+    ! Pack send buffer: loop over local F_send entries, compute Tg and the half of
+    ! the balance from the ARES block, append P(1:np, Is,Js,Ks).
     do k = 1, L%F_send%n_entries
       associate (e => L%F_send_ent(k))
         call pack_Tg_P_entry(ARES_domain%blk(e%local_bs), &
                              e%is, e%js, e%ks, e%fs, &
-                             e%d11, e%d12, e%d21, e%d22, &
                              L%F_send%buf((k-1)*payload + 1 : k*payload))
       end associate
     end do
@@ -798,15 +711,16 @@ contains
     call post_sends(L%F_send, TAG_TG_P)
     call wait_all(L%F_recv)
 
-    ! Unpack recv buffer into FUSS bc(i)%Tg and L%F_remote_P
+    ! Unpack recv buffer into FUSS bc(i)%Tg, L%half_FUSSbc and L%F_remote_P
     payload = L%F_recv%payload_per_entry
     do k = 1, L%F_recv%n_entries
       i = L%F_recv_ent(k)%bc_idx
       off = (k-1)*payload
-      do g = 1, NSTENC
+      do g = 1, gc_
         FUSS_domain%bc(i)%Tg(g) = L%F_recv%buf(off + g)
       end do
-      L%F_remote_P(1:np, i) = L%F_recv%buf(off + NSTENC + 1 : off + NSTENC + np)
+      L%half_FUSSbc(:, i)   = L%F_recv%buf(off + gc_ + 1 : off + gc_ + NHALF103)
+      L%F_remote_P(1:np, i) = L%F_recv%buf(off + gc_ + NHALF103 + 1 : off + gc_ + NHALF103 + np)
     end do
 
     call wait_all(L%F_send)
@@ -816,22 +730,22 @@ contains
 
 #ifdef USE_MPI
   !---------------------------------------------------------------------------
-  !> Pack one F_send entry: [Tg(1..6), P(1:np, Is,Js,Ks)].
-  !> Uses ARES primitive field to compute Tg via the same formulas as
-  !> Ghost_Coupling_FUSS + Fill_BC_Ghost_Coupling_FUSS (local-only access).
-  subroutine pack_Tg_P_entry(blks, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, buf_out)
+  !> Pack one F_send entry: [Tg(1..gc_), A, Teff, P(1:np, Is,Js,Ks)].
+  !> Tg as Ghost_Coupling_FUSS; (A, Teff) of face Fs of the ARES cell (Is,Js,Ks) as
+  !> Fill_Coupled_Ghost_Cell computes them for a local partner (local-only access).
+  subroutine pack_Tg_P_entry(blks, Is, Js, Ks, Fs, buf_out)
     use FLINT_Lib_Thermodynamic
     use ARES_Global_m, only: np, nh
     use hydra_Parameters_m, only: guide_
     use hydra_Global_m, only: gc_
     use ARES_Advanced_Types_m, only: ARES_block_type
+    use hydraAF_Lib_Metrics, only: ARES_Wall_Half
     implicit none
     type(ARES_block_type), intent(in) :: blks
-    integer, intent(in)  :: Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
+    integer, intent(in)  :: Is, Js, Ks, Fs
     real(R8), intent(out) :: buf_out(:)
     ! Local
     integer :: g, Is_, Js_, Ks_
-    integer :: i1,j1,k1,i2,j2,k2,i3,j3,k3,i4,j4,k4
 
     ! Normal-direction ghost cells (indices 1..gc_ of Tg)
     do g = 1, gc_
@@ -841,38 +755,18 @@ contains
       buf_out(g) = ph2vars( blks%P(np,Is_,Js_,Ks_), blks%P(nh,Is_,Js_,Ks_), T_tab )
     end do
 
-    ! Tangential corner cells (indices gc_+1..gc_+4)
-    select case (Fs)
-      case (1:2)
-        i1=Is;       j1=Js-d11s;  k1=Ks-d12s
-        i2=Is;       j2=Js+d11s;  k2=Ks+d12s
-        i3=Is;       j3=Js-d21s;  k3=Ks-d22s
-        i4=Is;       j4=Js+d21s;  k4=Ks+d22s
-      case (3:4)
-        i1=Is-d11s;  j1=Js;       k1=Ks-d12s
-        i2=Is+d11s;  j2=Js;       k2=Ks+d12s
-        i3=Is-d21s;  j3=Js;       k3=Ks-d22s
-        i4=Is+d21s;  j4=Js;       k4=Ks+d22s
-      case (5:6)
-        i1=Is-d11s;  j1=Js-d12s;  k1=Ks
-        i2=Is+d11s;  j2=Js+d12s;  k2=Ks
-        i3=Is-d21s;  j3=Js-d22s;  k3=Ks
-        i4=Is+d21s;  j4=Js+d22s;  k4=Ks
-    end select
-
-    buf_out(gc_+1) = ph2vars( blks%P(np,i1,j1,k1), blks%P(nh,i1,j1,k1), T_tab )
-    buf_out(gc_+2) = ph2vars( blks%P(np,i2,j2,k2), blks%P(nh,i2,j2,k2), T_tab )
-    buf_out(gc_+3) = ph2vars( blks%P(np,i3,j3,k3), blks%P(nh,i3,j3,k3), T_tab )
-    buf_out(gc_+4) = ph2vars( blks%P(np,i4,j4,k4), blks%P(nh,i4,j4,k4), T_tab )
+    ! Half of the interface balance of the ARES face
+    call ARES_Wall_Half ( blks, Is, Js, Ks, Fs, buf_out(gc_+1), buf_out(gc_+2) )
 
     ! Trailing np reals: primitive composition at the BC interior cell (Is,Js,Ks)
-    buf_out(NSTENC+1 : NSTENC+np) = blks%P(1:np, Is, Js, Ks)
+    buf_out(gc_+NHALF103+1 : gc_+NHALF103+np) = blks%P(1:np, Is, Js, Ks)
   end subroutine pack_Tg_P_entry
 #endif
 
 
   !---------------------------------------------------------------------------
-  !> Exchange Pg(1,1..6) + matID(Is,Js,Ks) for every ARES-primary BC with remote Bs.
+  !> Exchange Pg(1,1..gc_) + the half (A, Teff) of the FUSS face + matID(Is,Js,Ks)
+  !> for every ARES-primary BC with remote Bs.
   subroutine exchange_coupling_Pg_matID(FUSS_domain, ARES_domain, level)
     implicit none
     type(FUSS_domain_type), intent(in)    :: FUSS_domain
@@ -896,7 +790,6 @@ contains
       associate (e => L%M_send_ent(k))
         call pack_Pg_matID_entry(FUSS_domain%blk(e%local_bs), &
                                  e%is, e%js, e%ks, e%fs, &
-                                 e%d11, e%d12, e%d21, e%d22, &
                                  L%M_send%buf((k-1)*payload + 1 : k*payload))
       end associate
     end do
@@ -908,10 +801,11 @@ contains
     do k = 1, L%M_recv%n_entries
       i = L%M_recv_ent(k)%bc_idx
       off = (k-1)*payload
-      do g = 1, NSTENC
+      do g = 1, gc_
         ARES_domain%bc(i)%Pg(1,g) = L%M_recv%buf(off + g)
       end do
-      L%M_remote_matID(i) = L%M_recv%buf(off + NSTENC + 1)
+      L%half_ARESbc(:, i) = L%M_recv%buf(off + gc_ + 1 : off + gc_ + NHALF103)
+      L%M_remote_matID(i) = L%M_recv%buf(off + gc_ + NHALF103 + 1)
     end do
 
     call wait_all(L%M_send)
@@ -921,17 +815,19 @@ contains
 
 #ifdef USE_MPI
   !---------------------------------------------------------------------------
-  subroutine pack_Pg_matID_entry(blks, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, buf_out)
+  !> Pack one M_send entry: [Pg(1,1..gc_), A, Teff, matID(Is,Js,Ks)], the FUSS
+  !> counterpart of pack_Tg_P_entry.
+  subroutine pack_Pg_matID_entry(blks, Is, Js, Ks, Fs, buf_out)
     use hydra_Parameters_m, only: guide_
     use hydra_Global_m, only: gc_
     use FUSS_Advanced_Types_m, only: FUSS_block_type
+    use hydraAF_Lib_Metrics, only: FUSS_Wall_Half
     implicit none
     type(FUSS_block_type), intent(in) :: blks
-    integer, intent(in) :: Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
+    integer, intent(in) :: Is, Js, Ks, Fs
     real(R8), intent(out) :: buf_out(:)
     ! Local
     integer :: g, Is_, Js_, Ks_
-    integer :: i1,j1,k1,i2,j2,k2,i3,j3,k3,i4,j4,k4
 
     do g = 1, gc_
       Is_ = Is + guide_(Fs,1)*(g-1)
@@ -940,207 +836,70 @@ contains
       buf_out(g) = blks%T(Is_,Js_,Ks_)
     end do
 
-    select case (Fs)
-      case (1:2)
-        i1=Is;       j1=Js-d11s;  k1=Ks-d12s
-        i2=Is;       j2=Js+d11s;  k2=Ks+d12s
-        i3=Is;       j3=Js-d21s;  k3=Ks-d22s
-        i4=Is;       j4=Js+d21s;  k4=Ks+d22s
-      case (3:4)
-        i1=Is-d11s;  j1=Js;       k1=Ks-d12s
-        i2=Is+d11s;  j2=Js;       k2=Ks+d12s
-        i3=Is-d21s;  j3=Js;       k3=Ks-d22s
-        i4=Is+d21s;  j4=Js;       k4=Ks+d22s
-      case (5:6)
-        i1=Is-d11s;  j1=Js-d12s;  k1=Ks
-        i2=Is+d11s;  j2=Js+d12s;  k2=Ks
-        i3=Is-d21s;  j3=Js-d22s;  k3=Ks
-        i4=Is+d21s;  j4=Js+d22s;  k4=Ks
-    end select
+    ! Half of the interface balance of the FUSS face
+    call FUSS_Wall_Half ( blks, Is, Js, Ks, Fs, buf_out(gc_+1), buf_out(gc_+2) )
 
-    buf_out(gc_+1) = blks%T(i1,j1,k1)
-    buf_out(gc_+2) = blks%T(i2,j2,k2)
-    buf_out(gc_+3) = blks%T(i3,j3,k3)
-    buf_out(gc_+4) = blks%T(i4,j4,k4)
-
-    buf_out(NSTENC+1) = blks%matID(Is,Js,Ks)
+    buf_out(gc_+NHALF103+1) = blks%matID(Is,Js,Ks)
   end subroutine pack_Pg_matID_entry
 #endif
 
 
   !---------------------------------------------------------------------------
-  !> One-off exchange of the secondary-block node coordinates needed to build
-  !> the coupling metric tensor Mg of BCs whose two blocks live on different
-  !> ranks.
-  !>
-  !> Setup_Coupled_Metrics can only build Mg for entries whose secondary block
-  !> is local, because it reads that block's node coordinates directly. Without
-  !> this exchange the remaining entries keep Mg = 0, and the wall-temperature
-  !> routines then reduce to Tint = Num_loc/Den_loc: the secondary side drops
-  !> out of the interface temperature altogether, silently and with no error.
-  !>
-  !> Call once per MG level from Setup_Coupled_Metrics and release the buffers
-  !> with free_coupling_metric_nodes as soon as the metrics have been built.
-  subroutine exchange_coupling_metric_nodes(FUSS_domain, ARES_domain, level)
+  !> Store / read the half (A, Teff) of the interface balance of the partner face of
+  !> FUSS bc i (the ARES face) and of ARES bc i (the FUSS face). The setters are called
+  !> from OpenMP loops in which every entry is written by one thread only. A missing
+  !> entry reads as A = 0: the partner then drops out of Tint (one-sided wall).
+  subroutine set_partner_half_FUSS(level, i, A, Teff)
     implicit none
-    type(FUSS_domain_type), intent(in) :: FUSS_domain
-    type(ARES_domain_type), intent(in) :: ARES_domain
-    integer, intent(in) :: level
-#ifdef USE_MPI
-    type(level_sched_t), pointer :: L
-    integer :: k, payload
-
-    if (mpi_size_ <= 1) return
+    integer,  intent(in) :: level, i
+    real(R8), intent(in) :: A, Teff
     if (.not. allocated(levels)) return
     if (level < 1 .or. level > size(levels)) return
-    L => levels(level)
-    if (.not. L%built) return
+    if (.not. allocated(levels(level)%half_FUSSbc)) return
+    if (i < 1 .or. i > size(levels(level)%half_FUSSbc, 2)) return
+    levels(level)%half_FUSSbc(1, i) = A
+    levels(level)%half_FUSSbc(2, i) = Teff
+  end subroutine set_partner_half_FUSS
 
-    payload = 3 * NMETA_NODE * gc_
-
-    L%F_meta_recv%n_entries = L%F_recv%n_entries
-    L%F_meta_send%n_entries = L%F_send%n_entries
-    L%M_meta_recv%n_entries = L%M_recv%n_entries
-    L%M_meta_send%n_entries = L%M_send%n_entries
-    L%F_meta_recv%payload_per_entry = payload
-    L%F_meta_send%payload_per_entry = payload
-    L%M_meta_recv%payload_per_entry = payload
-    L%M_meta_send%payload_per_entry = payload
-    call copy_groups(L%F_recv, L%F_meta_recv)
-    call copy_groups(L%F_send, L%F_meta_send)
-    call copy_groups(L%M_recv, L%M_meta_recv)
-    call copy_groups(L%M_send, L%M_meta_send)
-    call alloc_dir_buf(L%F_meta_recv)
-    call alloc_dir_buf(L%F_meta_send)
-    call alloc_dir_buf(L%M_meta_recv)
-    call alloc_dir_buf(L%M_meta_send)
-
-    ! FUSS-primary entries: the ARES owner of Bs packs its node coordinates.
-    if (L%F_meta_recv%n_entries > 0 .or. L%F_meta_send%n_entries > 0) then
-      call post_recvs(L%F_meta_recv, TAG_META_F)
-      do k = 1, L%F_meta_send%n_entries
-        associate (e => L%F_send_ent(k))
-          call pack_metric_nodes_ARES(ARES_domain%blk(e%local_bs), &
-                                      e%is, e%js, e%ks, e%fs, &
-                                      e%d11, e%d12, e%d21, e%d22, &
-                                      L%F_meta_send%buf((k-1)*payload + 1 : k*payload))
-        end associate
-      end do
-      call post_sends(L%F_meta_send, TAG_META_F)
-      call wait_all(L%F_meta_recv)
-      call wait_all(L%F_meta_send)
-    end if
-
-    ! ARES-primary entries: the FUSS owner of Bs packs its node coordinates.
-    if (L%M_meta_recv%n_entries > 0 .or. L%M_meta_send%n_entries > 0) then
-      call post_recvs(L%M_meta_recv, TAG_META_M)
-      do k = 1, L%M_meta_send%n_entries
-        associate (e => L%M_send_ent(k))
-          call pack_metric_nodes_FUSS(FUSS_domain%blk(e%local_bs), &
-                                      e%is, e%js, e%ks, e%fs, &
-                                      e%d11, e%d12, e%d21, e%d22, &
-                                      L%M_meta_send%buf((k-1)*payload + 1 : k*payload))
-        end associate
-      end do
-      call post_sends(L%M_meta_send, TAG_META_M)
-      call wait_all(L%M_meta_recv)
-      call wait_all(L%M_meta_send)
-    end if
-#endif
-    ! Dummy usage silences unused-arg warnings in serial builds
-    if (.false.) then
-      if (FUSS_domain%nbound < 0) return
-      if (ARES_domain%nbound < 0) return
-      if (level < 0) return
-    end if
-  end subroutine exchange_coupling_metric_nodes
-
-
-  !---------------------------------------------------------------------------
-  !> Release the metric-node buffers once Mg has been built.
-  subroutine free_coupling_metric_nodes(level)
+  subroutine set_partner_half_ARES(level, i, A, Teff)
     implicit none
-    integer, intent(in) :: level
+    integer,  intent(in) :: level, i
+    real(R8), intent(in) :: A, Teff
     if (.not. allocated(levels)) return
     if (level < 1 .or. level > size(levels)) return
-    call reset_dir(levels(level)%F_meta_recv)
-    call reset_dir(levels(level)%F_meta_send)
-    call reset_dir(levels(level)%M_meta_recv)
-    call reset_dir(levels(level)%M_meta_send)
-  end subroutine free_coupling_metric_nodes
+    if (.not. allocated(levels(level)%half_ARESbc)) return
+    if (i < 1 .or. i > size(levels(level)%half_ARESbc, 2)) return
+    levels(level)%half_ARESbc(1, i) = A
+    levels(level)%half_ARESbc(2, i) = Teff
+  end subroutine set_partner_half_ARES
 
-
-  !---------------------------------------------------------------------------
-  !> Number of FUSS-primary / ARES-primary BCs on this rank whose secondary node
-  !> coordinates arrived over MPI. Zero in serial, where every BC is local-local.
-  integer function n_F_meta_entries(level) result(n)
+  pure subroutine get_partner_half_FUSS(level, i, A, Teff)
     implicit none
-    integer, intent(in) :: level
-    n = 0
+    integer,  intent(in)  :: level, i
+    real(R8), intent(out) :: A, Teff
+    A = 0.0d0
+    Teff = 0.0d0
     if (.not. allocated(levels)) return
     if (level < 1 .or. level > size(levels)) return
-    if (.not. levels(level)%built) return
-    n = levels(level)%F_meta_recv%n_entries
-  end function n_F_meta_entries
+    if (.not. allocated(levels(level)%half_FUSSbc)) return
+    if (i < 1 .or. i > size(levels(level)%half_FUSSbc, 2)) return
+    A    = levels(level)%half_FUSSbc(1, i)
+    Teff = levels(level)%half_FUSSbc(2, i)
+  end subroutine get_partner_half_FUSS
 
-  integer function n_M_meta_entries(level) result(n)
+  pure subroutine get_partner_half_ARES(level, i, A, Teff)
     implicit none
-    integer, intent(in) :: level
-    n = 0
+    integer,  intent(in)  :: level, i
+    real(R8), intent(out) :: A, Teff
+    A = 0.0d0
+    Teff = 0.0d0
     if (.not. allocated(levels)) return
     if (level < 1 .or. level > size(levels)) return
-    if (.not. levels(level)%built) return
-    n = levels(level)%M_meta_recv%n_entries
-  end function n_M_meta_entries
-
-
-  !---------------------------------------------------------------------------
-  !> Entry k of those lists: the local BC index it belongs to, and the received
-  !> node coordinates as snode(3, NMETA_NODE, gc_), laid out exactly as
-  !> BC_Coupled_Metrics_* expects them.
-  subroutine get_F_meta_entry(level, k, bc_idx, snode)
-    implicit none
-    integer,  intent(in)  :: level, k
-    integer,  intent(out) :: bc_idx
-    real(R8), intent(out) :: snode(:,:,:)
-    integer :: g, n, off, payload
-
-    bc_idx = 0
-    snode  = 0.0d0
-    if (k < 1 .or. k > n_F_meta_entries(level)) return
-#ifdef USE_MPI
-    bc_idx  = levels(level)%F_recv_ent(k)%bc_idx
-    payload = levels(level)%F_meta_recv%payload_per_entry
-    do g = 1, gc_
-      do n = 1, NMETA_NODE
-        off = (k-1)*payload + ((g-1)*NMETA_NODE + (n-1))*3
-        snode(1:3, n, g) = levels(level)%F_meta_recv%buf(off+1:off+3)
-      end do
-    end do
-#endif
-  end subroutine get_F_meta_entry
-
-  subroutine get_M_meta_entry(level, k, bc_idx, snode)
-    implicit none
-    integer,  intent(in)  :: level, k
-    integer,  intent(out) :: bc_idx
-    real(R8), intent(out) :: snode(:,:,:)
-    integer :: g, n, off, payload
-
-    bc_idx = 0
-    snode  = 0.0d0
-    if (k < 1 .or. k > n_M_meta_entries(level)) return
-#ifdef USE_MPI
-    bc_idx  = levels(level)%M_recv_ent(k)%bc_idx
-    payload = levels(level)%M_meta_recv%payload_per_entry
-    do g = 1, gc_
-      do n = 1, NMETA_NODE
-        off = (k-1)*payload + ((g-1)*NMETA_NODE + (n-1))*3
-        snode(1:3, n, g) = levels(level)%M_meta_recv%buf(off+1:off+3)
-      end do
-    end do
-#endif
-  end subroutine get_M_meta_entry
+    if (.not. allocated(levels(level)%half_ARESbc)) return
+    if (i < 1 .or. i > size(levels(level)%half_ARESbc, 2)) return
+    A    = levels(level)%half_ARESbc(1, i)
+    Teff = levels(level)%half_ARESbc(2, i)
+  end subroutine get_partner_half_ARES
 
 
   !---------------------------------------------------------------------------
@@ -1251,47 +1010,6 @@ contains
     call wait_all(L%RF_ARES_send)
 #endif
   end subroutine sync_k_fluid_wall
-
-
-#ifdef USE_MPI
-  !---------------------------------------------------------------------------
-  !> Pack the gc_ * NMETA_NODE secondary node coordinates of one entry.
-  subroutine pack_metric_nodes_ARES(blks, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, buf_out)
-    use ARES_Advanced_Types_m, only: ARES_block_type
-    implicit none
-    type(ARES_block_type), intent(in) :: blks
-    integer,  intent(in)  :: Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
-    real(R8), intent(out) :: buf_out(:)
-    ! Local
-    integer :: g, n, off, idx(3,NMETA_NODE)
-
-    do g = 1, gc_
-      call coupled_secondary_node_indices(g, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, idx)
-      do n = 1, NMETA_NODE
-        off = ((g-1)*NMETA_NODE + (n-1)) * 3
-        buf_out(off+1:off+3) = blks%node(idx(1,n), idx(2,n), idx(3,n))%c
-      end do
-    end do
-  end subroutine pack_metric_nodes_ARES
-
-  subroutine pack_metric_nodes_FUSS(blks, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, buf_out)
-    use FUSS_Advanced_Types_m, only: FUSS_block_type
-    implicit none
-    type(FUSS_block_type), intent(in) :: blks
-    integer,  intent(in)  :: Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
-    real(R8), intent(out) :: buf_out(:)
-    ! Local
-    integer :: g, n, off, idx(3,NMETA_NODE)
-
-    do g = 1, gc_
-      call coupled_secondary_node_indices(g, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, idx)
-      do n = 1, NMETA_NODE
-        off = ((g-1)*NMETA_NODE + (n-1)) * 3
-        buf_out(off+1:off+3) = blks%node(idx(1,n), idx(2,n), idx(3,n))%c
-      end do
-    end do
-  end subroutine pack_metric_nodes_FUSS
-#endif
 
 
   !---------------------------------------------------------------------------
@@ -1484,6 +1202,8 @@ contains
     if (allocated(L%rflux_A)) deallocate(L%rflux_A)
     if (allocated(L%k_fluid_wall_ARESbc)) deallocate(L%k_fluid_wall_ARESbc)
     if (allocated(L%k_fluid_wall_FUSSbc)) deallocate(L%k_fluid_wall_FUSSbc)
+    if (allocated(L%half_FUSSbc)) deallocate(L%half_FUSSbc)
+    if (allocated(L%half_ARESbc)) deallocate(L%half_ARESbc)
     L%n_own103_F = 0
     L%n_own103_A = 0
     call reset_dir(L%F_recv)
@@ -1494,10 +1214,6 @@ contains
     call reset_dir(L%RF_FUSS_recv)
     call reset_dir(L%RF_ARES_send)
     call reset_dir(L%RF_ARES_recv)
-    call reset_dir(L%F_meta_recv)
-    call reset_dir(L%F_meta_send)
-    call reset_dir(L%M_meta_recv)
-    call reset_dir(L%M_meta_send)
     L%built = .false.
   end subroutine reset_level
 

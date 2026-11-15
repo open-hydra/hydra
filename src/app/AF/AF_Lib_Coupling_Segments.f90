@@ -12,7 +12,16 @@
 !>  - as in 103, both sides build the interface temperature with the same fluid
 !>    wall conductivity k_l+k_t, the one the ARES routine evaluated on the segment
 !>    at the previous call (kS, one per segment).
-!> On conforming faces there is one segment per face and the scheme is 103.
+!> Metric: each side enters the interface temperature through its half of the
+!> balance (A = 1/d, Teff, hydraAF_Lib_Metrics), computed in its own index frame,
+!> with its own metric and tangential neighbours, by the rank that owns the cell,
+!> and sent to the other side with the partner state; the orientation of the two
+!> meshes never enters. Both Teff are then moved from their face centre to the
+!> centroid of the segment with the gradient of the side in the plane of its face,
+!> so that each segment couples the two cells at the same point of the wall.
+!> On conforming faces there is one segment per face and the scheme is 103, at the
+!> centroid of the face instead of at the mean of its nodes: the same point when the
+!> face is a parallelogram, a shift of second order in the face size otherwise.
 !>
 !> MPI: every rank builds the same, whole segment list, from the face geometry
 !> summed over the ranks, and evaluates only the segments of the faces whose
@@ -21,16 +30,11 @@
 !> (Update_Partners) and the two flux estimates, with kS, (Exchange_Estimates)
 !> cross between the two owner ranks. With both faces on one rank the partner
 !> cell is read in place, as in serial.
-!>
-!> Still to come:
-!>  - partner metric: only the normal distance of the partner cell centre is
-!>    used, exact when the mesh is orthogonal at the interface; the partner
-!>    tangential terms are dropped. The full metric, oriented as
-!>    Setup_Coupled_Metrics does for 103, is the next step.
 module hydraAF_Lib_Coupling_Segments
   use iso_fortran_env, only: I4 => int32, R8 => real64
   use FUSS_Advanced_Types_m
   use ARES_Advanced_Types_m
+  use hydraAF_Lib_Metrics, only: NHALF
 
   implicit none
   private
@@ -38,8 +42,10 @@ module hydraAF_Lib_Coupling_Segments
   public :: Segment_Wall_Output_FUSS, Segment_Wall_Output_ARES
 
   integer, parameter :: max_levels = 16
-  integer, parameter :: NGEO = 20                ! reals of one face geometry, packed for the sum over the ranks
-  integer, parameter :: NXF  = 2                 ! FUSS partner state of a segment: T, matID
+  integer, parameter :: NGEO = 19                ! reals of one face geometry, packed for the sum over the ranks
+  ! Partner state of a segment: T, the half of the balance (A, Teff, gradient in the plane
+  ! of the face) and then matID (FUSS cell) or P(1:np) (ARES cell)
+  integer, parameter :: NXF  = 2 + NHALF         ! FUSS partner state: T, half, matID
   integer, parameter :: TAG_SEG_STATE = 7104     ! MPI tags, apart from the 103 ones (7001-7007)
   integer, parameter :: TAG_SEG_FLUX  = 7105
 
@@ -57,7 +63,7 @@ module hydraAF_Lib_Coupling_Segments
     integer :: ns = 0                            ! number of segments
     integer,  allocatable :: sF(:), sA(:)        ! FUSS / ARES bc index of the two faces of the segment
     real(R8), allocatable :: wF(:), wA(:)        ! segment area over the FUSS / ARES face area
-    real(R8), allocatable :: dF(:), dA(:)        ! distance of the FUSS / ARES cell centre from the interface
+    real(R8), allocatable :: xsF(:,:), xsA(:,:)  ! centroid of the segment minus the FUSS / ARES face centre (3, ns)
     integer :: nF = 0, nA = 0                    ! number of FUSS / ARES 104 faces
     integer,  allocatable :: eF(:), eA(:)        ! bc index of each 104 face
     integer,  allocatable :: rowF(:), rowA(:)    ! 104 face number of a bc index, 0 if not a 104 face
@@ -70,8 +76,8 @@ module hydraAF_Lib_Coupling_Segments
     integer,  allocatable :: oF(:), oA(:)        ! rank owning the FUSS / ARES face of the segment
     integer :: nmyF = 0, nmyA = 0                ! 104 faces of each solver on this rank
     integer,  allocatable :: myF(:), myA(:)      ! their 104 face numbers
-    real(R8), allocatable :: xA(:,:)             ! ARES partner cell, as the FUSS face sees it: T, P(1:np) (1+np, ns)
-    real(R8), allocatable :: xF(:,:)             ! FUSS partner cell, as the ARES face sees it: T, matID (NXF, ns)
+    real(R8), allocatable :: xA(:,:)             ! ARES partner cell, as the FUSS face sees it: T, half, P(1:np) (1+NHALF+np, ns)
+    real(R8), allocatable :: xF(:,:)             ! FUSS partner cell, as the ARES face sees it: T, half, matID (NXF, ns)
     integer :: npeer = 0                         ! ranks this one shares segments with
     type(peer_type), allocatable :: peer(:)
   end type segment_set_type
@@ -84,7 +90,6 @@ module hydraAF_Lib_Coupling_Segments
     real(R8) :: c(3)                             ! centre
     real(R8) :: n(3)                             ! unit normal, out of the own cell
     real(R8) :: d                                ! distance of the own cell centre, as the 103 routines see it
-    real(R8) :: ortho                            ! tangential / normal metric rows on the face normal
   end type face_geo_type
 
   type :: int_grid_type
@@ -268,7 +273,7 @@ contains
     endif
 
     allocate ( set%qF(set%ns), set%fA(nprim, set%ns), set%kS(set%ns) )
-    allocate ( set%xA(1+np, set%ns), set%xF(NXF, set%ns) )
+    allocate ( set%xA(1+NHALF+np, set%ns), set%xF(NXF, set%ns) )
     set%qF = 0d0
     set%fA = 0d0
     ! No fluid wall conductivity yet: both wall routines fall back to their local estimate
@@ -277,7 +282,7 @@ contains
     set%xF = 0d0
 
     ! Ranks of the two faces of every segment, and what this rank shares with the others
-    call Setup_Ranks ( set, FUSS_domain, ARES_domain, 1+np )
+    call Setup_Ranks ( set, FUSS_domain, ARES_domain, 1+NHALF+np )
     set%ready = .true.
 
     if (mpi_is_root) then
@@ -288,10 +293,6 @@ contains
       if (any(set%oF /= set%oA)) then
         write(*,'(A,I0,A)') '   ', count(set%oF /= set%oA), ' segments have their two faces on different MPI ranks'
       endif
-      if (max(maxval(gF%ortho), maxval(gA%ortho)) > 1d-3) then
-        write(*,'(A,ES9.2,A)') '   WARNING: the mesh is not orthogonal at the 104 interface (tangential/normal metric ', &
-          max(maxval(gF%ortho), maxval(gA%ortho)), '): this version neglects the partner tangential terms.'
-      endif
     endif
 
   contains
@@ -299,21 +300,22 @@ contains
     !> Segment between FUSS face e and ARES face m, if they overlap
     subroutine Try_Segment ( e, m )
       integer, intent(in) :: e, m
-      real(R8) :: As, AF, AA, tol
+      real(R8) :: As, AF, AA, tol, xs(3)
 
       ! The two faces must look at each other and lie on the same surface
       if (dot_product(gF(e)%n, gA(m)%n) > -0.5d0) return !  Le due facce si guardano?
       tol = 0.05d0 * (gF(e)%d + gA(m)%d)
       if (abs(dot_product(gA(m)%c - gF(e)%c, gF(e)%n)) > tol) return !   Le due facce sono sulla stessa superficie?
 
-      call Overlap_Area ( gA(m)%p, gF(e)%p, gF(e)%c, gF(e)%n, As, AA, AF ) ! Le due facce si sovrappongono
+      call Overlap_Area ( gA(m)%p, gF(e)%p, gF(e)%c, gF(e)%n, As, AA, AF, xs ) ! Le due facce si sovrappongono
       if (As <= 1d-9 * AF) return
 
       ! Overlap_Area funziona così:
       !proietta i due quadrilateri sul piano della faccia FUSS, usando una base 2D (e1, e2);
       !li orienta entrambi in senso antiorario;
       !ritaglia il quadrilatero ARES con quello FUSS usando l'algoritmo di Sutherland–Hodgman;
-      !calcola con la formula di Gauss (shoelace) l'area dell'intersezione As e le aree proiettate AA e AF.
+      !calcola con la formula di Gauss (shoelace) l'area dell'intersezione As e le aree proiettate AA e AF,
+      !e il baricentro xs dell'intersezione (sul piano della faccia FUSS).
 
       if (set%ns == size(set%sF)) call Grow_Segments ( set, 2*size(set%sF) )
       set%ns = set%ns + 1
@@ -321,8 +323,8 @@ contains
       set%sA(set%ns) = set%eA(m)
       set%wF(set%ns) = As / AF
       set%wA(set%ns) = As / AA
-      set%dF(set%ns) = gF(e)%d
-      set%dA(set%ns) = gA(m)%d
+      set%xsF(:,set%ns) = xs - gF(e)%c
+      set%xsA(:,set%ns) = xs - gA(m)%c
     end subroutine Try_Segment
 
   end subroutine Setup_Coupling_Segments
@@ -577,6 +579,9 @@ contains
 
   !> FUSS side of segment sg: the 103 routine with the ARES cell of the segment as
   !> partner (its state in xA). new_flux is the flux through the whole FUSS face, as in 103.
+  !> Both halves of the balance are taken at the centroid of the segment: the ARES one
+  !> moved there from the centre of its face with its gradient along the wall, the FUSS
+  !> one inside the wall routine (dx_seg).
   subroutine Eval_FUSS_Segment ( set, sg, FUSS_domain, new_flux, Ovar )
     use hydraAF_Lib_BC_Coupled_Wall_Temperature, only: FUSS_BC_Coupled_Wall_Temperature
     use ARES_Global_m, only: np
@@ -587,9 +592,8 @@ contains
     real(R8), intent(out)                 :: new_flux
     real(R8), optional, intent(out)       :: Ovar(2)
     ! Local
-    integer  :: i, Bm, Im, Jm, Km, Fm, dir
-    real(R8) :: P_con(np), Tg(6)
-    type(FUSS_tensor_3D_type) :: Mcon
+    integer  :: i, Bm, Im, Jm, Km, Fm
+    real(R8) :: P_con(np), T_con, A_con, Teff_con
 
     i  = set%sF(sg)
     Bm = FUSS_domain % bc(i) % b
@@ -599,18 +603,14 @@ contains
     Fm = FUSS_domain % bc(i) % f
 
     ! Partner: the ARES cell that owns the other face of the segment
-    Tg    = set%xA(1,sg)
-    P_con = set%xA(2:1+np,sg)
-
-    ! Partner metric, normal distance only: the normal row of the own cell rescaled
-    ! so that the routine sees the partner cell centre at dA; tangential rows zero
-    dir = (Fm+1)/2
-    Mcon%c = 0d0
-    Mcon%c(dir,:) = FUSS_domain % blk(Bm) % M(Im,Jm,Km) % c(dir,:) * set%dF(sg) / set%dA(sg)
+    T_con    = set%xA(1,sg)
+    A_con    = set%xA(2,sg)
+    Teff_con = set%xA(3,sg) + dot_product ( set%xA(4:6,sg), set%xsA(:,sg) )
+    P_con    = set%xA(2+NHALF:1+NHALF+np,sg)
 
     call FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
-                                           0, 0, 0, 0, P_con, Mcon, Tg, new_flux, Ovar, &
-                                           k_fluid_wall = set%kS(sg) )
+                                           P_con, T_con, A_con, Teff_con, new_flux, Ovar, &
+                                           k_fluid_wall = set%kS(sg), dx_seg = set%xsF(:,sg) )
 
   end subroutine Eval_FUSS_Segment
 
@@ -630,9 +630,8 @@ contains
     real(R8), optional, intent(out)       :: Ovar(8)
     real(R8), optional, intent(out)       :: k_new
     ! Local
-    integer  :: j, Bm, Im, Jm, Km, Fm, dir
-    real(R8) :: Pg(1,6), matID_con
-    type(ARES_tensor_3D_type) :: Mcon
+    integer  :: j, Bm, Im, Jm, Km, Fm
+    real(R8) :: matID_con, T_con, A_con, Teff_con
 
     j  = set%sA(sg)
     Bm = ARES_domain % bc(j) % b
@@ -641,26 +640,26 @@ contains
     Km = ARES_domain % bc(j) % k
     Fm = ARES_domain % bc(j) % f
 
-    ! Partner: the FUSS cell that owns the other face of the segment
-    Pg        = set%xF(1,sg)
-    matID_con = set%xF(2,sg)
-
-    ! Partner metric, normal distance only (see Eval_FUSS_Segment)
-    dir = (Fm+1)/2
-    Mcon%c = 0d0
-    Mcon%c(dir,:) = ARES_domain % blk(Bm) % M(Im,Jm,Km) % c(dir,:) * set%dA(sg) / set%dF(sg)
+    ! Partner: the FUSS cell that owns the other face of the segment, its half of the
+    ! balance moved to the centroid of the segment (see Eval_FUSS_Segment)
+    T_con     = set%xF(1,sg)
+    A_con     = set%xF(2,sg)
+    Teff_con  = set%xF(3,sg) + dot_product ( set%xF(4:6,sg), set%xsF(:,sg) )
+    matID_con = set%xF(2+NHALF,sg)
 
     call ARES_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, ARES_domain % blk(Bm), &
-                                           0, 0, 0, 0, matID_con, Mcon, Pg, new_flux, Ovar, &
-                                           k_fluid_wall = set%kS(sg), k_fluid_wall_new = k_new )
+                                           matID_con, T_con, A_con, Teff_con, new_flux, Ovar, &
+                                           k_fluid_wall = set%kS(sg), k_fluid_wall_new = k_new, &
+                                           dx_seg = set%xsA(:,sg) )
 
   end subroutine Eval_ARES_Segment
 
 
   !> Partner cell of every segment of the faces of this rank: a FUSS face reads
-  !> T and P(1:np) of the ARES cell (xA), an ARES face T and matID of the FUSS cell
-  !> (xF). The rank that owns the partner cell reads it: in place when both faces
-  !> of the segment are here, and sends it over when they are not.
+  !> T, the half of the balance and P(1:np) of the ARES cell (xA), an ARES face T,
+  !> the half of the balance and matID of the FUSS cell (xF). The rank that owns the
+  !> partner cell computes it: in place when both faces of the segment are here, and
+  !> sends it over when they are not.
   subroutine Update_Partners ( set, FUSS_domain, ARES_domain )
     use ARES_Global_m, only: np
     implicit none
@@ -670,7 +669,7 @@ contains
     ! Local
     integer :: m, e, k, sg, p, n, nxa
 
-    nxa = 1 + np
+    nxa = 1 + NHALF + np
 
     ! Both faces on this rank
     !$omp parallel do schedule (dynamic, 16) private(m, e, k, sg)
@@ -813,42 +812,56 @@ contains
   end subroutine Exchange
 
 
-  !> State of the ARES cell of 104 face j, as the FUSS side reads it: T, P(1:np)
+  !> State of the ARES cell of 104 face j, as the FUSS side reads it: T, the half of the
+  !> balance of the face (A, Teff, gradient of T in the plane of the face), P(1:np)
   subroutine ARES_State ( ARES_domain, j, x )
     use ARES_Global_m, only: np, nh
     use FLINT_Lib_Thermodynamic, only: ph2vars, T_tab
+    use hydraAF_Lib_Metrics, only: ARES_Wall_Half
     implicit none
     type(ARES_domain_type), intent(in) :: ARES_domain
     integer, intent(in)                :: j
     real(R8), intent(out)              :: x(:)
     ! Local
-    integer :: b, ic, jc, kc
+    integer  :: b, ic, jc, kc
+    real(R8) :: A, Teff, gpar(3)
 
     b  = ARES_domain % bc(j) % b
     ic = ARES_domain % bc(j) % i
     jc = ARES_domain % bc(j) % j
     kc = ARES_domain % bc(j) % k
-    x(1)      = ph2vars( ARES_domain%blk(b)%P(np,ic,jc,kc), ARES_domain%blk(b)%P(nh,ic,jc,kc), T_tab )
-    x(2:1+np) = ARES_domain % blk(b) % P (1:np,ic,jc,kc)
+    call ARES_Wall_Half ( ARES_domain % blk(b), ic, jc, kc, ARES_domain % bc(j) % f, A, Teff, gpar )
+    x(1)   = ph2vars( ARES_domain%blk(b)%P(np,ic,jc,kc), ARES_domain%blk(b)%P(nh,ic,jc,kc), T_tab )
+    x(2)   = A
+    x(3)   = Teff
+    x(4:6) = gpar
+    x(2+NHALF:1+NHALF+np) = ARES_domain % blk(b) % P (1:np,ic,jc,kc)
 
   end subroutine ARES_State
 
 
-  !> State of the FUSS cell of 104 face i, as the ARES side reads it: T, matID
+  !> State of the FUSS cell of 104 face i, as the ARES side reads it: T, the half of the
+  !> balance of the face (A, Teff, gradient of T in the plane of the face), matID
   subroutine FUSS_State ( FUSS_domain, i, x )
+    use hydraAF_Lib_Metrics, only: FUSS_Wall_Half
     implicit none
     type(FUSS_domain_type), intent(in) :: FUSS_domain
     integer, intent(in)                :: i
     real(R8), intent(out)              :: x(:)
     ! Local
-    integer :: b, ic, jc, kc
+    integer  :: b, ic, jc, kc
+    real(R8) :: A, Teff, gpar(3)
 
     b  = FUSS_domain % bc(i) % b
     ic = FUSS_domain % bc(i) % i
     jc = FUSS_domain % bc(i) % j
     kc = FUSS_domain % bc(i) % k
-    x(1) = FUSS_domain % blk(b) % T     (ic,jc,kc)
-    x(2) = FUSS_domain % blk(b) % matID (ic,jc,kc)
+    call FUSS_Wall_Half ( FUSS_domain % blk(b), ic, jc, kc, FUSS_domain % bc(i) % f, A, Teff, gpar )
+    x(1)       = FUSS_domain % blk(b) % T     (ic,jc,kc)
+    x(2)       = A
+    x(3)       = Teff
+    x(4:6)     = gpar
+    x(2+NHALF) = FUSS_domain % blk(b) % matID (ic,jc,kc)
 
   end subroutine FUSS_State
 
@@ -945,14 +958,13 @@ contains
     integer,  intent(in) :: Fm
     type(face_geo_type)  :: geo
     ! Local
-    integer  :: dir, h, t1, t2
+    integer  :: dir, h
     real(R8) :: cc(3), mn
 
     ! p(3,4)	i 4 nodi della faccia, ordinati lungo il bordo
     ! c(3)	il centro della faccia (media dei nodi)
     ! n(3)	la normale unitaria, uscente dalla cella proprietaria
     ! d	la distanza centro cella–faccia, ricavata dalla metrica come nel 103
-    ! ortho	il peso dei termini tangenziali rispetto a quello normale (0 se la mesh è ortogonale)
 
     dir = (Fm+1)/2        ! Direzione normale alla faccia
     h   = 1 - mod(Fm,2)   ! 0 = faccia bassa/sinistra, 1 = faccia alta/destra
@@ -980,10 +992,7 @@ contains
     if (dot_product ( geo%n, geo%c - cc ) < 0d0) geo%n = -geo%n
 
     mn = abs ( dot_product ( M(dir,:), N ) )
-    geo%d = 0.5d0 / mn ! Distanza dal centro cella dal centro faccia
-    t1 = mod(dir,3) + 1
-    t2 = mod(dir+1,3) + 1
-    geo%ortho = max ( abs(dot_product(M(t1,:), N)), abs(dot_product(M(t2,:), N)) ) / mn ! indice non ortogonalità
+    geo%d = 0.5d0 / mn ! Distanza dal centro cella dal centro faccia (usata per la tolleranza di Try_Segment)
 
   end function Face_Geometry
 
@@ -998,7 +1007,6 @@ contains
     buf(13:15) = geo%c
     buf(16:18) = geo%n
     buf(19)    = geo%d
-    buf(20)    = geo%ortho
 
   end subroutine Pack_Geo
 
@@ -1012,21 +1020,20 @@ contains
     geo%c     = buf(13:15)
     geo%n     = buf(16:18)
     geo%d     = buf(19)
-    geo%ortho = buf(20)
 
   end function Unpack_Geo
 
 
   !> Area of the overlap of two convex quads pa and pb, both projected on the plane
-  !> through c with normal n (Sutherland-Hodgman clipping of pa by pb), and the
-  !> projected areas of the two quads
-  subroutine Overlap_Area ( pa, pb, c, n, area, area_a, area_b )
+  !> through c with normal n (Sutherland-Hodgman clipping of pa by pb), the
+  !> projected areas of the two quads and the centroid of the overlap (on that plane)
+  subroutine Overlap_Area ( pa, pb, c, n, area, area_a, area_b, centre )
     implicit none
     real(R8), intent(in)  :: pa(3,4), pb(3,4), c(3), n(3)
-    real(R8), intent(out) :: area, area_a, area_b
+    real(R8), intent(out) :: area, area_a, area_b, centre(3)
     ! Local
-    real(R8) :: e1(3), e2(3), a(2,16), b(2,4), out(2,16), s(2), t(2), p(2), q(2), sp, sq
-    integer  :: na, no, k, m
+    real(R8) :: e1(3), e2(3), a(2,16), b(2,4), out(2,16), s(2), t(2), p(2), q(2), sp, sq, cr, g(2)
+    integer  :: na, no, k, m, kn
 
     e1 = pb(:,2) - pb(:,1)
     e1 = e1 - dot_product ( e1, n ) * n
@@ -1067,7 +1074,21 @@ contains
     enddo
 
     area = 0d0
-    if (na >= 3) area = Shoelace(a, na)
+    centre = c
+    if (na >= 3) then
+      area = Shoelace(a, na)
+      ! Centroid of the polygon: sum (a_k + a_k+1) (a_k x a_k+1) / (6 area)
+      if (abs(area) > 0d0) then
+        g = 0d0
+        do k = 1, na
+          kn = mod(k,na) + 1
+          cr = a(1,k)*a(2,kn) - a(1,kn)*a(2,k)
+          g  = g + ( a(:,k) + a(:,kn) ) * cr
+        enddo
+        g = g / ( 6d0 * area )
+        centre = c + g(1) * e1 + g(2) * e2
+      endif
+    endif
 
   end subroutine Overlap_Area
 
@@ -1105,18 +1126,18 @@ contains
     integer, intent(in)                   :: n
     ! Local
     integer,  allocatable :: itmp(:)
-    real(R8), allocatable :: rtmp(:)
+    real(R8), allocatable :: rtmp(:), rtmp2(:,:)
 
     if (.not. allocated(set%sF)) then
-      allocate ( set%sF(n), set%sA(n), set%wF(n), set%wA(n), set%dF(n), set%dA(n) )
+      allocate ( set%sF(n), set%sA(n), set%wF(n), set%wA(n), set%xsF(3,n), set%xsA(3,n) )
       return
     endif
     allocate ( itmp(n) ); itmp(1:set%ns) = set%sF(1:set%ns); call move_alloc ( itmp, set%sF )
     allocate ( itmp(n) ); itmp(1:set%ns) = set%sA(1:set%ns); call move_alloc ( itmp, set%sA )
     allocate ( rtmp(n) ); rtmp(1:set%ns) = set%wF(1:set%ns); call move_alloc ( rtmp, set%wF )
     allocate ( rtmp(n) ); rtmp(1:set%ns) = set%wA(1:set%ns); call move_alloc ( rtmp, set%wA )
-    allocate ( rtmp(n) ); rtmp(1:set%ns) = set%dF(1:set%ns); call move_alloc ( rtmp, set%dF )
-    allocate ( rtmp(n) ); rtmp(1:set%ns) = set%dA(1:set%ns); call move_alloc ( rtmp, set%dA )
+    allocate ( rtmp2(3,n) ); rtmp2(:,1:set%ns) = set%xsF(:,1:set%ns); call move_alloc ( rtmp2, set%xsF )
+    allocate ( rtmp2(3,n) ); rtmp2(:,1:set%ns) = set%xsA(:,1:set%ns); call move_alloc ( rtmp2, set%xsA )
 
   end subroutine Grow_Segments
 
@@ -1132,7 +1153,7 @@ contains
     set%nmyF = 0
     set%nmyA = 0
     set%npeer = 0
-    if (allocated(set%sF))   deallocate ( set%sF, set%sA, set%wF, set%wA, set%dF, set%dA )
+    if (allocated(set%sF))   deallocate ( set%sF, set%sA, set%wF, set%wA, set%xsF, set%xsA )
     if (allocated(set%eF))   deallocate ( set%eF )
     if (allocated(set%eA))   deallocate ( set%eA )
     if (allocated(set%rowF)) deallocate ( set%rowF )

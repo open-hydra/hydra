@@ -11,7 +11,7 @@ contains
     use hydraAF_Lib_BC_Coupled_Wall_Temperature, only: FUSS_BC_Coupled_Wall_Temperature
     use hydraAF_Mod_CouplingExchange, only: partner_of_FUSS_bc, own103_FUSS, &
                                             exchange_coupling_reverse_flux_FUSS, &
-                                            get_k_wall_FUSS
+                                            get_k_wall_FUSS, get_partner_half_FUSS
     use FUSS_Advanced_Types_m
     use ARES_Advanced_Types_m
     use ARES_Global_m, only: np, nh
@@ -27,7 +27,7 @@ contains
     integer  :: k, n_own, i, j, ares_bm
     integer  :: Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs
     real(R8) :: FUSS_new_flux
-    real(R8) :: P_con(np)
+    real(R8) :: P_con(np), A_con, Teff_con
     integer,  pointer :: own(:)                !< type(103) entries whose Bm this rank owns
     real(R8), pointer :: new_flux_arr(:)       !< per-entry flux for remote ARES partner update
 
@@ -40,7 +40,7 @@ contains
     if (n_own > 0) then
       !$omp parallel do schedule (static) &
       !$omp private (k, i, j, ares_bm, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs) &
-      !$omp private (FUSS_new_flux, P_con)
+      !$omp private (FUSS_new_flux, P_con, A_con, Teff_con)
       do k = 1, n_own
         i   = own(k)
         Bm  = FUSS_domain % bc(i) % b
@@ -58,11 +58,14 @@ contains
         ! local, or from the remote cache populated by exchange_coupling_Tg_P.
         call get_secondary_P(ARES_domain, i, Bs, Is, Js, Ks, level, P_con)
 
+        ! Half of the balance of the ARES partner face, computed by the rank that owns it
+        ! (Fill_Coupled_Ghost_Cell or exchange_coupling_Tg_P)
+        call get_partner_half_FUSS(level, i, A_con, Teff_con)
+
         ! k_fluid_wall: total fluid conductivity k_l+k_t on this face, mirrored from
         ! the ARES side so that both solvers build the same interface temperature.
         call FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
-                                    Is, Js, Ks, Fs, P_con, &
-                                    FUSS_domain%bc(i)%Mg(1), FUSS_domain%bc(i)%Tg, FUSS_new_flux, &
+                                    P_con, FUSS_domain%bc(i)%Tg(1), A_con, Teff_con, FUSS_new_flux, &
                                     k_fluid_wall = get_k_wall_FUSS(level, i) )
         FUSS_domain % bc(i) % ext_flux = FUSS_domain % bc(i) % ext_flux + 0.5d0 * FUSS_new_flux
         new_flux_arr(i) = FUSS_new_flux
@@ -104,7 +107,8 @@ contains
     use hydraAF_Mod_CouplingExchange, only: partner_of_ARES_bc, own103_ARES, &
                                             exchange_coupling_reverse_flux_ARES, &
                                             get_k_wall_ARES, set_k_wall_ARES, &
-                                            sync_k_fluid_wall, K_WALL_UNSET
+                                            sync_k_fluid_wall, K_WALL_UNSET, &
+                                            get_partner_half_ARES
     use FUSS_Advanced_Types_m
     use ARES_Advanced_Types_m
     use ARES_Global_m, only: nprim, nh
@@ -120,7 +124,7 @@ contains
     integer  :: k, n_own, i, j, fuss_bm
     integer  :: Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs
     real(R8) :: ARES_new_flux(nprim)
-    real(R8) :: matID_con
+    real(R8) :: matID_con, A_con, Teff_con
     real(R8) :: k_fluid_wall_new
     integer,  pointer :: own(:)                !< type(103) entries whose Bm this rank owns
     real(R8), pointer :: new_flux_nh_arr(:)    !< per-entry flux for remote FUSS partner update
@@ -130,7 +134,7 @@ contains
     if (n_own > 0) then
       !$omp parallel do schedule (static) &
       !$omp private (k, i, j, fuss_bm, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs) &
-      !$omp private (ARES_new_flux, matID_con, k_fluid_wall_new)
+      !$omp private (ARES_new_flux, matID_con, A_con, Teff_con, k_fluid_wall_new)
       do k = 1, n_own
         i   = own(k)
         Bm  = ARES_domain % bc(i) % b
@@ -147,14 +151,17 @@ contains
         call get_secondary_matID(FUSS_domain, ARES_domain, i, Bs, Is, Js, Ks, &
                                  level, matID_con)
 
+        ! Half of the balance of the FUSS partner face, computed by the rank that owns it
+        ! (Fill_Coupled_Ghost_Cell or exchange_coupling_Pg_matID)
+        call get_partner_half_ARES(level, i, A_con, Teff_con)
+
         ! k_fluid_wall is the fluid wall conductivity of the previous call, used both
         ! in Tint and in the heat flux (see the routine header); k_fluid_wall_new is
         ! the one just evaluated, stored for the next call and handed over to the
         ! solid side by sync_k_fluid_wall below.
         k_fluid_wall_new = K_WALL_UNSET
         call ARES_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, ARES_domain % blk(Bm), &
-                                    Is, Js, Ks, Fs, matID_con, &
-                                    ARES_domain%bc(i)%Mg(1), ARES_domain%bc(i)%Pg, ARES_new_flux, &
+                                    matID_con, ARES_domain%bc(i)%Pg(1,1), A_con, Teff_con, ARES_new_flux, &
                                     k_fluid_wall = get_k_wall_ARES(level, i), &
                                     k_fluid_wall_new = k_fluid_wall_new )
         call set_k_wall_ARES( level, i, k_fluid_wall_new )
