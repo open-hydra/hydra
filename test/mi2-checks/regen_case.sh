@@ -6,7 +6,9 @@
 # was configured with, the md5 of BCB and ICB, the Fortran compiler of its build, the Python that ran GPB) is printed
 # and kept as atlas-provenance.txt in the scratch copy. With --install the regenerated files are copied into INPUT/,
 # the previous INPUT/ kept as INPUT.pre-regen-<date>-<tag>/ (checked against INPUT/ before anything is installed)
-# with the provenance beside it.
+# with the provenance beside it. A models file of INPUT/ that GPB no longer writes for a phase it wrote (no constant
+# of a burning model is left in the deck) is reported as STALE, and --install removes it from INPUT/ (the backup keeps
+# it): the solvers would read it.
 # ATLASDIR selects the ATLAS tree (default: the checked-out utils/ATLAS); ATLAS_PYTHON bypasses conda.
 # Byte identity with a stored INPUT/ needs ATLAS built with the compiler that wrote it (gfortran for the cases of this
 # repository): an ifx build of ICB moves the *-ic.tec values by about 5e-9 relative.
@@ -68,6 +70,12 @@ for f in fromATLAStoSolver/*; do
   elif cmp -s "$f" "INPUT/$b"; then echo "   $b: identical"
   else echo "   $b: DIFFERS ($(diff "$f" "INPUT/$b" | grep -c '^[<>]') diff lines)"; diff "$f" "INPUT/$b" | head -4 | sed 's/^/      /'; fi
 done
+stale=()
+for f in fromATLAStoSolver/*phase.txt; do
+  [ -f "$f" ] || continue
+  b=$(basename "$f"); b=${b%phase.txt}models.txt
+  if [ ! -e "fromATLAStoSolver/$b" ] && [ -e "INPUT/$b" ]; then stale+=("$b"); echo "   $b: STALE (in INPUT, GPB writes none now)"; fi
+done
 if [ $install = 1 ]; then
   bak=$(mktemp -d "$src/INPUT.pre-regen-$(date +%Y%m%d-%H%M%S)-XXXX") \
     || { echo "   no backup directory: nothing installed"; exit 2; }
@@ -75,6 +83,7 @@ if [ $install = 1 ]; then
     echo "   $bak is not a copy of INPUT/: nothing installed"; exit 2
   fi
   cp -p fromATLAStoSolver/* "$src/INPUT/"
+  for b in "${stale[@]}"; do rm -f "$src/INPUT/$b"; echo "   $b: removed from $src/INPUT"; done
   cp -p atlas-provenance.txt "$bak.atlas-provenance.txt"
   echo "   installed into $src/INPUT (backup $(basename "$bak"), provenance $(basename "$bak").atlas-provenance.txt)"
 fi
