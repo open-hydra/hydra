@@ -1,0 +1,5 @@
+name: a-he
+description: the material A becomes He, a species of the gas that only this phase makes; its heat of reaction is the h0 of A less the enthalpy of He at 298.15 K
+reference: none (a test case; the rate is the solver's)
+reactions:
+- equation: A => He
