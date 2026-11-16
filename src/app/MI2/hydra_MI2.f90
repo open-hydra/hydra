@@ -13,7 +13,8 @@ program hydra_MI2_program
   use hydraMI2_Config_Types_m, only: hydra_MI2_obj
   use hydraMI2_Mod_Import,     only: Assign_Phases
   use hydraMI2_Stoichiometry,  only: Load_Species_Map, Report_Stoichiometry, MAP_IGLOO, MAP_ICE, &
-                                     has_stoichiometry, has_stoichiometry_ICE, Build_Datum_Offsets, T_datum_ref
+                                     has_stoichiometry, has_stoichiometry_ICE, Build_Datum_Offsets, T_datum_ref, &
+                                     Smoke_Record
   use hydraMI2_Mod_Coupling,   only: MOSExIGLOO, Gas_Field_For_IGLOO, IGLOOxMOSE, &
                                      MOSExICE, ICExMOSE, &
                                      resField, Initialize_Residual_Store, Build_Family_Material_Map, &
@@ -154,6 +155,7 @@ program hydra_MI2_program
         qmat(im)    = ICE_obj_condensed(im)%qComb
       enddo
       call Load_Species_Map( MAP_ICE, ICE_phase_prefix, matnames, evap, burn )
+      call Setup_ICE_Smoke( matnames, nm )
       call Report_Stoichiometry( MAP_ICE, matnames, nm )
       call Build_Datum_Offsets( MAP_ICE, matnames, nm, beck, beta, eICEref, Lvmat, qmat, Thot, eICEhot, Lvconst )
       deallocate(matnames, evap, burn, beck, beta, eICEref, Lvmat, qmat, Thot, eICEhot, Lvconst)
@@ -184,6 +186,19 @@ program hydra_MI2_program
         handsCap(im) = oxide(im) > 0 .and. .not. IGLOO%material(im)%resOn
       enddo
       call Load_Species_Map( MAP_IGLOO, IGLOO_phase_prefix, matnames, evap, burn, oxide, handsCap, nuOx )
+      ! a smoke from IGLOO's burning needs IGLOO's four columns of what it burns (C-IGLOO9), not built
+      do im = 1, size(IGLOO%material)
+        block
+          character(len=64) :: sname, sphase
+          real(R8) :: snu, sh
+          if ( Smoke_Record( MAP_IGLOO, im, sname, snu, sh, sphase ) ) then
+            write(*,'(A)') ' [ERROR] MI2: the combustion record of the IGLOO material '//trim(matnames(im))// &
+              ' makes the smoke '//trim(sname)//': IGLOO does not yet hand the coupler what each parcel burns '// &
+              '(where and how fast), so the smoke has no source'
+            error stop 1
+          endif
+        end block
+      enddo
       ! the Eulerian coupling hands the gas no mass, no species and no heat of reaction
       if ( has_stoichiometry .and. any(hydra_MI2_obj%IGLOO_iter == 2) ) then
         write(*,'(A)') ' [ERROR] MI2: an IGLOO material evaporates or burns and a cycle has IGLOO-iter = 2: the '// &
@@ -743,6 +758,80 @@ contains
     enddo
 
   end subroutine Check_Time_Accuracy
+
+
+  !> The smoke of ICE's burning materials (the tail of their combustion records): the smoke material is a material
+  !  of ICE's phase with exactly one family, of the MK closure, that neither evaporates nor burns; the burning material
+  !  gives d-smoke. Sets ICE's smokeFam and nuSmoke and the smoke's datum offset on ICE's own energy of it.
+  subroutine Setup_ICE_Smoke( matnames, nm )
+    use ICE_Global_m,           only: ICE_phase_prefix, ICE_mat_of => mat_of, ICE_ngroups => ngroups
+    use ICE_Lib_Properties,     only: mat_e, mat_cp_const
+    use hydraMI2_Stoichiometry, only: Smoke_Record, Set_Smoke_Datum, MAP_ICE, T_datum_ref
+    implicit none
+    character(len=*), intent(in) :: matnames(:)
+    integer,          intent(in) :: nm
+    character(len=64) :: sname, sphase
+    character(len=*), parameter :: E = ' [ERROR] MI2: '
+    real(R8) :: snu, sh, es
+    integer  :: m, ms, g, gs, nfam
+
+    do m = 1, nm
+      if ( .not. Smoke_Record( MAP_ICE, m, sname, snu, sh, sphase ) ) cycle
+      ms = 0
+      do g = 1, nm
+        if ( trim(matnames(g)) == trim(sname) ) ms = g
+      enddo
+      if ( ms == 0 ) then
+        write(*,'(A)') E//'INPUT/'//trim(ICE_phase_prefix)//'products.txt: '//trim(matnames(m))//' burns into the '// &
+          'smoke '//trim(sname)//', which is not a material of ICE''s phase: declare it in INPUT/'// &
+          trim(ICE_phase_prefix)//'phase.txt with one population and its family with closure = MK'
+        error stop 1
+      endif
+      if ( trim(sphase) /= trim(ICE_phase_prefix) ) then
+        write(*,'(A)') E//'the smoke of '//trim(matnames(m))//' is born in the phase '//trim(sphase)// &
+          ', and ICE runs the phase '//trim(ICE_phase_prefix)//': run ATLAS GPB again'
+        error stop 1
+      endif
+      nfam = 0; gs = 0
+      do g = 1, ICE_ngroups
+        if ( ICE_mat_of(g) == ms ) then
+          nfam = nfam + 1; gs = g
+        endif
+      enddo
+      if ( nfam /= 1 ) then
+        write(*,'(A,I0,A)') E//'the smoke '//trim(sname)//' of '//trim(matnames(m))//' has ', nfam, &
+          ' families in ICE: it is born in one, give its material one population'
+        error stop 1
+      endif
+      if ( trim(ICE_obj_time_scheme%model(gs)) /= 'MK' ) then
+        write(*,'(A,I0,A)') E//'the smoke '//trim(sname)//' is born in ICE family ', gs, ', whose closure is '// &
+          trim(ICE_obj_time_scheme%model(gs))//': the smoke takes mass and number at a fixed diameter, which the '// &
+          'MK closure carries; set closure = MK'
+        error stop 1
+      endif
+      if ( ICE_obj_condensed(ms)%evapSelect > 0 .or. ICE_obj_condensed(ms)%combSelect > 0 ) then
+        write(*,'(A)') E//'the smoke '//trim(sname)//' evaporates or burns in ICE: a smoke does neither'
+        error stop 1
+      endif
+      if ( .not. ICE_obj_condensed(m)%dSmoke > 0._R8 ) then
+        write(*,'(A)') E//trim(matnames(m))//' burns into the smoke '//trim(sname)//' and its row of INPUT/'// &
+          trim(ICE_phase_prefix)//'models.txt gives no d-smoke, the diameter each smoke drop is born with'
+        error stop 1
+      endif
+      ICE_obj_condensed(m)%smokeFam = gs
+      ICE_obj_condensed(m)%nuSmoke  = snu
+      if ( ICE_obj_condensed(ms)%cs_varies ) then
+        es = mat_e( ICE_obj_condensed(ms), T_datum_ref )
+      else
+        es = mat_cp_const( ICE_obj_condensed(ms) ) * T_datum_ref
+      endif
+      call Set_Smoke_Datum( m, sh - es )
+      write(*,'(A,I0,A,ES15.7,A,ES12.4,A,ES15.7,A)') ' [MI2] ICE material '//trim(matnames(m))//' burns into the '// &
+        'smoke '//trim(sname)//' (family ', gs, '): ', snu, ' kg per kg burnt, d-smoke ', ICE_obj_condensed(m)%dSmoke, &
+        ' m, datum offset ', sh - es, ' J/kg'
+    enddo
+
+  end subroutine Setup_ICE_Smoke
 
 
   !> [MI2-Coupling] report: the MOSE block of this coupling step and what the coupler handed the gas

@@ -8,6 +8,7 @@ module hydraMI2_Stoichiometry
   public :: nu, has_stoichiometry, dhDatum, T_datum_ref
   public :: nuICE, has_stoichiometry_ICE, dhDatumICE, mappedICE
   public :: capped, nuCap, nuRel, nuOxide, dhProduct
+  public :: Smoke_Record, Set_Smoke_Datum, nuSmokeICE, dhSmokeICE
   public :: MAP_IGLOO, MAP_ICE
 
   !> The two condensed solvers a map is loaded for.
@@ -34,6 +35,10 @@ module hydraMI2_Stoichiometry
   !  dhProduct(m): the datum offset of the oxide, as dhDatum.
   logical,  allocatable, protected :: capped(:)
   real(R8), allocatable, protected :: nuCap(:,:), nuRel(:,:), nuOxide(:), dhProduct(:)
+  !> The smoke of an ICE material that burns into a condensed product (the tail of its combustion record): kg of
+  !  smoke per kg burnt, and the smoke material's datum offset (its formation enthalpy at T_datum_ref less ICE's
+  !  energy of it there), 0 without a smoke.
+  real(R8), allocatable, protected :: nuSmokeICE(:), dhSmokeICE(:)
 
   !> Process a material runs, and the energy rule of its record.
   integer, parameter :: PROC_NONE = 0, PROC_EVAP = 1, PROC_COMB = 2
@@ -46,6 +51,8 @@ module hydraMI2_Stoichiometry
     real(R8), allocatable :: h298(:)      !> the material's formation-inclusive enthalpy at T_datum_ref [J/kg]
     integer,  allocatable :: prod(:)      !> the material a capped material's oxide is, else 0
     real(R8), allocatable :: hprod(:)     !> that oxide's formation-inclusive enthalpy at T_datum_ref [J/kg]
+    character(len=64), allocatable :: smoke(:), sphase(:)   !> the smoke a burning material makes, the phase it is of
+    real(R8), allocatable :: nusm(:), hsm(:)                !> kg of smoke per kg burnt, its h298 [J/kg]
   end type map_book_t
   type(map_book_t) :: book(2)
 
@@ -73,14 +80,14 @@ contains
     character(len=*), parameter  :: E = ' [ERROR] MI2: '
     character(len=512)  :: fname, line
     character(len=1024) :: raw
-    character(len=64)   :: key, mname, proc, enword, spname, gpref, pname
+    character(len=64)   :: key, mname, proc, enword, spname, gpref, pname, sname, sphase
     integer  :: nmat, u, ios, m, s, k, nterm, nsfile, im, en, error, row
-    real(R8) :: h298, cmass, cmole, rowsum, cprod, hprod
+    real(R8) :: h298, cmass, cmole, rowsum, cprod, hprod, snu, sh
     logical  :: exists, gasline
     logical,  allocatable :: listed(:), found(:), capfound(:), relfound(:), relwanted(:)
     integer,  allocatable :: prod(:)
-    real(R8), allocatable :: nu_s(:,:), cap_s(:,:), rel_s(:,:), capnu(:), caph(:)
-    character(len=64), allocatable :: capname(:)
+    real(R8), allocatable :: nu_s(:,:), cap_s(:,:), rel_s(:,:), capnu(:), caph(:), smnu(:), smh(:)
+    character(len=64), allocatable :: capname(:), smn(:), smph(:)
     type(file_ini) :: fini
 
     nmat = size(material_names)
@@ -90,6 +97,8 @@ contains
              capname(max(nmat,1)), capfound(max(nmat,1)), relfound(max(nmat,1)), relwanted(max(nmat,1)), &
              prod(max(nmat,1)))
     cap_s = 0._R8; rel_s = 0._R8; capnu = 0._R8; caph = 0._R8; capname = ''
+    allocate(smnu(max(nmat,1)), smh(max(nmat,1)), smn(max(nmat,1)), smph(max(nmat,1)))
+    smnu = 0._R8; smh = 0._R8; smn = ''; smph = ''
     capfound = .false.; relfound = .false.; relwanted = .false.; prod = 0
     if (present(product)) prod(1:nmat) = product(1:nmat)
     if (present(releases)) then
@@ -99,8 +108,11 @@ contains
     endif
     associate ( bk => book(which) )
     if (allocated(bk%process)) deallocate(bk%process, bk%energy, bk%h298, bk%prod, bk%hprod)
+    if (allocated(bk%smoke)) deallocate(bk%smoke, bk%sphase, bk%nusm, bk%hsm)
     allocate(bk%process(max(nmat,1)), bk%energy(max(nmat,1)), bk%h298(max(nmat,1)), bk%prod(max(nmat,1)), &
              bk%hprod(max(nmat,1)))
+    allocate(bk%smoke(max(nmat,1)), bk%sphase(max(nmat,1)), bk%nusm(max(nmat,1)), bk%hsm(max(nmat,1)))
+    bk%smoke = ''; bk%sphase = ''; bk%nusm = 0._R8; bk%hsm = 0._R8
     bk%process = PROC_NONE; bk%energy = EN_NONE; bk%h298 = 0._R8; bk%prod = prod; bk%hprod = 0._R8
     do m = 1, nmat
       if (burns(m)) then
@@ -159,6 +171,19 @@ contains
           read(line,*,iostat=ios) key, mname, proc, nterm, enword, h298, pname, cprod, hprod
           if (ios /= 0) call Bad('a cap record that does not end with "<product> <kg per kg> <its h298>"')
         endif
+        ! a combustion record whose reaction makes a condensed product: the smoke, the ICE phase it is born in
+        sname = ''; snu = 0._R8; sh = 0._R8; sphase = ''
+        if (trim(proc) == 'combustion') then
+          read(line,*,iostat=ios) key, mname, proc, nterm, enword, h298, sname
+          if (ios == 0) then
+            read(line,*,iostat=ios) key, mname, proc, nterm, enword, h298, sname, snu, sh, sphase
+            if (ios /= 0) call Bad('a combustion record whose smoke does not read "<material> <kg per kg> <its h298> '// &
+                                   '<ICE phase>"')
+            if (.not. snu > 0._R8) call Bad('a combustion record whose smoke forms no mass')
+          else
+            sname = ''
+          endif
+        endif
         im = 0
         do m = 1, nmat
           if (trim(adjustl(material_names(m))) == trim(mname)) im = m
@@ -214,6 +239,7 @@ contains
         select case (row)
         case (1)
           found(im) = .true.; bk%energy(im) = en; bk%h298(im) = h298
+          smn(im) = sname; smnu(im) = snu; smh(im) = sh; smph(im) = sphase
         case (2)
           capfound(im) = .true.; capnu(im) = cprod; caph(im) = hprod; capname(im) = pname
         case (3)
@@ -240,10 +266,11 @@ contains
           '(psat-vapour) or its reaction (particle-mechanism) in its [GPB-Phase*] section and run ATLAS GPB again'
         error stop 1
       endif
-      rowsum = sum(nu_s(m,1:ns))
+      ! the gas's species and the smoke together take the mass the material loses
+      rowsum = sum(nu_s(m,1:ns)) + smnu(m)
       if (abs(rowsum - 1._R8) > 1.e-8_R8) then
         write(*,'(A,ES23.15)') E//trim(fname)//': the row of '//trim(adjustl(material_names(m)))// &
-          ' does not sum to 1 (the gas would not gain the mass the material loses): ', rowsum
+          ' with its smoke does not sum to 1 (the gas and the smoke would not gain the mass the material loses): ', rowsum
         error stop 1
       endif
     enddo
@@ -295,6 +322,7 @@ contains
       endif
       bk%hprod(m) = caph(m)
     enddo
+    bk%smoke = smn; bk%sphase = smph; bk%nusm = smnu; bk%hsm = smh
     end associate
     call Store()
 
@@ -324,6 +352,9 @@ contains
         if (allocated(mappedICE)) deallocate(mappedICE)
         allocate(mappedICE(max(nmat,1)))
         mappedICE = book(which)%process /= PROC_NONE
+        if (allocated(nuSmokeICE)) deallocate(nuSmokeICE, dhSmokeICE)
+        allocate(nuSmokeICE(max(nmat,1)), dhSmokeICE(max(nmat,1)))
+        nuSmokeICE = smnu; dhSmokeICE = 0._R8
       endif
       if (.not. any(book(which)%process(1:nmat) /= PROC_NONE)) &
         write(*,'(A)') ' [MI2] '//trim(SOLVER(which))//': no material evaporates or burns: no mass is handed to the gas.'
@@ -359,6 +390,30 @@ contains
     end function Species_Index
 
   end subroutine Load_Species_Map
+
+
+  !> The smoke the combustion record of material m of a solver makes: false without one; else its material, kg per kg
+  !  burnt, formation enthalpy at T_datum_ref and the ICE phase (prefix) it is born in.
+  logical function Smoke_Record ( which, m, name, nus, h298, phase )
+    integer,          intent(in)  :: which, m
+    character(len=*), intent(out) :: name, phase
+    real(R8),         intent(out) :: nus, h298
+    name = ''; phase = ''; nus = 0._R8; h298 = 0._R8
+    Smoke_Record = .false.
+    if (.not. allocated(book(which)%smoke)) return
+    if (m > size(book(which)%smoke)) return
+    if (len_trim(book(which)%smoke(m)) == 0) return
+    name = book(which)%smoke(m); phase = book(which)%sphase(m); nus = book(which)%nusm(m); h298 = book(which)%hsm(m)
+    Smoke_Record = .true.
+  end function Smoke_Record
+
+
+  !> The datum offset of the smoke of ICE material m: its formation enthalpy less ICE's energy of it at T_datum_ref.
+  subroutine Set_Smoke_Datum ( m, dh )
+    integer,  intent(in) :: m
+    real(R8), intent(in) :: dh
+    dhSmokeICE(m) = dh
+  end subroutine Set_Smoke_Datum
 
 
   !> Echo the rows a solver's materials are handed to the gas with, and the process of each.
