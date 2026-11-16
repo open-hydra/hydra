@@ -247,6 +247,8 @@ program hydra_MI2_program
 
   call Check_Time_Accuracy()
 
+  call Check_Burning_Defaults()
+
   ! ---------------------------------------------------------------------------
   ! Coupling cycles
   ! ---------------------------------------------------------------------------
@@ -640,6 +642,67 @@ contains
     write(*,*)
 
   end subroutine Report_MI2_Config
+
+
+  !> A material name that ICE and IGLOO both carry and burn differently, where a phase file does not say the model
+  !  (no combustion token on the material line: the solver's section decided): a message, nothing stops.
+  subroutine Check_Burning_Defaults()
+    use ICE_Global_m,    only: ICE_phase_prefix
+    use IGLOO_variables, only: IGLOO_phase_prefix
+    implicit none
+    character(len=9), parameter :: ICE_WORD(0:2) = ['none     ', 'direct   ', 'Beckstead']
+    character(len=9), parameter :: IGL_WORD(0:2) = ['none     ', 'Beckstead', 'direct   ']
+    integer :: mi, mg
+    logical :: saidICE, saidIGLOO
+
+    if ( .not. (hydra_MI2_obj%run_ICE .and. hydra_MI2_obj%run_IGLOO) ) return
+    do mi = 1, size(ICE_obj_condensed)
+      do mg = 1, size(IGLOO%material)
+        if ( trim(adjustl(ICE_obj_condensed(mi)%name)) /= trim(adjustl(IGLOO%material(mg)%matName)) ) cycle
+        if ( IGLOO%material(mg)%ngroups == 0 ) cycle
+        if ( trim(ICE_WORD(ICE_obj_condensed(mi)%combSelect)) == trim(IGL_WORD(IGLOO%material(mg)%combSelect)) ) cycle
+        saidICE   = Line_Says_Model( 'INPUT/'//trim(ICE_phase_prefix)//'phase.txt',   ICE_obj_condensed(mi)%name )
+        saidIGLOO = Line_Says_Model( 'INPUT/'//trim(IGLOO_phase_prefix)//'phase.txt', IGLOO%material(mg)%matName )
+        if ( saidICE .and. saidIGLOO ) cycle
+        write(*,'(A)') ' [WARNING] MI2: material '//trim(adjustl(ICE_obj_condensed(mi)%name))//' burns as '// &
+          trim(ICE_WORD(ICE_obj_condensed(mi)%combSelect))//' in ICE and as '// &
+          trim(IGL_WORD(IGLOO%material(mg)%combSelect))//' in IGLOO, and '// &
+          trim(merge('neither phase file says    ', 'one phase file does not say', .not. (saidICE .or. saidIGLOO)))// &
+          ' its model: there the solver''s section decided ([ICE-Physics] combustion, [IGLOO-Models] combustion). '// &
+          'Write combustion in both [GPB-Phase*] sections (none for a material that does not burn) to say it is meant'
+      enddo
+    enddo
+
+  end subroutine Check_Burning_Defaults
+
+
+  !> True when the line of the material in a phase file carries a combustion token.
+  logical function Line_Says_Model( file, material ) result(says)
+    implicit none
+    character(len=*), intent(in) :: file, material
+    character(len=1024) :: line
+    character(len=64)   :: first
+    integer :: u, ios
+    logical :: exists
+
+    says = .false.
+    inquire(file=file, exist=exists)
+    if ( .not. exists ) return
+    open(newunit=u, file=file, status='old', action='read')
+    read(u,'(A)',iostat=ios) line                 ! the type word
+    do
+      read(u,'(A)',iostat=ios) line
+      if ( ios /= 0 ) exit
+      if ( len_trim(line) == 0 ) cycle
+      read(line,*,iostat=ios) first
+      if ( ios /= 0 ) cycle
+      if ( trim(first) /= trim(adjustl(material)) ) cycle
+      says = index(line, ' combustion=') > 0
+      exit
+    enddo
+    close(u)
+
+  end function Line_Says_Model
 
 
   !> Refuse a cycle that advances MOSE and ICE together while either is time-accurate: the two
