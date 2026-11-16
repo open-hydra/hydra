@@ -12,15 +12,16 @@ program hydra_MI2_program
   use hydraMI2_Read_Ini,       only: Read_Inifile_MI2, Read_Inifile_MI2_Runtime
   use hydraMI2_Config_Types_m, only: hydra_MI2_obj
   use hydraMI2_Mod_Import,     only: Assign_Phases
-  use hydraMI2_Stoichiometry,  only: Build_Species_Stoichiometry, Report_Stoichiometry, &
-                                     has_stoichiometry, Build_Datum_Offsets, T_datum_ref
+  use hydraMI2_Stoichiometry,  only: Load_Species_Map, Report_Stoichiometry, MAP_IGLOO, MAP_ICE, &
+                                     has_stoichiometry, has_stoichiometry_ICE, Build_Datum_Offsets, T_datum_ref
   use hydraMI2_Mod_Coupling,   only: MOSExIGLOO, Gas_Field_For_IGLOO, IGLOOxMOSE, &
                                      MOSExICE, ICExMOSE, &
                                      resField, Initialize_Residual_Store, Build_Family_Material_Map, &
                                      Accumulate_Injected_Mass, massInjected, Gas_Species_Mass, &
-                                     nMassLimited, Accumulate_Injected_Energy, Gas_Total_Energy, &
+                                     nMassLimited, Accumulate_Injected_Energy, Accumulate_Injected_ICE, &
+                                     Gas_Total_Energy, &
                                      Gas_Mean_Temperature, energyInjected, energyDatumPart, &
-                                     energyAudited, Check_ICE_Mass_Channel, Check_ICE_No_Combustion, &
+                                     energyAudited, Check_ICE_Mass_Channel, &
                                      Check_ICE_Source_Finite, Check_IGLOO_Source_Finite, &
                                      Check_IGLOO_Euler_Finite, &
                                      Gas_Momentum, ICE_To_Gas_Totals, IGLOO_To_Gas_Totals, &
@@ -34,7 +35,8 @@ program hydra_MI2_program
   use MOSE_Procedures_m,     only: MOSE_type
 
   use ICE_Advanced_Types_m,  only: ICE_simulation_type
-  use ICE_Config_Types_m,    only: ICE_obj_sim_param => obj_sim_param, ICE_obj_time_scheme => obj_time_scheme
+  use ICE_Config_Types_m,    only: ICE_obj_sim_param => obj_sim_param, ICE_obj_time_scheme => obj_time_scheme, &
+                                   ICE_obj_condensed => obj_condensed
   use ICE_Procedures_m,      only: ICE_type
 
   use IGLOO_module,          only: obj_IGLOO
@@ -115,48 +117,118 @@ program hydra_MI2_program
 
   ! ICE and IGLOO ingest the gas field as ORION data; each is set up only when enabled
   if (hydra_MI2_obj%run_ICE)   call ICE%setup( ICE_simulation, MOSE_simulation%IOfield(1) )
-  ! the coupler cannot hand the gas what a burning ICE material releases
-  if (hydra_MI2_obj%run_ICE)   call Check_ICE_No_Combustion()
+  ! material -> gas species of ICE's phase, from the file ATLAS writes: a material that converts needs its record
+  if (hydra_MI2_obj%run_ICE) then
+    block
+      use ICE_Global_m,       only: ICE_phase_prefix
+      use ICE_Lib_Properties, only: mat_e, mat_cp_const, mat_lv
+      character(len=64), allocatable :: matnames(:)
+      logical,           allocatable :: evap(:), burn(:), beck(:)
+      real(R8),          allocatable :: eICEref(:), Lvmat(:), qmat(:), Thot(:), eICEhot(:)
+      logical,           allocatable :: Lvconst(:)
+      integer :: im, nm
+      nm = size(ICE_obj_condensed)
+      allocate(matnames(nm), evap(nm), burn(nm), eICEref(nm), Lvmat(nm), qmat(nm), Thot(nm), eICEhot(nm), Lvconst(nm))
+      allocate(beck(nm))
+      do im = 1, nm
+        matnames(im) = ICE_obj_condensed(im)%name
+        evap(im)     = ICE_obj_condensed(im)%evapSelect > 0
+        burn(im)     = ICE_obj_condensed(im)%combSelect > 0
+        beck(im)     = ICE_obj_condensed(im)%combSelect == 2
+        ! where the material converts: its boiling temperature, or the one it burns from (Beckstead: T-ign)
+        Thot(im) = ICE_obj_condensed(im)%Tboil
+        if ( ICE_obj_condensed(im)%combSelect == 2 ) Thot(im) = ICE_obj_condensed(im)%Tign
+        ! the energy ICE credits the material at T_ref and there on its own datum: its table's, or cp*T
+        if ( ICE_obj_condensed(im)%cs_varies ) then
+          eICEref(im) = mat_e( ICE_obj_condensed(im), T_datum_ref )
+          eICEhot(im) = mat_e( ICE_obj_condensed(im), Thot(im) )
+        else
+          eICEref(im) = mat_cp_const( ICE_obj_condensed(im) ) * T_datum_ref
+          eICEhot(im) = mat_cp_const( ICE_obj_condensed(im) ) * Thot(im)
+        endif
+        Lvmat(im)   = mat_lv( ICE_obj_condensed(im), T_datum_ref )
+        Lvconst(im) = .not. ICE_obj_condensed(im)%use_lv
+        qmat(im)    = ICE_obj_condensed(im)%qComb
+      enddo
+      call Load_Species_Map( MAP_ICE, ICE_phase_prefix, matnames, evap, burn )
+      call Report_Stoichiometry( MAP_ICE, matnames, nm )
+      call Build_Datum_Offsets( MAP_ICE, matnames, nm, beck, eICEref, Lvmat, qmat, Thot, eICEhot, Lvconst )
+      deallocate(matnames, evap, burn, beck, eICEref, Lvmat, qmat, Thot, eICEhot, Lvconst)
+    end block
+  endif
   ! IGLOO%setup includes the reset_state of the first solve; every later solve needs its own
   if (hydra_MI2_obj%run_IGLOO) then
     call Gas_Field_For_IGLOO( MOSE_simulation%domain(1), MOSE_simulation%IOfield(1), gas_for_igloo )
     call IGLOO%setup( gas_for_igloo )
     call Build_Family_Material_Map( IGLOO )
-    ! material -> gas-species stoichiometry for mass coupling (absent => off)
+    ! material -> gas species of IGLOO's phase, from the file ATLAS writes: a material that converts needs its record
     block
+      use IGLOO_variables,      only: IGLOO_phase_prefix
+      use IGLOO_Lib_Combustion, only: nuOx
       character(len=20), allocatable :: matnames(:)
+      logical,           allocatable :: evap(:), burn(:), handsCap(:)
+      integer,           allocatable :: oxide(:)
       integer :: im
-      allocate(matnames(size(IGLOO%material)))
+      allocate(matnames(size(IGLOO%material)), evap(size(IGLOO%material)), burn(size(IGLOO%material)), &
+               handsCap(size(IGLOO%material)), oxide(size(IGLOO%material)))
       do im = 1, size(IGLOO%material)
         matnames(im) = IGLOO%material(im)%matName
+        evap(im)     = IGLOO%material(im)%evapSelect > 0
+        burn(im)     = IGLOO%material(im)%combSelect > 0
+        ! a material that burns with an oxide cap: the material its oxide is, and whether the cap ends in the gas
+        oxide(im)    = 0
+        if ( burn(im) ) oxide(im) = IGLOO%material(im)%prodID
+        handsCap(im) = oxide(im) > 0 .and. .not. IGLOO%material(im)%resOn
       enddo
-      call Build_Species_Stoichiometry( matnames, size(IGLOO%material) )
-      call Report_Stoichiometry( matnames, size(IGLOO%material) )
+      call Load_Species_Map( MAP_IGLOO, IGLOO_phase_prefix, matnames, evap, burn, oxide, handsCap, nuOx )
+      ! the Eulerian coupling hands the gas no mass, no species and no heat of reaction
+      if ( has_stoichiometry .and. any(hydra_MI2_obj%IGLOO_iter == 2) ) then
+        write(*,'(A)') ' [ERROR] MI2: an IGLOO material evaporates or burns and a cycle has IGLOO-iter = 2: the '// &
+          'Eulerian coupling hands the gas momentum and energy only, without the mass, its species and its '// &
+          'heat of reaction. Use IGLOO-iter = 1 (source coupling) in every cycle that runs IGLOO'
+        error stop 1
+      endif
+      call Report_Stoichiometry( MAP_IGLOO, matnames, size(IGLOO%material) )
 
       ! enthalpy-datum offsets; hIGLOOref is the enthalpy IGLOO credits for the material at T_ref on
       ! the datum of its table: cp*T_ref + hOff for constant cp, hTab interpolated at T_ref otherwise
       block
-        real(R8), allocatable :: hIGLOOref(:), Lvmat(:)
+        real(R8), allocatable :: hIGLOOref(:), Lvmat(:), qmat(:), Thot(:), hIGLOOhot(:)
+        logical,  allocatable :: beck(:)
+        logical,  allocatable :: Lvconst(:)
         integer :: it
-        allocate(hIGLOOref(size(IGLOO%material)), Lvmat(size(IGLOO%material)))
+        allocate(hIGLOOref(size(IGLOO%material)), Lvmat(size(IGLOO%material)), qmat(size(IGLOO%material)), &
+                 Thot(size(IGLOO%material)), hIGLOOhot(size(IGLOO%material)), Lvconst(size(IGLOO%material)))
+        allocate(beck(size(IGLOO%material)))
         do im = 1, size(IGLOO%material)
-          Lvmat(im) = IGLOO%material(im)%Lv
+          Lvmat(im)   = IGLOO%material(im)%Lv
+          Lvconst(im) = .not. IGLOO%material(im)%LvVariable
+          qmat(im)    = IGLOO%material(im)%qComb
+          ! where the material converts: its boiling temperature, or the one it burns from (Beckstead: T-ign)
+          Thot(im) = IGLOO%material(im)%Tboil
+          if ( IGLOO%material(im)%combSelect == 1 ) Thot(im) = IGLOO%material(im)%Tign
+          beck(im) = IGLOO%material(im)%combSelect == 1
           if ( IGLOO%material(im)%cpVariable ) then
             associate ( ht => IGLOO%material(im)%hTab )
               it = max(lbound(ht,1), min(int(T_datum_ref), ubound(ht,1)-1))
               hIGLOOref(im) = ht(it) + (ht(it+1)-ht(it))*(T_datum_ref - real(it,R8))
+              it = max(lbound(ht,1), min(int(Thot(im)), ubound(ht,1)-1))
+              hIGLOOhot(im) = ht(it) + (ht(it+1)-ht(it))*(Thot(im) - real(it,R8))
             end associate
           else
             hIGLOOref(im) = IGLOO%material(im)%cp * T_datum_ref + IGLOO%material(im)%hOff
+            hIGLOOhot(im) = IGLOO%material(im)%cp * Thot(im) + IGLOO%material(im)%hOff
           endif
           write(*,'(A,I0,A,ES14.7,A)') ' [MI2] IGLOO material ', im, ': table datum '// &
             trim(IGLOO%material(im)%hDatum)//', hOff = ', IGLOO%material(im)%hOff, ' J/kg'
         enddo
-        call Build_Datum_Offsets( matnames, size(IGLOO%material), hIGLOOref, Lvmat )
-        deallocate(hIGLOOref, Lvmat)
+        call Build_Datum_Offsets( MAP_IGLOO, matnames, size(IGLOO%material), beck, hIGLOOref, Lvmat, qmat, Thot, &
+                                  hIGLOOhot, Lvconst )
+        deallocate(hIGLOOref, Lvmat, qmat, Thot, hIGLOOhot, Lvconst)
+        deallocate(beck)
       end block
 
-      deallocate(matnames)
+      deallocate(matnames, evap, burn, handsCap, oxide)
     end block
     ! under-relaxation store, allocated whether or not relaxation is on
     call Initialize_Residual_Store( MOSE_simulation%domain(1), oldResidual )
@@ -174,6 +246,8 @@ program hydra_MI2_program
   call Report_Setup()
 
   call Check_Time_Accuracy()
+
+  call Check_Burning_Defaults()
 
   ! ---------------------------------------------------------------------------
   ! Coupling cycles
@@ -227,6 +301,10 @@ program hydra_MI2_program
         call Accumulate_Injected_Energy( IGLOO, MOSE_simulation%domain(1)%time - t_block0 )
       elseif ( IGLOO_has_sources ) then
         nAuditSkipped = nAuditSkipped + 1
+      endif
+      if ( hydra_MI2_obj%run_ICE .and. ICE_has_sources .and. has_stoichiometry_ICE ) then
+        call Accumulate_Injected_ICE( MOSE_simulation%domain(1), ICE_simulation%domain(1), &
+                                      MOSE_simulation%domain(1)%time - t_block0 )
       endif
 
       if ( hydra_MI2_obj%report ) call Report_Coupling_Step()
@@ -284,7 +362,7 @@ program hydra_MI2_program
           endif
         enddo
 
-        ! warn once if ICE's mass channel, dropped by ICExMOSE, becomes non-zero
+        ! refuse a mass source of a material without a record
         if ( ICE_has_sources ) call Check_ICE_Mass_Channel( ICE_simulation%domain(1) )
         ! refuse a non-finite source before MOSE applies it
         if ( ICE_has_sources ) call Check_ICE_Source_Finite( MOSE_simulation%domain(1), ICE_simulation%domain(1) )
@@ -317,7 +395,7 @@ program hydra_MI2_program
   endif
   if (hydra_MI2_obj%run_IGLOO) call IGLOO%writeout()
 
-  if ( hydra_MI2_obj%run_IGLOO .and. has_stoichiometry .and. nMassLimited > 0 ) then
+  if ( nMassLimited > 0 ) then
     write(*,*)
     write(*,'(A,I0,A)') ' [MI2] WARNING: the consumed-species floor guard clamped ', nMassLimited, &
       ' (cell,species) extractions.'
@@ -514,14 +592,6 @@ contains
       IGLOO%srcSwitch = .true.
     endif
 
-    ! the Eulerian branch carries no mass: warn when a stoichiometry is configured
-    if ( eulCoupling .and. has_stoichiometry ) then
-      write(*,'(A)') ' [MI2] WARNING: IGLOO-iter = 2 (Eulerian coupling) carries momentum and'
-      write(*,'(A)') '       energy ONLY. getSourceTerms has no mass component, so the'
-      write(*,'(A)') '       [MI2-Coupling] stoichiometry is NOT applied this cycle.'
-      write(*,'(A)') '       Use IGLOO-iter = 1 (source coupling) for mass transfer.'
-    endif
-
   end subroutine Set_IGLOO_Switches
 
 
@@ -574,6 +644,67 @@ contains
   end subroutine Report_MI2_Config
 
 
+  !> A material name that ICE and IGLOO both carry and burn differently, where a phase file does not say the model
+  !  (no combustion token on the material line: the solver's section decided): a message, nothing stops.
+  subroutine Check_Burning_Defaults()
+    use ICE_Global_m,    only: ICE_phase_prefix
+    use IGLOO_variables, only: IGLOO_phase_prefix
+    implicit none
+    character(len=9), parameter :: ICE_WORD(0:2) = ['none     ', 'direct   ', 'Beckstead']
+    character(len=9), parameter :: IGL_WORD(0:2) = ['none     ', 'Beckstead', 'direct   ']
+    integer :: mi, mg
+    logical :: saidICE, saidIGLOO
+
+    if ( .not. (hydra_MI2_obj%run_ICE .and. hydra_MI2_obj%run_IGLOO) ) return
+    do mi = 1, size(ICE_obj_condensed)
+      do mg = 1, size(IGLOO%material)
+        if ( trim(adjustl(ICE_obj_condensed(mi)%name)) /= trim(adjustl(IGLOO%material(mg)%matName)) ) cycle
+        if ( IGLOO%material(mg)%ngroups == 0 ) cycle
+        if ( trim(ICE_WORD(ICE_obj_condensed(mi)%combSelect)) == trim(IGL_WORD(IGLOO%material(mg)%combSelect)) ) cycle
+        saidICE   = Line_Says_Model( 'INPUT/'//trim(ICE_phase_prefix)//'phase.txt',   ICE_obj_condensed(mi)%name )
+        saidIGLOO = Line_Says_Model( 'INPUT/'//trim(IGLOO_phase_prefix)//'phase.txt', IGLOO%material(mg)%matName )
+        if ( saidICE .and. saidIGLOO ) cycle
+        write(*,'(A)') ' [WARNING] MI2: material '//trim(adjustl(ICE_obj_condensed(mi)%name))//' burns as '// &
+          trim(ICE_WORD(ICE_obj_condensed(mi)%combSelect))//' in ICE and as '// &
+          trim(IGL_WORD(IGLOO%material(mg)%combSelect))//' in IGLOO, and '// &
+          trim(merge('neither phase file says    ', 'one phase file does not say', .not. (saidICE .or. saidIGLOO)))// &
+          ' its model: there the solver''s section decided ([ICE-Physics] combustion, [IGLOO-Models] combustion). '// &
+          'Write combustion in both [GPB-Phase*] sections (none for a material that does not burn) to say it is meant'
+      enddo
+    enddo
+
+  end subroutine Check_Burning_Defaults
+
+
+  !> True when the line of the material in a phase file carries a combustion token.
+  logical function Line_Says_Model( file, material ) result(says)
+    implicit none
+    character(len=*), intent(in) :: file, material
+    character(len=1024) :: line
+    character(len=64)   :: first
+    integer :: u, ios
+    logical :: exists
+
+    says = .false.
+    inquire(file=file, exist=exists)
+    if ( .not. exists ) return
+    open(newunit=u, file=file, status='old', action='read')
+    read(u,'(A)',iostat=ios) line                 ! the type word
+    do
+      read(u,'(A)',iostat=ios) line
+      if ( ios /= 0 ) exit
+      if ( len_trim(line) == 0 ) cycle
+      read(line,*,iostat=ios) first
+      if ( ios /= 0 ) cycle
+      if ( trim(first) /= trim(adjustl(material)) ) cycle
+      says = index(line, ' combustion=') > 0
+      exit
+    enddo
+    close(u)
+
+  end function Line_Says_Model
+
+
   !> Refuse a cycle that advances MOSE and ICE together while either is time-accurate: the two
   !  solvers do not share a time step, so their physical times would part.
   subroutine Check_Time_Accuracy()
@@ -607,8 +738,9 @@ contains
     write(*,'(A,6ES24.16)') ' [MI2-report] gas-momentum', momRep0, momRep1
     write(*,'(A,2ES24.16)') ' [MI2-report] gas-energy', enRep0, enRep1
     if ( hydra_MI2_obj%run_ICE .and. ICE_has_sources ) then
-      call ICE_To_Gas_Totals( MOSE_simulation%domain(1), ICE_simulation%domain(1), F, Q, taumin, taumax )
+      call ICE_To_Gas_Totals( MOSE_simulation%domain(1), ICE_simulation%domain(1), F, Q, M, taumin, taumax )
       write(*,'(A,6ES24.16)') ' [MI2-report] ice-to-gas', F, Q, taumin, taumax
+      if ( has_stoichiometry_ICE ) write(*,'(A,ES24.16)') ' [MI2-report] ice-to-gas-mass', M
     endif
     if ( hydra_MI2_obj%run_IGLOO .and. IGLOO_has_sources .and. .not. IGLOO_src_eulerian ) then
       call IGLOO_To_Gas_Totals( MOSE_simulation%domain(1), IGLOO, F, Q, M )

@@ -33,7 +33,7 @@ contains
     use hydra_Get_File_List_m,   only: Get_File_List
     use hydraMI2_Config_Types_m, only: hydra_MI2_obj
     use MOSE_Global_m,           only: MOSE_phase_prefix
-    use ICE_Global_m,            only: ICE_phase_prefix
+    use ICE_Global_m,            only: ICE_phase_prefix, ICE_gas_by_coupler
     use IGLOO_variables,         only: IGLOO_phase_prefix
     implicit none
     character(len=llen_), allocatable :: file_list(:)
@@ -129,6 +129,8 @@ contains
     if (iICE /= 0) then
       call Fits(ph(iICE), len(ICE_phase_prefix), 'ICE')
       ICE_phase_prefix = trim(ph(iICE)%prefix)
+      ! the gas phase and the species a burnt mass becomes are the coupler's
+      ICE_gas_by_coupler = .true.
     endif
     if (iIGLOO /= 0) then
       call Fits(ph(iIGLOO), len(IGLOO_phase_prefix), 'IGLOO')

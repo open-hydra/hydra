@@ -1,0 +1,5 @@
+name: a-ar
+description: the material A becomes Ar, a species of the gas that only this phase makes; its heat of reaction is the h0 of A less the enthalpy of Ar at 298.15 K
+reference: none (a test case; the rate is the solver's)
+reactions:
+- equation: A => Ar

@@ -24,6 +24,7 @@ export ATLASDIR
 
 rm -rf "$dst"; mkdir -p "$dst"
 cp -rpL "$src/INPUT" "$dst/"; cp -p "$src/input.ini" "$dst/"
+cp -p "$src"/*.yaml "$dst/" 2> /dev/null   # a reaction file of the case (particle-mechanism), read by GPB
 cd "$dst" || exit 2
 # BCB and ICB read a phase's tables from the case root when its phase.txt is there, else from fromATLAStoSolver/
 # (ATLAS phase_dir): after GPB they must read GPB's tables, so the stored ones are copied only without GPB
