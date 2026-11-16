@@ -56,11 +56,12 @@ for C in ice-burn-box ice-burn-box-beckstead; do
 done
 
 S=$H/test/ice-burn-box
-# --- default: the model and its constants given by [ICE-Physics], no token on the material line, no models file ---
+# --- default: the model given by [ICE-Physics], no token on the material line; its constants stay in their row, whose
+#     model word "-" stands for the model the material burns on ---
 d=$T/default; log=$T/default.log; rm -rf "$d"; mkdir -p "$d"; cp -rp "$S/INPUT" "$S/MESH" "$S/input.ini" "$d/"
-sed -i 's/^A 1 combustion=direct$/A 1/' "$d/INPUT/part-phase.txt"; rm -f "$d/INPUT/part-models.txt"
-sed -i 's/^\[ICE-Physics\]$/[ICE-Physics]\ncombustion = direct\nq-comb = 1.0e6\nd-stop = 1.0e-6\nboiling-temperature = 300/' "$d/input.ini"
-if grep -q '^A 1$' "$d/INPUT/part-phase.txt" && grep -q '^combustion = direct$' "$d/input.ini" && [ ! -e "$d/INPUT/part-models.txt" ]; then
+sed -i 's/^A 1 combustion=direct$/A 1/' "$d/INPUT/part-phase.txt"; sed -i 's/^A combustion direct /A combustion - /' "$d/INPUT/part-models.txt"
+sed -i 's/^\[ICE-Physics\]$/[ICE-Physics]\ncombustion = direct/' "$d/input.ini"
+if grep -q '^A 1$' "$d/INPUT/part-phase.txt" && grep -q '^combustion = direct$' "$d/input.ini" && grep -q '^A combustion - ' "$d/INPUT/part-models.txt"; then
   "$RUN" "$d" "$d/run" 1 "$log" "$EXE" > /dev/null 2>&1; rc=$?
   n=$(ls "$T/ice-burn-box/OUTPUT" | wc -l)
   if [ $rc = 0 ] && [ "$n" -gt 0 ] && diff -rq "$T/ice-burn-box/OUTPUT" "$d/run/OUTPUT" > /dev/null; then
@@ -97,6 +98,10 @@ stop cap-row  "a cap row gives the oxide cap of a burning drop" INPUT/part-model
 stop kind     'unknown kind "breakup"'                        INPUT/part-models.txt   '$a A breakup TAB Comega=8'
 stop model    "the material burns with combustion=direct"     INPUT/part-models.txt   's/^A combustion direct /A combustion Beckstead /'
 stop key      "K-burn is not a constant of combustion=direct" INPUT/part-models.txt   's/^A combustion direct /A combustion direct K-burn=1.39e-06 /'
+stop section  "[ICE-Physics] q-comb: a constant of the burning model, in the material's row of the models file" \
+                                                              input.ini               's/^\[ICE-Physics\]$/[ICE-Physics]\nq-comb = 1.0e6/'
+stop no-qcomb "requires q-comb, the heat of reaction per kg burnt, in its row of the models file" \
+                                                              INPUT/part-models.txt   's/ q-comb=1000000 / /'
 
 # --- lv: the latent heat from the Lv column of the property table ---
 column() {  # column <case dir>: an Lv column, 2.26e6 J/kg at 300 K and 1000 J/kg more per kelvin, appended to the table
@@ -151,5 +156,11 @@ heat far    ice-burn-box-beckstead   1030000 1.0300000E+06 1
 heat direct ice-burn-box 2000000 2.0000000E+06 0
 grep -a -q 'combustion = direct: q-comb sets the rate' "$T/heat-direct.log" && ! grep -a -q 'combustion = direct: q-comb sets the rate' "$T/heat-near.log" \
   && ok "heat direct: the coupler says what q-comb is for direct, and only for direct" || ko "heat direct: the line on q-comb of direct is missing, or printed for Beckstead"
+# q-comb = 0 written: allowed; direct says its rate ignores the heat of reaction, Beckstead (beta-part 0.3) warns
+heat zero      ice-burn-box           0 0.0000000E+00 0
+heat zero-beck ice-burn-box-beckstead 0 0.0000000E+00 1
+grep -a -q 'q-comb = 0: the rate is pure vaporisation' "$T/heat-zero.log" && ! grep -a -q 'q-comb = 0: the rate is pure vaporisation' "$T/heat-direct.log" \
+  && ok "heat zero: direct with q-comb = 0 says its rate ignores the heat of reaction, and only then" \
+  || ko "heat zero: the line on q-comb = 0 is missing, or printed with q-comb > 0"
 
 echo "== $pass passed, $fail failed"; [ $fail = 0 ]
