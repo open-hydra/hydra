@@ -14,10 +14,10 @@ module hydraMI2_Mod_Coupling
   public :: Accumulate_Injected_Mass
   public :: Gas_Species_Mass
   public :: Accumulate_Injected_Energy
+  public :: Accumulate_Injected_ICE
   public :: Gas_Total_Energy
   public :: Gas_Mean_Temperature
   public :: Check_ICE_Mass_Channel
-  public :: Check_ICE_No_Combustion
   public :: Check_ICE_Source_Finite
   public :: Check_IGLOO_Source_Finite
   public :: Check_IGLOO_Euler_Finite
@@ -44,9 +44,6 @@ module hydraMI2_Mod_Coupling
   real(R8), public :: energyInjected  = 0._R8
   real(R8), public :: energyDatumPart = 0._R8
   logical,  public :: energyAudited   = .false.
-
-  !> Latch: the Check_ICE_Mass_Channel warning is printed once.
-  logical, private :: ICE_mass_channel_reported = .false.
 
   !> Inflow mass flow MOSExIGLOO handed IGLOO at its last call [kg/s], and the number of face records.
   real(R8), public :: mdotHanded = 0._R8
@@ -99,22 +96,26 @@ contains
   end subroutine Gas_Momentum
 
 
-  !> What ICE's sources hand the gas over the interior cells and the families: force F [N] and energy
-  !  rate Q [W] (-source*vol, as ICExMOSE applies them), and the range of the relaxation time tau [s].
-  subroutine ICE_To_Gas_Totals ( MOSE_domain, ICE_domain, F, Q, taumin, taumax )
-    use MOSE_Advanced_Types_m, only: MOSE_domain_type
-    use ICE_Advanced_Types_m,  only: ICE_domain_type
-    use ICE_Global_m,          only: ngroups, nbase
+  !> What ICE's sources hand the gas over the interior cells and the families, as ICExMOSE applies them: force
+  !  F [N], energy rate Q [W] (with the datum offset of a material that converts), mass
+  !  rate M [kg/s] into the gas species, and the range of the relaxation time tau [s].
+  subroutine ICE_To_Gas_Totals ( MOSE_domain, ICE_domain, F, Q, M, taumin, taumax )
+    use MOSE_Advanced_Types_m,  only: MOSE_domain_type
+    use MOSE_Global_m,          only: nsc
+    use ICE_Advanced_Types_m,   only: ICE_domain_type
+    use ICE_Global_m,           only: ngroups, nbase, mat_of
+    use hydraMI2_Stoichiometry, only: nu_ice => nuICE, has_stoichiometry_ICE, dhDatumICE
     implicit none
     type(MOSE_domain_type), intent(in)  :: MOSE_domain
     type(ICE_domain_type),  intent(in)  :: ICE_domain
-    real(R8),               intent(out) :: F(3), Q, taumin, taumax
-    integer  :: b, g, i, j, k
-    real(R8) :: vol
+    real(R8),               intent(out) :: F(3), Q, M, taumin, taumax
+    integer  :: b, g, i, j, k, imat
+    real(R8) :: vol, dm
 
-    F = 0._R8; Q = 0._R8; taumin = huge(1._R8); taumax = -huge(1._R8)
+    F = 0._R8; Q = 0._R8; M = 0._R8; taumin = huge(1._R8); taumax = -huge(1._R8)
     do b = 1, size(MOSE_domain%blk)
       do g = 1, ngroups
+        imat = mat_of(g)
         do k = 1, MOSE_domain%blk(b)%dim(3)
         do j = 1, MOSE_domain%blk(b)%dim(2)
         do i = 1, MOSE_domain%blk(b)%dim(1)
@@ -124,6 +125,11 @@ contains
             Q = Q - cp%source(nbase(g)-1,i,j,k) * vol
             taumin = min(taumin, cp%tau(i,j,k))
             taumax = max(taumax, cp%tau(i,j,k))
+            if (has_stoichiometry_ICE) then
+              dm = - cp%source(1,i,j,k) * vol
+              M  = M + sum(nu_ice(imat,1:nsc)) * dm
+              Q  = Q + dhDatumICE(imat) * dm
+            endif
           end associate
         enddo; enddo; enddo
       enddo
@@ -139,12 +145,13 @@ contains
     use MOSE_Global_m,          only: nsc
     use IGLOO_module,           only: obj_IGLOO
     use IGLOO_variables,        only: nm
-    use hydraMI2_Stoichiometry, only: nu_gas => nu, has_stoichiometry, dhDatum
+    use hydraMI2_Stoichiometry, only: nu_gas => nu, has_stoichiometry, dhDatum, capped, nuCap, nuRel, dhProduct
     implicit none
     type(MOSE_domain_type), intent(in)  :: MOSE_domain
     type(obj_IGLOO),        intent(in)  :: IGLOO
     real(R8),               intent(out) :: F(3), Q, M
-    integer :: b, i, j, k, imat
+    integer  :: b, i, j, k, imat
+    real(R8) :: cr(4)
 
     F = 0._R8; Q = 0._R8; M = 0._R8
     do b = 1, size(MOSE_domain%blk)
@@ -156,6 +163,13 @@ contains
         Q = Q + IGLOO%source(b)%sourceEn(i,j,k)
         if (.not. has_stoichiometry) cycle
         do imat = 1, nm
+          if (capped(imat)) then
+            cr = Cap_Rates( imat, IGLOO%source(b)%sourceMass(imat,i,j,k), IGLOO%source(b)%sourceMass(nm+2*imat-1,i,j,k), &
+                            IGLOO%source(b)%sourceMass(nm+2*imat,i,j,k) )
+            M = M + sum(nu_gas(imat,1:nsc))*cr(2) + sum(nuCap(imat,1:nsc))*cr(3) + sum(nuRel(imat,1:nsc))*cr(4)
+            Q = Q + dhDatum(imat)*cr(1) - dhProduct(imat)*(cr(3) - cr(4))
+            cycle
+          endif
           M = M + sum(nu_gas(imat,1:nsc)) * IGLOO%source(b)%sourceMass(imat,i,j,k)
           Q = Q + dhDatum(imat) * IGLOO%source(b)%sourceMass(imat,i,j,k)
         enddo
@@ -165,18 +179,35 @@ contains
   end subroutine IGLOO_To_Gas_Totals
 
 
+  !> The rates of a capped IGLOO material [kg/s] from its net mass column and its cap's two: (1) the material
+  !  consumed, (2) the part of it burnt into gas species, (3) the oxide its cap gained, (4) the cap oxide handed
+  !  to the gas.
+  pure function Cap_Rates ( m, net, gained, handed ) result(cr)
+    use hydraMI2_Stoichiometry, only: nuOxide
+    implicit none
+    integer,  intent(in) :: m
+    real(R8), intent(in) :: net, gained, handed
+    real(R8) :: cr(4)
+    cr(3) = gained
+    cr(4) = handed
+    cr(1) = net + gained - handed
+    cr(2) = cr(1) - gained/nuOxide(m)
+  end function Cap_Rates
+
+
   !> Accumulate the mass handed to the gas over a coupling step of duration dtBlock:
-  !  SUM_m nu(m,s)*sourceMass(m) (absolute kg/s, no volume factor). Called once per coupling step.
+  !  SUM_m nu(m,s)*sourceMass(m) (absolute kg/s, no volume factor), a capped material through its three rows.
+  !  Called once per coupling step.
   subroutine Accumulate_Injected_Mass ( IGLOO, dtBlock )
     use MOSE_Global_m,          only: nsc
     use IGLOO_module,           only: obj_IGLOO
     use IGLOO_variables,        only: nm
-    use hydraMI2_Stoichiometry, only: nu_gas => nu, has_stoichiometry
+    use hydraMI2_Stoichiometry, only: nu_gas => nu, has_stoichiometry, capped, nuCap, nuRel
     implicit none
     type(obj_IGLOO), intent(in) :: IGLOO
     real(R8),        intent(in) :: dtBlock
     integer  :: b, m, s
-    real(R8) :: tot
+    real(R8) :: tot, cr(4)
 
     if (.not. has_stoichiometry) return
     if (.not. allocated(massInjected)) then
@@ -188,6 +219,14 @@ contains
       if (.not. allocated(IGLOO%source(b)%sourceMass)) cycle
       do m = 1, nm
         tot = sum(IGLOO%source(b)%sourceMass(m,:,:,:))
+        if (capped(m)) then
+          cr = Cap_Rates( m, tot, sum(IGLOO%source(b)%sourceMass(nm+2*m-1,:,:,:)), &
+                          sum(IGLOO%source(b)%sourceMass(nm+2*m,:,:,:)) )
+          do s = 1, nsc
+            massInjected(s) = massInjected(s) + (nu_gas(m,s)*cr(2) + nuCap(m,s)*cr(3) + nuRel(m,s)*cr(4)) * dtBlock
+          enddo
+          cycle
+        endif
         do s = 1, nsc
           massInjected(s) = massInjected(s) + nu_gas(m,s) * tot * dtBlock
         enddo
@@ -257,16 +296,17 @@ contains
 
 
   !> Accumulate the energy handed to the gas over a coupling step of duration dtBlock:
-  !  sourceEn + SUM_m dhDatum(m)*sourceMass(m) (absolute W). Called once per coupling step.
+  !  sourceEn + SUM_m dhDatum(m)*sourceMass(m) (absolute W), a capped material with its oxide's offset. Called
+  !  once per coupling step.
   subroutine Accumulate_Injected_Energy ( IGLOO, dtBlock )
     use IGLOO_module,           only: obj_IGLOO
     use IGLOO_variables,        only: nm
-    use hydraMI2_Stoichiometry, only: has_stoichiometry, dhDatum
+    use hydraMI2_Stoichiometry, only: has_stoichiometry, dhDatum, capped, dhProduct
     implicit none
     type(obj_IGLOO), intent(in) :: IGLOO
     real(R8),        intent(in) :: dtBlock
     integer  :: b, m
-    real(R8) :: datum
+    real(R8) :: datum, cr(4)
 
     if (dtBlock <= 0._R8) return
 
@@ -279,6 +319,12 @@ contains
       if (.not. allocated(IGLOO%source(b)%sourceMass)) cycle
       datum = 0._R8
       do m = 1, nm
+        if (capped(m)) then
+          cr = Cap_Rates( m, sum(IGLOO%source(b)%sourceMass(m,:,:,:)), sum(IGLOO%source(b)%sourceMass(nm+2*m-1,:,:,:)), &
+                          sum(IGLOO%source(b)%sourceMass(nm+2*m,:,:,:)) )
+          datum = datum + dhDatum(m)*cr(1) - dhProduct(m)*(cr(3) - cr(4))
+          cycle
+        endif
         datum = datum + dhDatum(m) * sum(IGLOO%source(b)%sourceMass(m,:,:,:))
       enddo
       energyInjected  = energyInjected  + datum*dtBlock
@@ -286,6 +332,54 @@ contains
     enddo
 
   end subroutine Accumulate_Injected_Energy
+
+
+  !> Accumulate what ICE's sources hand the gas over a coupling step of duration dtBlock, as ICExMOSE applies them:
+  !  the mass of each material that converts, through its row, and the energy with its datum offset. Called once
+  !  per coupling step when an ICE material converts.
+  subroutine Accumulate_Injected_ICE ( MOSE_domain, ICE_domain, dtBlock )
+    use MOSE_Advanced_Types_m,  only: MOSE_domain_type
+    use MOSE_Global_m,          only: nsc
+    use ICE_Advanced_Types_m,   only: ICE_domain_type
+    use ICE_Global_m,           only: ngroups, nbase, mat_of
+    use hydraMI2_Stoichiometry, only: nu_ice => nuICE, has_stoichiometry_ICE, dhDatumICE
+    implicit none
+    type(MOSE_domain_type), intent(in) :: MOSE_domain
+    type(ICE_domain_type),  intent(in) :: ICE_domain
+    real(R8),               intent(in) :: dtBlock
+    integer  :: b, g, i, j, k, s, imat
+    real(R8) :: vol, mtot, etot
+
+    if (.not. has_stoichiometry_ICE) return
+    if (.not. allocated(massInjected)) then
+      allocate(massInjected(1:nsc)); massInjected = 0._R8
+    endif
+    if (dtBlock <= 0._R8) return
+
+    do b = 1, size(MOSE_domain%blk)
+      do g = 1, ngroups
+        if (.not. allocated(ICE_domain%blk(b)%cond_phase(g)%source)) cycle
+        imat = mat_of(g)
+        mtot = 0._R8; etot = 0._R8
+        do k = 1, MOSE_domain%blk(b)%dim(3)
+        do j = 1, MOSE_domain%blk(b)%dim(2)
+        do i = 1, MOSE_domain%blk(b)%dim(1)
+          vol = MOSE_domain%blk(b)%vol(i,j,k)
+          associate ( cp => ICE_domain%blk(b)%cond_phase(g) )
+            mtot = mtot - cp%source(1,i,j,k) * vol
+            etot = etot - cp%source(nbase(g)-1,i,j,k) * vol
+          end associate
+        enddo; enddo; enddo
+        do s = 1, nsc
+          massInjected(s) = massInjected(s) + nu_ice(imat,s) * mtot * dtBlock
+        enddo
+        energyInjected  = energyInjected  + (etot + dhDatumICE(imat)*mtot) * dtBlock
+        energyDatumPart = energyDatumPart + dhDatumICE(imat)*mtot * dtBlock
+        energyAudited   = .true.
+      enddo
+    enddo
+
+  end subroutine Accumulate_Injected_ICE
 
 
   !> Resolve family -> material once, after IGLOO%setup has assigned famID.
@@ -342,7 +436,7 @@ contains
     use FLINT_Lib_Thermodynamic, only: EOS, co_rotot_Rtot, f_gamma, co_k_mi_lam_Wilke
     use IGLOO_module,            only: obj_IGLOO
     use IGLOO_variables,         only: nfam, nm
-    use hydraMI2_Stoichiometry,  only: nu_gas => nu, has_stoichiometry, dhDatum
+    use hydraMI2_Stoichiometry,  only: nu_gas => nu, has_stoichiometry, dhDatum, capped, nuCap, nuRel, dhProduct
     use MOSE_Config_Types_m,     only: obj_chemistry
     implicit none
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
@@ -359,7 +453,7 @@ contains
     real(R8) :: partial_residuals(nprim), sources(4)
     real(R8) :: rhoi(nsc), rho, u(3), T, p, R, gam, kappa, mu, coeff
     integer  :: imat, isp
-    real(R8) :: dm, avail, dtStage
+    real(R8) :: dm, avail, dtStage, cr(4)
 
     ! relaxation ramp
     useRelax = (relCoeff > toll .and. relCoeff < (1.d0-toll)) .and. relaxation
@@ -377,7 +471,7 @@ contains
     do b = 1, size(MOSE_domain%blk)
 
       !$OMP DO COLLAPSE(3) PRIVATE(partial_residuals,sources,rhoi,rho,u,p,T,R,gam,kappa,mu,i,j,k,m, &
-      !$OMP&                       imat,isp,dm,avail,dtStage)
+      !$OMP&                       imat,isp,dm,avail,dtStage,cr)
       do k = 1, MOSE_domain%blk(b)%dim(3)
       do j = 1, MOSE_domain%blk(b)%dim(2)
       do i = 1, MOSE_domain%blk(b)%dim(1)
@@ -415,6 +509,17 @@ contains
           if (has_stoichiometry) then
             do imat = 1, nm
               dm = IGLOO%source(b)%sourceMass(imat,i,j,k)
+              ! an oxide cap: the material burnt into gas species, the oxide the cap gained, the cap handed to the gas
+              if (capped(imat)) then
+                cr = Cap_Rates( imat, dm, IGLOO%source(b)%sourceMass(nm+2*imat-1,i,j,k), &
+                                IGLOO%source(b)%sourceMass(nm+2*imat,i,j,k) )
+                do isp = 1, nsc
+                  partial_residuals(isp) = partial_residuals(isp) + nu_gas(imat,isp)*cr(2) + nuCap(imat,isp)*cr(3) &
+                                                                  + nuRel(imat,isp)*cr(4)
+                enddo
+                partial_residuals(np) = partial_residuals(np) + dhDatum(imat)*cr(1) - dhProduct(imat)*(cr(3) - cr(4))
+                cycle
+              endif
               if (dm == 0._R8) cycle
               do isp = 1, nsc
                 if (nu_gas(imat,isp) == 0._R8) cycle
@@ -717,79 +822,59 @@ contains
   end subroutine MOSExICE
 
 
-  !> Warn once if ICE's mass channel cond_phase%source(1), which ICExMOSE drops, is no longer
-  !  zero. Called once per coupling step, outside any parallel region.
+  !> Stop when a family whose material has no record in the products file loses mass (cond_phase%source(1) not
+  !  zero): ICExMOSE would not hand that mass to the gas. Called once per coupling step, outside any parallel region.
   subroutine Check_ICE_Mass_Channel ( ICE_domain )
-    use ICE_Advanced_Types_m, only: ICE_domain_type
-    use ICE_Global_m,         only: ngroups
+    use ICE_Advanced_Types_m,   only: ICE_domain_type
+    use ICE_Global_m,           only: ngroups, mat_of, ICE_phase_prefix
+    use hydraMI2_Stoichiometry, only: has_stoichiometry_ICE, mappedICE
     implicit none
     type(ICE_domain_type), intent(in) :: ICE_domain
     integer  :: b, g
     real(R8) :: peak
 
-    if (ICE_mass_channel_reported) return
-
-    peak = 0._R8
-    do b = 1, size(ICE_domain%blk)
-      do g = 1, ngroups
+    do g = 1, ngroups
+      if (has_stoichiometry_ICE) then
+        if (mappedICE(mat_of(g))) cycle
+      endif
+      peak = 0._R8
+      do b = 1, size(ICE_domain%blk)
         if (.not. allocated(ICE_domain%blk(b)%cond_phase(g)%source)) cycle
         peak = max( peak, maxval(abs(ICE_domain%blk(b)%cond_phase(g)%source(1,:,:,:))) )
       enddo
+      if (peak > 0._R8) then
+        write(*,'(A,I0,A,I0,3A,ES12.4,A)') ' [ERROR] MI2: ICE family ', g, ' (material ', mat_of(g), &
+          ') loses mass and INPUT/', trim(ICE_phase_prefix), 'products.txt has no record for its material (peak of '// &
+          'cond_phase%source(1) ', peak, ' kg/(m3 s)): the gas would not receive it'
+        error stop 1
+      endif
     enddo
-
-    if (peak > 0._R8) then
-      ICE_mass_channel_reported = .true.
-      write(*,*)
-      write(*,'(A,ES12.4)') ' [MI2] WARNING: ICE cond_phase%source(1) is NO LONGER ZERO -- peak ', peak
-      write(*,'(A)') '       ICExMOSE drops that channel, so this mass is NOT reaching the gas.'
-      write(*,'(A)') '       Before trusting a combusting/evaporating ICE run, give ICExMOSE an'
-      write(*,'(A)') '       ICE-group -> gas-species map and route source(1) into R(1:nsc).'
-      write(*,'(A)') '       hydraMI2_Stoichiometry''s nu(m,s) is keyed on IGLOO MATERIALS and must'
-      write(*,'(A)') '       NOT be reused here -- it would attribute the mass to the wrong species.'
-      write(*,*)
-    endif
 
   end subroutine Check_ICE_Mass_Channel
 
 
-  !> Refuse a burning ICE material (combustion = direct): its heat of reaction (cond_phase%heat) and its mass
-  !  (source(1)) would not reach the gas, since ICExMOSE hands it -source(2:4) and -source(nbase-1) only.
-  subroutine Check_ICE_No_Combustion ()
-    use ICE_Config_Types_m, only: obj_condensed
-    use ICE_Global_m,       only: ICE_phase_prefix
-    implicit none
-    integer :: m
-
-    if (.not. allocated(obj_condensed)) return
-    do m = 1, size(obj_condensed)
-      if (obj_condensed(m)%combSelect /= 1) cycle
-      write(*,'(A,I0,7A)') ' [ERROR] MI2: ICE material ', m, ' (', trim(obj_condensed(m)%name), ') of INPUT/', &
-        trim(ICE_phase_prefix), 'phase.txt burns (combustion = direct), and the coupler hands the gas neither its ', &
-        'heat of reaction (cond_phase%heat) nor its mass (source(1)): run ICE on its own, or wait for the ', &
-        'combustion coupling'
-      error stop 1
-    enddo
-
-  end subroutine Check_ICE_No_Combustion
-
-
-  !> Stop on a value that is not finite in what ICE hands the gas, the slots ICExMOSE reads: MOSE's conservative update
+  !> Stop on a value that is not finite in what ICE hands the gas, the slots ICExMOSE reads (the momentum and the
+  !  energy of every family; the mass of a material that converts): MOSE's conservative update
   !  keeps the old temperature of a cell whose energy residual is NaN, so such a value would act unseen. Called once per
   !  coupling step, outside any parallel region.
   subroutine Check_ICE_Source_Finite ( MOSE_domain, ICE_domain )
-    use MOSE_Advanced_Types_m, only: MOSE_domain_type
-    use MOSE_Finite_m,         only: Not_Finite
-    use ICE_Advanced_Types_m,  only: ICE_domain_type
-    use ICE_Global_m,          only: ngroups, nbase
+    use MOSE_Advanced_Types_m,  only: MOSE_domain_type
+    use MOSE_Finite_m,          only: Not_Finite
+    use ICE_Advanced_Types_m,   only: ICE_domain_type
+    use ICE_Global_m,           only: ngroups, nbase, mat_of
+    use hydraMI2_Stoichiometry, only: has_stoichiometry_ICE, mappedICE
     implicit none
     type(MOSE_domain_type), intent(in) :: MOSE_domain
     type(ICE_domain_type),  intent(in) :: ICE_domain
     integer :: b, g, i, j, k, n, s
+    logical :: mapped
     character(len=16) :: val
 
     do b = 1, size(MOSE_domain%blk)
       do g = 1, ngroups
         if (.not. allocated(ICE_domain%blk(b)%cond_phase(g)%source)) cycle
+        mapped = .false.
+        if (has_stoichiometry_ICE) mapped = mappedICE(mat_of(g))
         do k = 1, MOSE_domain%blk(b)%dim(3)
         do j = 1, MOSE_domain%blk(b)%dim(2)
         do i = 1, MOSE_domain%blk(b)%dim(1)
@@ -802,6 +887,13 @@ contains
               ') = ', trim(adjustl(val))
             error stop 1
           enddo
+          if (.not. mapped) cycle
+          if (Not_Finite(ICE_domain%blk(b)%cond_phase(g)%source(1,i,j,k))) then
+            write(val,'(ES12.5)') ICE_domain%blk(b)%cond_phase(g)%source(1,i,j,k)
+            write(*,'(A,I0,A,I0,A,3(1X,I0),2A)') ' [ERROR] MI2: ICE handed a non-finite source (block ', b, &
+              ', group ', g, ', cell', i, j, k, ', source(1), the mass) = ', trim(adjustl(val))
+            error stop 1
+          endif
         enddo; enddo; enddo
       enddo
     enddo
@@ -816,7 +908,7 @@ contains
     use MOSE_Advanced_Types_m,  only: MOSE_domain_type
     use MOSE_Finite_m,          only: Not_Finite
     use IGLOO_module,           only: obj_IGLOO
-    use IGLOO_variables,        only: nm
+    use IGLOO_variables,        only: nsm
     use hydraMI2_Stoichiometry, only: has_stoichiometry
     implicit none
     type(MOSE_domain_type), intent(in) :: MOSE_domain
@@ -837,7 +929,7 @@ contains
           if (Not_Finite(src%sourceEn(i,j,k))) call Refuse('sourceEn', 0, src%sourceEn(i,j,k))
         endif
         if (has_stoichiometry .and. allocated(src%sourceMass)) then
-          do n = 1, nm
+          do n = 1, nsm()
             if (Not_Finite(src%sourceMass(n,i,j,k))) call Refuse('sourceMass', n, src%sourceMass(n,i,j,k))
           enddo
         endif
@@ -922,33 +1014,78 @@ contains
   !> Inject ICE's reaction on the gas into MOSE's residual, from MOSE's per-RK-stage callback:
   !  runs inside MOSE's parallel region, orphaned !$OMP DO only. cond_phase%source is the per-unit-
   !  volume rate on the condensed phase over ICE's last step (its RK stages weighted as its update
-  !  weighs them), so the gas receives -source (times vol); source(1) is the mass (not coupled),
-  !  source(2:4) the momentum, source(nbase-1) the energy.
+  !  weighs them), so the gas receives -source (times vol): source(2:4) the
+  !  momentum, source(nbase-1) the energy, and for a material that converts source(1), the mass,
+  !  through its row and with its datum offset.
   subroutine ICExMOSE ( MOSE_domain, ICE_domain )
-    use MOSE_Advanced_Types_m, only: MOSE_domain_type
-    use MOSE_Global_m,         only: nsc, nu, nw, np, nprim
-    use ICE_Advanced_Types_m,  only: ICE_domain_type
-    use ICE_Global_m,          only: ngroups, nbase
+    use MOSE_Advanced_Types_m,  only: MOSE_domain_type
+    use MOSE_Global_m,          only: nsc, nu, nw, np, nprim
+    use ICE_Advanced_Types_m,   only: ICE_domain_type
+    use ICE_Global_m,           only: ngroups, nbase, mat_of
+    use hydraMI2_Stoichiometry, only: nu_ice => nuICE, has_stoichiometry_ICE, dhDatumICE, mappedICE
+    use MOSE_Config_Types_m,    only: obj_chemistry
     implicit none
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
     type(ICE_domain_type),  intent(in)    :: ICE_domain
     ! Local
-    integer  :: b, g, i, j, k
-    real(R8) :: partial_residuals(nprim)
+    integer  :: b, g, i, j, k, imat, isp, nshare
+    real(R8) :: partial_residuals(nprim), dm, avail, dtStage
+    logical  :: mapped, consumes
+
+    ! the families whose material consumes a gas species share what a cell holds of it
+    nshare = 0
+    if (has_stoichiometry_ICE) then
+      do g = 1, ngroups
+        if (mappedICE(mat_of(g))) then
+          if (any(nu_ice(mat_of(g),1:nsc) < 0._R8)) nshare = nshare + 1
+        endif
+      enddo
+    endif
 
     do b = 1, size(MOSE_domain%blk)
       do g = 1, ngroups
 
-        !$OMP DO COLLAPSE(3) PRIVATE(partial_residuals,i,j,k)
+        imat   = mat_of(g)
+        mapped = .false.; consumes = .false.
+        if (has_stoichiometry_ICE) then
+          mapped = mappedICE(imat)
+          if (mapped) consumes = any(nu_ice(imat,1:nsc) < 0._R8)
+        endif
+
+        !$OMP DO COLLAPSE(3) PRIVATE(partial_residuals,i,j,k,isp,dm,avail,dtStage)
         do k = 1, MOSE_domain%blk(b)%dim(3)
         do j = 1, MOSE_domain%blk(b)%dim(2)
         do i = 1, MOSE_domain%blk(b)%dim(1)
 
           partial_residuals(:) = 0._R8
 
-          ! mass (source(1)) is not coupled: no ICE-group -> gas-species map
           partial_residuals(nu:nw) = - ICE_domain%blk(b)%cond_phase(g)%source(2:4,i,j,k)
           partial_residuals(np)    = - ICE_domain%blk(b)%cond_phase(g)%source(nbase(g)-1,i,j,k)
+
+          ! a material that converts: its mass through its row, the datum offset on the same mass
+          if (mapped) then
+            dm = - ICE_domain%blk(b)%cond_phase(g)%source(1,i,j,k)
+            do isp = 1, nsc
+              partial_residuals(isp) = nu_ice(imat,isp)*dm
+            enddo
+            partial_residuals(np) = partial_residuals(np) + dhDatumICE(imat)*dm
+            ! floor guard: a consumed species leaves at most its share of what the cell holds over this stage's
+            ! step, dtlocal*strangcoeff (the step MOSE's Newstate applies), as for IGLOO's rates
+            if (consumes) then
+              dtStage = MOSE_domain%blk(b)%dtlocal(i,j,k) * obj_chemistry%strangcoeff
+              if (dtStage > 0._R8) then
+                do isp = 1, nsc
+                  if (partial_residuals(isp) >= 0._R8) cycle
+                  avail = MOSE_domain%blk(b)%P(isp,i,j,k) / (dtStage * real(nshare, R8))
+                  if (-partial_residuals(isp) > avail) then
+                    partial_residuals(isp) = -avail
+                    !$OMP ATOMIC UPDATE
+                    nMassLimited = nMassLimited + 1
+                  endif
+                enddo
+              endif
+            endif
+          endif
 
           MOSE_domain%blk(b)%R(:,i,j,k) = MOSE_domain%blk(b)%R(:,i,j,k) &
                                         - partial_residuals * MOSE_domain%blk(b)%vol(i,j,k)

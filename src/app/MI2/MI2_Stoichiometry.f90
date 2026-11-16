@@ -4,215 +4,568 @@ module hydraMI2_Stoichiometry
   implicit none
   private
 
-  public :: Build_Species_Stoichiometry
-  public :: nu, has_stoichiometry, Report_Stoichiometry
-  public :: Build_Datum_Offsets, dhDatum, T_datum_ref
+  public :: Load_Species_Map, Report_Stoichiometry, Build_Datum_Offsets
+  public :: nu, has_stoichiometry, dhDatum, T_datum_ref
+  public :: nuICE, has_stoichiometry_ICE, dhDatumICE, mappedICE
+  public :: capped, nuCap, nuRel, nuOxide, dhProduct
+  public :: MAP_IGLOO, MAP_ICE
 
-  !> nu(m,s) = kg of gas species s exchanged per kg of IGLOO material m converted
-  !  (nu > 0 produced, nu < 0 consumed). Row sum is 1 for pure gasification.
-  real(R8), allocatable, protected :: nu(:,:)
-  logical,               protected :: has_stoichiometry = .false.
+  !> The two condensed solvers a map is loaded for.
+  integer, parameter :: MAP_IGLOO = 1, MAP_ICE = 2
+
+  !> nu(m,s) = kg of gas species s exchanged per kg of IGLOO material m converted (nu > 0 produced,
+  !  nu < 0 consumed); a row sums to 1. nuICE: the same for ICE's materials.
+  real(R8), allocatable, protected :: nu(:,:), nuICE(:,:)
+  logical,               protected :: has_stoichiometry = .false., has_stoichiometry_ICE = .false.
 
   !> Reference temperature of the datum offset (FLINT standard state).
   real(R8), parameter :: T_datum_ref = 298.15_R8
 
-  !> dhDatum(m) = constant enthalpy-datum offset for material m [J per kg converted]: FLINT's
-  !  formation-inclusive enthalpy of the products minus what IGLOO already credits (h_liq + Lv).
-  real(R8), allocatable, protected :: dhDatum(:)
+  !> dhDatum(m) = constant enthalpy-datum offset of IGLOO material m [J per kg converted]: its enthalpy on the
+  !  gas's formation-inclusive datum less the one IGLOO credits, at T_datum_ref. dhDatumICE: ICE's materials.
+  real(R8), allocatable, protected :: dhDatum(:), dhDatumICE(:)
+
+  !> mappedICE(m): ICE material m has a record (it evaporates or burns).
+  logical,  allocatable, protected :: mappedICE(:)
+
+  !> An IGLOO material that burns with an oxide cap: capped(m). Per kg of oxide its cap gains the gas exchanges
+  !  nuCap(m,s) (the row sums to 1/nuOxide(m) - 1); per kg of cap oxide handed to the gas at burnout it receives
+  !  nuRel(m,s) (the row sums to 1). nuOxide(m): kg of oxide per kg of the material its cap takes.
+  !  dhProduct(m): the datum offset of the oxide, as dhDatum.
+  logical,  allocatable, protected :: capped(:)
+  real(R8), allocatable, protected :: nuCap(:,:), nuRel(:,:), nuOxide(:), dhProduct(:)
+
+  !> Process a material runs, and the energy rule of its record.
+  integer, parameter :: PROC_NONE = 0, PROC_EVAP = 1, PROC_COMB = 2
+  integer, parameter :: EN_NONE = 0, EN_LATENT = 1, EN_FORMATION = 2
+
+  !> What the products file says of one solver's materials.
+  type :: map_book_t
+    character(len=256)    :: file = ''
+    integer,  allocatable :: process(:), energy(:)
+    real(R8), allocatable :: h298(:)      !> the material's formation-inclusive enthalpy at T_datum_ref [J/kg]
+    integer,  allocatable :: prod(:)      !> the material a capped material's oxide is, else 0
+    real(R8), allocatable :: hprod(:)     !> that oxide's formation-inclusive enthalpy at T_datum_ref [J/kg]
+  end type map_book_t
+  type(map_book_t) :: book(2)
+
+  character(len=5), parameter :: SOLVER(2) = ['IGLOO', 'ICE  ']
 
 contains
 
-  !> Read [MI2-Coupling] products-<material> = <species>:<coefficient>, ... from input.ini and
-  !  resolve it by species name into nu(nmat,nsc).
-  subroutine Build_Species_Stoichiometry ( material_names, nmat )
-    use Finer,                    only: file_ini
+  !> Read INPUT/<prefix>products.txt (ATLAS GPB) and keep, for each material of the solver, the record of the
+  !  process it runs: combustion if it burns, else evaporation if it evaporates; for a material that burns with an
+  !  oxide cap (product > 0) also its cap record and, when its cap is handed to the gas (releases), the release
+  !  record of its oxide. Stops on a material that converts without a record, a file of another gas phase, an
+  !  unknown material or species, a row that does not close the mass.
+  subroutine Load_Species_Map ( which, prefix, material_names, evaporates, burns, product, releases, oxide_ratio )
+    use Finer,                   only: file_ini
     use FLINT_Lib_Thermodynamic, only: ns, species_names
+    use MOSE_Global_m,           only: MOSE_phase_prefix
     implicit none
+    integer,          intent(in) :: which                 !> MAP_IGLOO | MAP_ICE
+    character(len=*), intent(in) :: prefix                !> the solver's phase prefix
     character(len=*), intent(in) :: material_names(:)
-    integer,          intent(in) :: nmat
-    ! Local
-    type(file_ini)       :: fini
-    character(len=1024)  :: raw
-    character(len=256)   :: token, spname
-    integer              :: m, s, error, p0, p1, icolon, nterm
-    real(R8)             :: coeff
-    logical              :: found
+    logical,          intent(in) :: evaporates(:), burns(:)
+    integer,  intent(in), optional :: product(:)          !> the material that is the oxide of a capped material, else 0
+    logical,  intent(in), optional :: releases(:)         !> the cap of the material is handed to the gas at burnout
+    real(R8), intent(in), optional :: oxide_ratio         !> kg of oxide per kg of material the solver's cap law holds
+    character(len=*), parameter  :: E = ' [ERROR] MI2: '
+    character(len=512)  :: fname, line
+    character(len=1024) :: raw
+    character(len=64)   :: key, mname, proc, enword, spname, gpref, pname
+    integer  :: nmat, u, ios, m, s, k, nterm, nsfile, im, en, error, row
+    real(R8) :: h298, cmass, cmole, rowsum, cprod, hprod
+    logical  :: exists, gasline
+    logical,  allocatable :: listed(:), found(:), capfound(:), relfound(:), relwanted(:)
+    integer,  allocatable :: prod(:)
+    real(R8), allocatable :: nu_s(:,:), cap_s(:,:), rel_s(:,:), capnu(:), caph(:)
+    character(len=64), allocatable :: capname(:)
+    type(file_ini) :: fini
 
-    if (allocated(nu)) deallocate(nu)
-    allocate(nu(1:max(nmat,1), 1:max(ns,1)))
-    nu = 0._R8
-    has_stoichiometry = .false.
+    nmat = size(material_names)
+    allocate(nu_s(max(nmat,1), max(ns,1)), listed(max(nmat,1)), found(max(nmat,1)))
+    nu_s = 0._R8; listed = .false.; found = .false.
+    allocate(cap_s(max(nmat,1), max(ns,1)), rel_s(max(nmat,1), max(ns,1)), capnu(max(nmat,1)), caph(max(nmat,1)), &
+             capname(max(nmat,1)), capfound(max(nmat,1)), relfound(max(nmat,1)), relwanted(max(nmat,1)), &
+             prod(max(nmat,1)))
+    cap_s = 0._R8; rel_s = 0._R8; capnu = 0._R8; caph = 0._R8; capname = ''
+    capfound = .false.; relfound = .false.; relwanted = .false.; prod = 0
+    if (present(product)) prod(1:nmat) = product(1:nmat)
+    if (present(releases)) then
+      do m = 1, nmat
+        if (prod(m) > 0 .and. releases(m)) relwanted(prod(m)) = .true.
+      enddo
+    endif
+    associate ( bk => book(which) )
+    if (allocated(bk%process)) deallocate(bk%process, bk%energy, bk%h298, bk%prod, bk%hprod)
+    allocate(bk%process(max(nmat,1)), bk%energy(max(nmat,1)), bk%h298(max(nmat,1)), bk%prod(max(nmat,1)), &
+             bk%hprod(max(nmat,1)))
+    bk%process = PROC_NONE; bk%energy = EN_NONE; bk%h298 = 0._R8; bk%prod = prod; bk%hprod = 0._R8
+    do m = 1, nmat
+      if (burns(m)) then
+        bk%process(m) = PROC_COMB
+      elseif (evaporates(m)) then
+        bk%process(m) = PROC_EVAP
+      endif
+    enddo
+    fname = 'INPUT/'//trim(prefix)//'products.txt'
+    bk%file = fname
 
+    ! the former key of input.ini names nothing any more
     call fini%load(filename='input.ini')
-
     do m = 1, nmat
       raw = ''
-      call fini%get(section_name='MI2-Coupling',                                  &
-                    option_name='products-'//trim(adjustl(material_names(m))),    &
+      call fini%get(section_name='MI2-Coupling', option_name='products-'//trim(adjustl(material_names(m))), &
                     val=raw, error=error)
       if (error /= 0 .or. len_trim(raw) == 0) cycle
+      write(*,'(A)') E//'[MI2-Coupling] products-'//trim(adjustl(material_names(m)))//' is no longer read: '// &
+        'the gas species of a material come from '//trim(fname)//', which ATLAS GPB writes; remove the key'
+      error stop 1
+    enddo
 
-      has_stoichiometry = .true.
-      nterm = 0
-      p0 = 1
-      do
-        if (p0 > len_trim(raw)) exit
-        p1 = index(raw(p0:), ',')
-        if (p1 == 0) then
-          token = adjustl(raw(p0:len_trim(raw)))
-          p0 = len_trim(raw) + 1
-        else
-          token = adjustl(raw(p0:p0+p1-2))
-          p0 = p0 + p1
-        endif
-        if (len_trim(token) == 0) cycle
-
-        icolon = index(token, ':')
-        if (icolon <= 1) then
-          write(*,'(A)') '[ERROR] [MI2-Coupling] products-'//trim(material_names(m))// &
-                         ': expected <species>:<coefficient>, got "'//trim(token)//'"'
-          error stop 1
-        endif
-        spname = adjustl(token(1:icolon-1))
-        read(token(icolon+1:),*,iostat=error) coeff
-        if (error /= 0) then
-          write(*,'(A)') '[ERROR] [MI2-Coupling] products-'//trim(material_names(m))// &
-                         ': cannot parse coefficient in "'//trim(token)//'"'
-          error stop 1
-        endif
-
-        ! resolve the species by name against the gas table
-        found = .false.
-        do s = 1, ns
-          if (trim(adjustl(species_names(s))) == trim(spname)) then
-            nu(m,s) = nu(m,s) + coeff
-            found = .true.
-            exit
-          endif
-        enddo
-        if (.not. found) then
-          write(*,'(A)') '[ERROR] [MI2-Coupling] products-'//trim(material_names(m))// &
-                         ': unknown gas species "'//trim(spname)//'". Available:'
-          do s = 1, ns
-            write(*,'(A,A)') '          - ', trim(adjustl(species_names(s)))
-          enddo
-          error stop 1
-        endif
-        nterm = nterm + 1
+    inquire(file=fname, exist=exists)
+    if (.not. exists) then
+      do m = 1, nmat
+        if (bk%process(m) == PROC_NONE) cycle
+        write(*,'(A)') E//trim(SOLVER(which))//' '//trim(merge('burns     ', 'evaporates', bk%process(m) == PROC_COMB))// &
+          ' material '//trim(adjustl(material_names(m)))//' and '//trim(fname)//' is missing: run ATLAS GPB, '// &
+          'which writes it from the [GPB-Phase*] sections'
+        error stop 1
       enddo
+      call Store()
+      return
+    endif
 
-      if (nterm == 0) then
-        write(*,'(A)') '[ERROR] [MI2-Coupling] products-'//trim(material_names(m))//' is empty'
+    gasline = .false.
+    open(newunit=u, file=fname, status='old', action='read')
+    do
+      call Next_Record(u, line, ios); if (ios /= 0) exit
+      read(line,*) key
+      select case (trim(key))
+      case ('gas')
+        read(line,*,iostat=ios) key, gpref, nsfile
+        if (ios == 0 .and. trim(gpref) == '-') gpref = ''
+        if (ios /= 0 .or. trim(gpref) /= trim(MOSE_phase_prefix) .or. nsfile /= ns) then
+          write(*,'(A)') E//trim(fname)//' was written for another gas phase: run ATLAS GPB again'
+          error stop 1
+        endif
+        gasline = .true.
+      case ('material')
+        read(line,*,iostat=ios) key, mname, proc, nterm, enword, h298
+        if (ios /= 0) call Bad('a record that does not read "material <name> <process> <terms> <energy> <h298>"')
+        pname = ''; cprod = 0._R8; hprod = 0._R8
+        if (trim(proc) == 'cap') then
+          read(line,*,iostat=ios) key, mname, proc, nterm, enword, h298, pname, cprod, hprod
+          if (ios /= 0) call Bad('a cap record that does not end with "<product> <kg per kg> <its h298>"')
+        endif
+        im = 0
+        do m = 1, nmat
+          if (trim(adjustl(material_names(m))) == trim(mname)) im = m
+        enddo
+        if (im == 0) then
+          write(*,'(A)') E//trim(fname)//' names the material '//trim(mname)//', which '//trim(SOLVER(which))// &
+            ' does not have: run ATLAS GPB again'
+          error stop 1
+        endif
+        listed(im) = .true.
+        select case (trim(enword))
+        case ('none');      en = EN_NONE
+        case ('latent');    en = EN_LATENT
+        case ('formation'); en = EN_FORMATION
+        case default;       en = -1
+        end select
+        ! row: 1 the process the material runs, 2 its cap, 3 the release of the oxide it is, 0 a record not used
+        row = 0
+        select case (trim(proc))
+        case ('none');        if (nterm /= 0 .or. en /= EN_NONE) call Bad('a record "none" with terms or an energy word')
+        case ('evaporation'); if (nterm < 1 .or. en /= EN_LATENT) call Bad('an evaporation record that is not "latent"')
+                              if (bk%process(im) == PROC_EVAP) row = 1
+        case ('combustion');  if (nterm < 1 .or. en /= EN_FORMATION) &
+                                call Bad('a combustion record that is not "formation"')
+                              if (bk%process(im) == PROC_COMB) row = 1
+        case ('cap');         if (nterm < 0 .or. en /= EN_FORMATION .or. .not. cprod > 0._R8) &
+                                call Bad('a cap record that is not "formation" or forms no product')
+                              if (prod(im) > 0) row = 2
+        case ('release');     if (nterm < 1 .or. en /= EN_FORMATION) call Bad('a release record that is not "formation"')
+                              if (relwanted(im)) row = 3
+        case default;         call Bad('the process "'//trim(proc)//'"')
+        end select
+        if ((row == 1 .and. found(im)) .or. (row == 2 .and. capfound(im)) .or. (row == 3 .and. relfound(im))) &
+          call Bad('two records of the same process for '//trim(mname))
+        do k = 1, nterm
+          call Next_Record(u, line, ios)
+          if (ios /= 0) call Bad('fewer terms than its last record announces')
+          read(line,*,iostat=ios) spname, cmass, cmole
+          if (ios /= 0) call Bad('a term that does not read "<species> <nu_mass> <nu_mole>"')
+          ! every gas species of a record is a species of the gas phase, whether this run uses the record or not
+          s = Species_Index(spname)
+          if (s == 0) then
+            write(*,'(A)') E//trim(fname)//' names the gas species '//trim(spname)//', which the gas phase does not '// &
+              'have: run ATLAS GPB again'
+            error stop 1
+          endif
+          select case (row)
+          case (1); nu_s(im,s)  = nu_s(im,s)  + cmass
+          case (2); cap_s(im,s) = cap_s(im,s) + cmass
+          case (3); rel_s(im,s) = rel_s(im,s) + cmass
+          end select
+        enddo
+        select case (row)
+        case (1)
+          found(im) = .true.; bk%energy(im) = en; bk%h298(im) = h298
+        case (2)
+          capfound(im) = .true.; capnu(im) = cprod; caph(im) = hprod; capname(im) = pname
+        case (3)
+          relfound(im) = .true.
+        end select
+      case default
+        call Bad('the record "'//trim(key)//'"')
+      end select
+    enddo
+    close(u)
+    if (.not. gasline) call Bad('no "gas" line')
+
+    do m = 1, nmat
+      if (.not. listed(m)) then
+        write(*,'(A)') E//'material '//trim(adjustl(material_names(m)))//' of '//trim(SOLVER(which))// &
+          ' is missing from '//trim(fname)//': run ATLAS GPB again'
+        error stop 1
+      endif
+      if (bk%process(m) == PROC_NONE) cycle
+      if (.not. found(m)) then
+        write(*,'(A)') E//trim(SOLVER(which))//' '//trim(merge('burns     ', 'evaporates', bk%process(m) == PROC_COMB))// &
+          ' material '//trim(adjustl(material_names(m)))//' and '//trim(fname)//' has no '// &
+          trim(merge('combustion ', 'evaporation', bk%process(m) == PROC_COMB))//' record for it: name its vapour '// &
+          '(psat-vapour) or its reaction (particle-mechanism) in its [GPB-Phase*] section and run ATLAS GPB again'
+        error stop 1
+      endif
+      rowsum = sum(nu_s(m,1:ns))
+      if (abs(rowsum - 1._R8) > 1.e-8_R8) then
+        write(*,'(A,ES23.15)') E//trim(fname)//': the row of '//trim(adjustl(material_names(m)))// &
+          ' does not sum to 1 (the gas would not gain the mass the material loses): ', rowsum
         error stop 1
       endif
     enddo
 
-  end subroutine Build_Species_Stoichiometry
+    ! a material that burns with an oxide cap: its cap record, the oxide it names, the ratio the solver's law holds
+    do m = 1, nmat
+      if (prod(m) == 0) cycle
+      if (.not. capfound(m)) then
+        write(*,'(A)') E//trim(SOLVER(which))//' material '//trim(adjustl(material_names(m)))//' burns with an oxide '// &
+          'cap and '//trim(fname)//' has no cap record for it: add the reaction that makes '// &
+          trim(adjustl(material_names(prod(m))))//' from it to particle-mechanism and run ATLAS GPB again'
+        error stop 1
+      endif
+      if (trim(capname(m)) /= trim(adjustl(material_names(prod(m))))) then
+        write(*,'(A)') E//trim(fname)//': the cap record of '//trim(adjustl(material_names(m)))//' makes '// &
+          trim(capname(m))//', and '//trim(SOLVER(which))//' holds its product as '// &
+          trim(adjustl(material_names(prod(m))))//': run ATLAS GPB again'
+        error stop 1
+      endif
+      rowsum = sum(cap_s(m,1:ns)) + capnu(m)
+      if (abs(rowsum - 1._R8) > 1.e-8_R8) then
+        write(*,'(A,ES23.15)') E//trim(fname)//': the cap record of '//trim(adjustl(material_names(m)))// &
+          ' does not close the mass (its gas species and its oxide per kg of the material): ', rowsum
+        error stop 1
+      endif
+      if (present(oxide_ratio)) then
+        if (abs(capnu(m) - oxide_ratio) > 1.e-4_R8*oxide_ratio) then
+          write(*,'(A,ES15.7,A,ES15.7,A)') E//trim(fname)//': the cap record of '//trim(adjustl(material_names(m)))// &
+            ' forms ', capnu(m), ' kg of oxide per kg, and the cap law of '//trim(SOLVER(which))//' holds ', &
+            oxide_ratio, ' (alumina from aluminium): the gas would not receive what the cap does not take'
+          error stop 1
+        endif
+      endif
+      if (relwanted(prod(m))) then
+        if (.not. relfound(prod(m))) then
+          write(*,'(A)') E//trim(SOLVER(which))//' material '//trim(adjustl(material_names(m)))//' hands its cap to '// &
+            'the gas at burnout (residue = off) and '//trim(fname)//' has no release record for '// &
+            trim(adjustl(material_names(prod(m))))//': add the reaction that turns it into gas species to '// &
+            'particle-mechanism and run ATLAS GPB again, or keep the residue (residue = on)'
+          error stop 1
+        endif
+        rowsum = sum(rel_s(prod(m),1:ns))
+        if (abs(rowsum - 1._R8) > 1.e-8_R8) then
+          write(*,'(A,ES23.15)') E//trim(fname)//': the release record of '//trim(adjustl(material_names(prod(m))))// &
+            ' does not sum to 1: ', rowsum
+          error stop 1
+        endif
+      endif
+      bk%hprod(m) = caph(m)
+    enddo
+    end associate
+    call Store()
+
+  contains
+
+    !> Hand the rows to the solver's module arrays.
+    subroutine Store()
+      integer :: mm
+      if (which == MAP_IGLOO) then
+        if (allocated(nu)) deallocate(nu)
+        allocate(nu, source=nu_s)
+        has_stoichiometry = any(book(which)%process(1:nmat) /= PROC_NONE)
+        if (allocated(capped)) deallocate(capped, nuCap, nuRel, nuOxide)
+        allocate(capped(max(nmat,1)), nuCap(max(nmat,1), max(ns,1)), nuRel(max(nmat,1), max(ns,1)), nuOxide(max(nmat,1)))
+        capped = .false.; nuCap = 0._R8; nuRel = 0._R8; nuOxide = 1._R8
+        do mm = 1, nmat
+          if (prod(mm) == 0 .or. .not. capfound(mm)) cycle
+          capped(mm)  = .true.
+          nuOxide(mm) = capnu(mm)
+          nuCap(mm,:) = cap_s(mm,:) / capnu(mm)
+          if (relfound(prod(mm))) nuRel(mm,:) = rel_s(prod(mm),:)
+        enddo
+      else
+        if (allocated(nuICE)) deallocate(nuICE)
+        allocate(nuICE, source=nu_s)
+        has_stoichiometry_ICE = any(book(which)%process(1:nmat) /= PROC_NONE)
+        if (allocated(mappedICE)) deallocate(mappedICE)
+        allocate(mappedICE(max(nmat,1)))
+        mappedICE = book(which)%process /= PROC_NONE
+      endif
+      if (.not. any(book(which)%process(1:nmat) /= PROC_NONE)) &
+        write(*,'(A)') ' [MI2] '//trim(SOLVER(which))//': no material evaporates or burns: no mass is handed to the gas.'
+    end subroutine Store
+
+    subroutine Bad(what)
+      character(len=*), intent(in) :: what
+      write(*,'(A)') E//trim(fname)//' holds '//what//': run ATLAS GPB again'
+      error stop 1
+    end subroutine Bad
+
+    !> The next line that is neither blank nor a comment.
+    subroutine Next_Record(unit, buf, stat)
+      integer,          intent(in)  :: unit
+      character(len=*), intent(out) :: buf
+      integer,          intent(out) :: stat
+      do
+        read(unit,'(A)',iostat=stat) buf; if (stat /= 0) return
+        buf = adjustl(buf)
+        if (len_trim(buf) > 0 .and. buf(1:1) /= '#') return
+      enddo
+    end subroutine Next_Record
+
+    integer function Species_Index(name)
+      character(len=*), intent(in) :: name
+      integer :: i
+      Species_Index = 0
+      do i = 1, ns
+        if (trim(adjustl(species_names(i))) == trim(name)) then
+          Species_Index = i; return
+        endif
+      enddo
+    end function Species_Index
+
+  end subroutine Load_Species_Map
 
 
-  !> Echo the resolved stoichiometry matrix with the mass-balance reading of each row.
-  subroutine Report_Stoichiometry ( material_names, nmat )
+  !> Echo the rows a solver's materials are handed to the gas with, and the process of each.
+  subroutine Report_Stoichiometry ( which, material_names, nmat )
     use FLINT_Lib_Thermodynamic, only: ns, species_names
     implicit none
+    integer,          intent(in) :: which
     character(len=*), intent(in) :: material_names(:)
     integer,          intent(in) :: nmat
     integer  :: m, s
     real(R8) :: rowsum
+    character(len=11), parameter :: PROCW(0:2) = ['inert      ', 'evaporation', 'combustion ']
 
-    if (.not. has_stoichiometry) then
-      write(*,'(A)') ' [MI2] no [MI2-Coupling] products-<material> given: mass coupling is OFF.'
-      return
-    endif
+    if (.not. allocated(book(which)%process)) return
+    if (all(book(which)%process(1:nmat) == PROC_NONE)) return
 
     write(*,*)
-    write(*,'(A)') ' [MI2] material -> gas-species stoichiometry [kg gas per kg material converted]'
+    write(*,'(A)') ' [MI2] '//trim(SOLVER(which))//' material -> gas species [kg of gas per kg of material converted], '// &
+                   trim(book(which)%file)
     do m = 1, nmat
-      rowsum = sum(nu(m,1:ns))
-      if (all(nu(m,1:ns) == 0._R8)) then
-        write(*,'(A,A,A)') '   - ', trim(material_names(m)), ' : (none -- inert, no mass coupling)'
+      if (book(which)%process(m) == PROC_NONE) then
+        write(*,'(A,A,A)') '   - ', trim(material_names(m)), ' : (inert: no mass handed to the gas)'
         cycle
       endif
-      write(*,'(A,A,A)') '   - ', trim(material_names(m)), ' :'
+      write(*,'(A,A,A,A,A)') '   - ', trim(material_names(m)), ' [', trim(PROCW(book(which)%process(m))), '] :'
+      rowsum = 0._R8
       do s = 1, ns
-        if (nu(m,s) == 0._R8) cycle
-        write(*,'(A,A12,A,F10.5,A)') '        ', trim(adjustl(species_names(s))), ' : ', nu(m,s), &
-          merge('  (consumed)', '  (produced)', nu(m,s) < 0._R8)
+        if (Row(m,s) == 0._R8) cycle
+        write(*,'(A,A12,A,F10.5,A)') '        ', trim(adjustl(species_names(s))), ' : ', Row(m,s), &
+          merge('  (consumed)', '  (produced)', Row(m,s) < 0._R8)
+        rowsum = rowsum + Row(m,s)
       enddo
-      write(*,'(A,F10.5)') '        SUM (=1 for pure gasification) : ', rowsum
-      if (rowsum > 1._R8 + 1.e-10_R8) then
-        write(*,'(A)') '        [WARNING] sum > 1: the gas gains more mass than the material loses.'
-        write(*,'(A)') '                  Only valid if a consumed species is missing from the list.'
+      write(*,'(A,F10.5)') '        SUM : ', rowsum
+      if (which /= MAP_IGLOO) cycle
+      if (.not. capped(m)) cycle
+      write(*,'(A,F10.5,A)') '        its oxide cap takes '//trim(material_names(book(which)%prod(m)))//' : ', &
+        nuOxide(m), '  kg per kg of the material; per kg of oxide the gas exchanges'
+      do s = 1, ns
+        if (nuCap(m,s) == 0._R8) cycle
+        write(*,'(A,A12,A,F10.5,A)') '        ', trim(adjustl(species_names(s))), ' : ', nuCap(m,s), &
+          merge('  (consumed)', '  (produced)', nuCap(m,s) < 0._R8)
+      enddo
+      if (all(nuRel(m,1:ns) == 0._R8)) then
+        write(*,'(A)') '        the cap stays condensed at burnout (residue = on)'
+        cycle
       endif
+      write(*,'(A)') '        the cap is handed to the gas at burnout (residue = off), per kg of it'
+      do s = 1, ns
+        if (nuRel(m,s) == 0._R8) cycle
+        write(*,'(A,A12,A,F10.5,A)') '        ', trim(adjustl(species_names(s))), ' : ', nuRel(m,s), &
+          merge('  (consumed)', '  (produced)', nuRel(m,s) < 0._R8)
+      enddo
     enddo
     write(*,*)
+
+  contains
+
+    real(R8) function Row(m, s)
+      integer, intent(in) :: m, s
+      if (which == MAP_IGLOO) then
+        Row = nu(m,s)
+      else
+        Row = nuICE(m,s)
+      endif
+    end function Row
 
   end subroutine Report_Stoichiometry
 
 
-  !> Build dhDatum(m) = SUM_s nu(m,s)*h_FLINT(s,T_ref) - (hIGLOOref(m) + Lv(m)) and print the
-  !  per-material datum gap. [MI2-Coupling] datum-correction = false zeroes the offsets.
-  subroutine Build_Datum_Offsets ( material_names, nmat, hIGLOOref, Lv )
+  !> Build the datum offset of each converting material from the energy rule of its record, href the enthalpy its
+  !  solver credits at T_datum_ref on its own datum:
+  !    latent    : SUM_s nu*h_FLINT(s) - (href + Lv)   the vapour's enthalpy less the latent heat is the liquid's
+  !    formation : h298 - href                         the record gives the material's formation-inclusive enthalpy
+  !  and the same of the oxide of a capped material. Thot is the temperature the material converts at (boiling,
+  !  burning) and hhot the enthalpy its solver credits there: they size one message, never an offset.
+  !  [MI2-Coupling] datum-correction = false zeroes the offsets.
+  subroutine Build_Datum_Offsets ( which, material_names, nmat, beck, href, Lv, qcomb, Thot, hhot )
     use Finer,                   only: file_ini
     use FLINT_Lib_Thermodynamic, only: ns, species_names, H0i
     implicit none
+    integer,          intent(in) :: which
     character(len=*), intent(in) :: material_names(:)
     integer,          intent(in) :: nmat
-    real(R8),         intent(in) :: hIGLOOref(:)   !> h IGLOO uses at T_ref, its own datum [J/kg]
-    real(R8),         intent(in) :: Lv(:)          !> per-material latent heat [J/kg]
-    integer  :: m, s, error
-    real(R8) :: hprod, hcredited
+    logical,          intent(in) :: beck(:)    !> the material burns on Beckstead's law: q-comb is a share of its heat
+    real(R8),         intent(in) :: href(:)    !> enthalpy the solver credits at T_ref, its own datum [J/kg]
+    real(R8),         intent(in) :: Lv(:)      !> latent heat at T_ref [J/kg]
+    real(R8),         intent(in) :: qcomb(:)   !> the solver's q-comb [J/kg]
+    real(R8),         intent(in) :: Thot(:)    !> boiling temperature (evaporation), burning temperature (combustion) [K]
+    real(R8),         intent(in) :: hhot(:)    !> enthalpy the solver credits at Thot, its own datum [J/kg]
+    integer  :: m, s, error, ip
+    real(R8) :: hprod, hcredited, qr, hph
+    real(R8) :: qhot
+    real(R8), allocatable :: dh(:), dhp(:), nu_s(:,:)
     type(file_ini) :: fini
     logical  :: apply
 
-    if (allocated(dhDatum)) deallocate(dhDatum)
-    allocate(dhDatum(1:max(nmat,1)))
-    dhDatum = 0._R8
+    allocate(dh(1:max(nmat,1)), dhp(1:max(nmat,1)))
+    dh = 0._R8; dhp = 0._R8
 
-    if (.not. has_stoichiometry) return
-
-    ! datum-correction switch: false computes the offsets but does not apply them
-    apply = .true.
-    call fini%load(filename='input.ini')
-    call fini%get(section_name='MI2-Coupling', option_name='datum-correction', val=apply, error=error)
-    if (error /= 0) apply = .true.
-
-    write(*,*)
-    write(*,'(A)') ' [MI2] enthalpy-datum reconciliation  [J per kg of material converted]'
-    write(*,'(A,F8.2,A)') '       anchored at T_ref = ', T_datum_ref, ' K (FLINT standard state)'
-    do m = 1, nmat
-      if ( all(nu(m,1:ns) == 0._R8) ) cycle
-
-      hprod = 0._R8
-      do s = 1, ns
-        if (nu(m,s) == 0._R8) cycle
-        hprod = hprod + nu(m,s) * H0i(s, T_datum_ref)
-      enddo
-
-      hcredited  = hIGLOOref(m) + Lv(m)
-      dhDatum(m) = hprod - hcredited
-      if (.not. apply) dhDatum(m) = 0._R8
-
-      write(*,'(A,A)')          '   - ', trim(material_names(m))
-      do s = 1, ns
-        if (nu(m,s) == 0._R8) cycle
-        write(*,'(A,A12,A,ES15.7)') '        h_FLINT  ', trim(adjustl(species_names(s))), ' : ', &
-                                    H0i(s, T_datum_ref)
-      enddo
-      write(*,'(A,ES15.7)')     '        products (SUM nu*h_FLINT)          : ', hprod
-      write(*,'(A,ES15.7)')     '        h_IGLOO(liquid table)              : ', hIGLOOref(m)
-      write(*,'(A,ES15.7)')     '        Lv (already inside sourceEn)       : ', Lv(m)
-      write(*,'(A,ES15.7)')     '        credited by IGLOO (h_IGLOO + Lv)   : ', hcredited
-      write(*,'(A,ES15.7)')     '        => datum offset applied by MI2     : ', dhDatum(m)
-      if ( apply .and. abs(dhDatum(m)) < 1.e-6_R8*max(abs(hprod),1._R8) ) then
-        write(*,'(A)')          '        (offset ~ 0: the two datums already agree)'
+    if (Active()) then
+      if (which == MAP_IGLOO) then
+        allocate(nu_s, source=nu)
+      else
+        allocate(nu_s, source=nuICE)
       endif
-    enddo
-    if (.not. apply) then
-      write(*,'(A)') '   [WARNING] datum-correction = false: the offsets above are computed but NOT'
-      write(*,'(A)') '             applied. The gas receives energy on IGLOO''s liquid-table datum,'
-      write(*,'(A)') '             which is KNOWN WRONG. Diagnostic use only.'
+
+      ! datum-correction switch: false computes the offsets but does not apply them
+      apply = .true.
+      call fini%load(filename='input.ini')
+      call fini%get(section_name='MI2-Coupling', option_name='datum-correction', val=apply, error=error)
+      if (error /= 0) apply = .true.
+
+      write(*,*)
+      write(*,'(A)') ' [MI2] enthalpy-datum reconciliation  [J per kg of material converted]'
+      write(*,'(A,F8.2,A)') '       anchored at T_ref = ', T_datum_ref, ' K (FLINT standard state)'
+      do m = 1, nmat
+        if ( book(which)%process(m) == PROC_NONE ) cycle
+
+        hprod = 0._R8; hph = 0._R8
+        do s = 1, ns
+          if (nu_s(m,s) == 0._R8) cycle
+          hprod = hprod + nu_s(m,s) * H0i(s, T_datum_ref)
+          hph   = hph   + nu_s(m,s) * H0i(s, Thot(m))
+        enddo
+
+        write(*,'(A,A)')          '   - ', trim(material_names(m))
+        do s = 1, ns
+          if (nu_s(m,s) == 0._R8) cycle
+          write(*,'(A,A12,A,ES15.7)') '        h_FLINT  ', trim(adjustl(species_names(s))), ' : ', &
+                                      H0i(s, T_datum_ref)
+        enddo
+        write(*,'(A,ES15.7)')     '        products (SUM nu*h_FLINT)          : ', hprod
+
+        select case (book(which)%energy(m))
+        case (EN_LATENT)
+          hcredited = href(m) + Lv(m)
+          dh(m)     = hprod - hcredited
+          write(*,'(A,ES15.7)')   '        h_'//SOLVER(which)//'(liquid table)              : ', href(m)
+          write(*,'(A,ES15.7)')   '        Lv (already inside the source)     : ', Lv(m)
+          write(*,'(A,ES15.7)')   '        credited by '//SOLVER(which)//' (h + Lv)         : ', hcredited
+        case (EN_FORMATION)
+          dh(m) = book(which)%h298(m) - href(m)
+          qr    = book(which)%h298(m) - hprod
+          write(*,'(A,ES15.7)')   '        h298 of the material (ATLAS)       : ', book(which)%h298(m)
+          write(*,'(A,ES15.7)')   '        h_'//SOLVER(which)//'(table)                     : ', href(m)
+          write(*,'(A,ES15.7)')   '        heat of reaction, in the species   : ', qr
+          ! like with like: from the condensed material where it burns to the record's species there, beside q-comb
+          qhot  = book(which)%h298(m) + (hhot(m) - href(m)) - hph
+          write(*,'(A,F8.2,A,ES15.7)') '        the same from the material at ', Thot(m), ' K, where it burns : ', qhot
+          write(*,'(A,ES15.7)')   '        q-comb of the solver               : ', qcomb(m)
+          if (beck(m)) then
+            if (qcomb(m) > 0._R8 .and. abs(qcomb(m) - qhot) > 0.05_R8*abs(qhot)) then
+              write(*,'(A,ES15.7,A)') '        [WARNING] q-comb = ', qcomb(m), ' differs from it by more than 5 %: '// &
+                'the share beta-part*q-comb the drop keeps is taken from another heat than the gas receives'
+            endif
+          else
+            write(*,'(A)')        '        (combustion = direct: q-comb sets the rate; the gas receives the heat above)'
+          endif
+          ! the oxide of a capped material, on the same two datums
+          if (which == MAP_IGLOO) then
+            if (capped(m)) then
+              ip     = book(which)%prod(m)
+              dhp(m) = book(which)%hprod(m) - href(ip)
+              qr     = book(which)%h298(m) - nuOxide(m)*book(which)%hprod(m)
+              do s = 1, ns
+                qr = qr - nuOxide(m)*nuCap(m,s) * H0i(s, T_datum_ref)
+              enddo
+              write(*,'(A,ES15.7)') '        h298 of its oxide (ATLAS)          : ', book(which)%hprod(m)
+              write(*,'(A,ES15.7)') '        h_'//SOLVER(which)//'(table) of its oxide        : ', href(ip)
+              write(*,'(A,ES15.7)') '        heat of the cap reaction, per kg   : ', qr
+              if (.not. apply) dhp(m) = 0._R8
+              write(*,'(A,ES15.7)') '        => datum offset of the oxide       : ', dhp(m)
+            endif
+          endif
+        end select
+        if (.not. apply) dh(m) = 0._R8
+        write(*,'(A,ES15.7)')     '        => datum offset applied by MI2     : ', dh(m)
+        if ( apply .and. abs(dh(m)) < 1.e-6_R8*max(abs(hprod),1._R8) ) then
+          write(*,'(A)')          '        (offset ~ 0: the two datums already agree)'
+        endif
+      enddo
+      if (.not. apply) then
+        write(*,'(A)') '   [WARNING] datum-correction = false: the offsets above are computed but NOT'
+        write(*,'(A)') '             applied. The gas receives energy on the condensed solver''s datum,'
+        write(*,'(A)') '             which is KNOWN WRONG. Diagnostic use only.'
+      endif
+      write(*,*)
     endif
-    write(*,*)
+
+    if (which == MAP_IGLOO) then
+      if (allocated(dhDatum)) deallocate(dhDatum)
+      allocate(dhDatum, source=dh)
+      if (allocated(dhProduct)) deallocate(dhProduct)
+      allocate(dhProduct, source=dhp)
+    else
+      if (allocated(dhDatumICE)) deallocate(dhDatumICE)
+      allocate(dhDatumICE, source=dh)
+    endif
+
+  contains
+
+    logical function Active()
+      if (which == MAP_IGLOO) then
+        Active = has_stoichiometry
+      else
+        Active = has_stoichiometry_ICE
+      endif
+    end function Active
 
   end subroutine Build_Datum_Offsets
 
