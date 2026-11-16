@@ -186,7 +186,7 @@ program hydra_MI2_program
         handsCap(im) = oxide(im) > 0 .and. .not. IGLOO%material(im)%resOn
       enddo
       call Load_Species_Map( MAP_IGLOO, IGLOO_phase_prefix, matnames, evap, burn, oxide, handsCap, nuOx )
-      ! a smoke from IGLOO's burning needs IGLOO's four columns of what it burns (C-IGLOO9), not built
+      ! a smoke from IGLOO's burning needs what each parcel burns, which IGLOO does not hand the coupler yet
       do im = 1, size(IGLOO%material)
         block
           character(len=64) :: sname, sphase

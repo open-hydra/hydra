@@ -100,7 +100,7 @@ sed -i -e 's/ T-ign=290 / T-ign=500 /' -e 's/ d-burnout=3e-06$/ d-burnout=4e-05/
 if grep -q ' T-ign=500 .* d-burnout=4e-05$' "$v/INPUT/part-models.txt"; then
   "$RUN" "$v" "$d" 1 "$log" "$EXE" > /dev/null 2>&1; rc=$?
   [ $rc = 0 ] && grep -q "GAME OVER" "$log" && ok "cold: igloo-burnout-box run exits 0 with GAME OVER" || ko "cold: igloo-burnout-box run exit=$rc"
-  # round-off of IGLOO's in - out sums: 2.5e-21 kg/s measured; a removal hands 4.0e-06 kg/s (the sixth issue's binary)
+  # round-off of IGLOO's in - out sums: 2.5e-21 kg/s measured; a removal hands 4.0e-06 kg/s (an IGLOO that removes parcels that do not burn)
   m=$(grep -a '\[MI2-report\] igloo-to-gas ' "$log" | awk '{ n++; v = $NF; sub(/^-/, "", v); if (v + 0 > big) big = v + 0 } END { printf "%d %.3e %d", n, big, (n > 0 && big <= 1e-15) }')
   [ "${m##* }" = 1 ] && ok "cold: IGLOO hands the gas no mass (${m% *}: blocks, largest kg/s; tol 1e-15)" \
                      || ko "cold: IGLOO hands the gas mass (${m% *}: blocks, largest kg/s; tol 1e-15)"

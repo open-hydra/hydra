@@ -297,7 +297,7 @@ contains
         error stop 1
       endif
       if (present(oxide_ratio)) then
-        ! one formula, two tables of atomic weights that differ in their last digit (rev7/derive/oxide_ratio.py)
+        ! 1e-7: one formula with two tables of atomic weights that differ in their last digit stays within it
         if (abs(capnu(m) - oxide_ratio) > 1.e-7_R8*oxide_ratio) then
           write(*,'(A,ES15.7,A,ES15.7,A)') E//trim(fname)//': the cap record of '//trim(adjustl(material_names(m)))// &
             ' forms ', capnu(m), ' kg of oxide per kg, and the cap law of '//trim(SOLVER(which))//' holds ', &

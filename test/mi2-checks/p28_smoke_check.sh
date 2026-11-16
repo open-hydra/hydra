@@ -9,7 +9,8 @@
 #  gas    : one ICE step, its sources frozen through 5 MOSE iterations: the gas gains the record's species without the
 #           smoke, (1 - nu_s) M_b t, and the reported momentum and energy.
 #  refuse : the smoke is not a material of ICE; it is born in another phase; the burning row has no d-smoke; an
-#           IGLOO material's record makes a smoke (C-IGLOO9 not built): each stops before the first step.
+#           IGLOO material's record makes a smoke (IGLOO does not hand what it burns yet): each stops before the
+#           first step.
 #   usage: p28_smoke_check.sh [scratch-root] [exe]
 set -u
 T=${1:-${MI2_SCRATCH:-/tmp/mi2-checks-${USER:-$(id -un)}}/P28}
