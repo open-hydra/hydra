@@ -125,9 +125,10 @@ program hydra_MI2_program
       character(len=64), allocatable :: matnames(:)
       logical,           allocatable :: evap(:), burn(:), beck(:)
       real(R8),          allocatable :: eICEref(:), Lvmat(:), qmat(:), Thot(:), eICEhot(:)
+      logical,           allocatable :: Lvconst(:)
       integer :: im, nm
       nm = size(ICE_obj_condensed)
-      allocate(matnames(nm), evap(nm), burn(nm), eICEref(nm), Lvmat(nm), qmat(nm), Thot(nm), eICEhot(nm))
+      allocate(matnames(nm), evap(nm), burn(nm), eICEref(nm), Lvmat(nm), qmat(nm), Thot(nm), eICEhot(nm), Lvconst(nm))
       allocate(beck(nm))
       do im = 1, nm
         matnames(im) = ICE_obj_condensed(im)%name
@@ -146,12 +147,13 @@ program hydra_MI2_program
           eICEhot(im) = mat_cp_const( ICE_obj_condensed(im) ) * Thot(im)
         endif
         Lvmat(im)   = mat_lv( ICE_obj_condensed(im), T_datum_ref )
+        Lvconst(im) = .not. ICE_obj_condensed(im)%use_lv
         qmat(im)    = ICE_obj_condensed(im)%qComb
       enddo
       call Load_Species_Map( MAP_ICE, ICE_phase_prefix, matnames, evap, burn )
       call Report_Stoichiometry( MAP_ICE, matnames, nm )
-      call Build_Datum_Offsets( MAP_ICE, matnames, nm, beck, eICEref, Lvmat, qmat, Thot, eICEhot )
-      deallocate(matnames, evap, burn, beck, eICEref, Lvmat, qmat, Thot, eICEhot)
+      call Build_Datum_Offsets( MAP_ICE, matnames, nm, beck, eICEref, Lvmat, qmat, Thot, eICEhot, Lvconst )
+      deallocate(matnames, evap, burn, beck, eICEref, Lvmat, qmat, Thot, eICEhot, Lvconst)
     end block
   endif
   ! IGLOO%setup includes the reset_state of the first solve; every later solve needs its own
@@ -193,12 +195,14 @@ program hydra_MI2_program
       block
         real(R8), allocatable :: hIGLOOref(:), Lvmat(:), qmat(:), Thot(:), hIGLOOhot(:)
         logical,  allocatable :: beck(:)
+        logical,  allocatable :: Lvconst(:)
         integer :: it
         allocate(hIGLOOref(size(IGLOO%material)), Lvmat(size(IGLOO%material)), qmat(size(IGLOO%material)), &
-                 Thot(size(IGLOO%material)), hIGLOOhot(size(IGLOO%material)))
+                 Thot(size(IGLOO%material)), hIGLOOhot(size(IGLOO%material)), Lvconst(size(IGLOO%material)))
         allocate(beck(size(IGLOO%material)))
         do im = 1, size(IGLOO%material)
           Lvmat(im)   = IGLOO%material(im)%Lv
+          Lvconst(im) = .not. IGLOO%material(im)%LvVariable
           qmat(im)    = IGLOO%material(im)%qComb
           ! where the material converts: its boiling temperature, or the one it burns from (Beckstead: T-ign)
           Thot(im) = IGLOO%material(im)%Tboil
@@ -219,8 +223,8 @@ program hydra_MI2_program
             trim(IGLOO%material(im)%hDatum)//', hOff = ', IGLOO%material(im)%hOff, ' J/kg'
         enddo
         call Build_Datum_Offsets( MAP_IGLOO, matnames, size(IGLOO%material), beck, hIGLOOref, Lvmat, qmat, Thot, &
-                                  hIGLOOhot )
-        deallocate(hIGLOOref, Lvmat, qmat, Thot, hIGLOOhot)
+                                  hIGLOOhot, Lvconst )
+        deallocate(hIGLOOref, Lvmat, qmat, Thot, hIGLOOhot, Lvconst)
         deallocate(beck)
       end block
 

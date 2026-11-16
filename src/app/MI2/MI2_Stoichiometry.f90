@@ -432,9 +432,9 @@ contains
   !    latent    : SUM_s nu*h_FLINT(s) - (href + Lv)   the vapour's enthalpy less the latent heat is the liquid's
   !    formation : h298 - href                         the record gives the material's formation-inclusive enthalpy
   !  and the same of the oxide of a capped material. Thot is the temperature the material converts at (boiling,
-  !  burning) and hhot the enthalpy its solver credits there: they size one message, never an offset.
+  !  burning) and hhot the enthalpy its solver credits there: they size two messages, never an offset.
   !  [MI2-Coupling] datum-correction = false zeroes the offsets.
-  subroutine Build_Datum_Offsets ( which, material_names, nmat, beck, href, Lv, qcomb, Thot, hhot )
+  subroutine Build_Datum_Offsets ( which, material_names, nmat, beck, href, Lv, qcomb, Thot, hhot, Lvconst )
     use Finer,                   only: file_ini
     use FLINT_Lib_Thermodynamic, only: ns, species_names, H0i
     implicit none
@@ -447,8 +447,9 @@ contains
     real(R8),         intent(in) :: qcomb(:)   !> the solver's q-comb [J/kg]
     real(R8),         intent(in) :: Thot(:)    !> boiling temperature (evaporation), burning temperature (combustion) [K]
     real(R8),         intent(in) :: hhot(:)    !> enthalpy the solver credits at Thot, its own datum [J/kg]
+    logical,          intent(in) :: Lvconst(:) !> the solver holds the latent heat as a constant, not as a column
     integer  :: m, s, error, ip
-    real(R8) :: hprod, hcredited, qr, hph
+    real(R8) :: hprod, hcredited, qr, hph, off
     real(R8) :: qhot
     real(R8), allocatable :: dh(:), dhp(:), nu_s(:,:)
     type(file_ini) :: fini
@@ -498,6 +499,15 @@ contains
           write(*,'(A,ES15.7)')   '        h_'//SOLVER(which)//'(liquid table)              : ', href(m)
           write(*,'(A,ES15.7)')   '        Lv (already inside the source)     : ', Lv(m)
           write(*,'(A,ES15.7)')   '        credited by '//SOLVER(which)//' (h + Lv)         : ', hcredited
+          ! a constant latent heat: what it misses of the one the two heat capacities give, at the boiling temperature
+          if (Lvconst(m)) then
+            off = (hhot(m) - href(m)) - (hph - hprod)
+            write(*,'(A,F8.2,A,ES12.4,A,F6.2,A)') '        [WARNING] the latent heat is a constant: at ', Thot(m), &
+              ' K it differs by ', off, ' J/kg (', 100._R8*abs(off)/max(abs(Lv(m)), tiny(1._R8)), ' % of Lv) from '// &
+              'the one the heat capacities of the liquid and of the vapour give. The energy the gas and the drops '// &
+              'hold together is exact; its share between them is not: give the latent heat as the Lv column of '// &
+              'the property table, which ATLAS writes'
+          endif
         case (EN_FORMATION)
           dh(m) = book(which)%h298(m) - href(m)
           qr    = book(which)%h298(m) - hprod
