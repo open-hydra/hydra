@@ -8,6 +8,6 @@ and the solid's cp of nasa9.yaml at 2327 K, as GPB prints them when the model is
 
 `check.py`: the books of the three bodies (the gas's share the coupler reports, the aluminium, the smoke) on the
 formation scale, and the smoke's energy against the database's solid AL2O3(a) at the end. `INPUT/` is what ATLAS
-writes for `input.ini` (`GPB ICB BCB`), then over ICB's field family 1's velocity and exact number density (in
-`test/ice-box/make_case.py`'s format) and family 2 empty (1e-25 in every slot, as in `test/ice-al-box-direct`);
-`MESH/` is `test/ice-box`'s. Gate: `test/mi2-checks/p32_fusion_check.sh`.
+writes for `input.ini` (`test/mi2-checks/regen_case.sh test/ice-al-freeze-box SCRATCH GPB ICB BCB --install`), then
+`python3 test/ice-al-box/make_case.py test/ice-al-freeze-box`: family 1's velocity and exact number density, family 2
+empty (1e-25 in every slot). `MESH/` is `test/ice-box`'s. Gate: `test/mi2-checks/p32_fusion_check.sh`.
