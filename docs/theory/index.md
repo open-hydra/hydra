@@ -11,6 +11,8 @@ discretization details are maintained in each solver's own documentation.
 | **MOSE** | Compressible Euler/Navier-Stokes for ideal-gas mixtures, with optional turbulence and reacting-flow models | External/internal aerothermodynamics, reacting gas flows | [MOSE Theory](https://open-hydra.github.io/MOSE/theory/) |
 | **FUSS** | Heat conduction equation in solids (steady/transient), including source terms and thermal BC models | Solid thermal response and conjugate heat transfer solid side | [FUSS Theory](https://open-hydra.github.io/FUSS/theory/) |
 | **GROOT** | Radiation transport equation | Radiative heat transfer | [GROOT Theory](https://open-hydra.github.io/GROOT/theory/) |
+| **ICE** | Eulerian moment equations of a dispersed condensed phase, with drag, heat transfer, evaporation and combustion | Drops and particles carried by a gas | [ICE Theory](https://open-hydra.github.io/ICE/theory/) |
+| **IGLOO** | Lagrangian parcel trajectories with drag, heat transfer, evaporation, breakup and combustion | Drops and particles carried by a gas | [IGLOO Theory](https://open-hydra.github.io/IGLOO/theory/) |
 
 ## Coupled Theory in Hydra
 
@@ -24,8 +26,12 @@ At a high level, this introduces:
 - Shared coupling iteration control
 - Optional time-accurate synchronized stepping
 
-For implementation details of the current coupled executable, see the
-developer-side source in `src/app/MF`.
+In `hydra-MI2` the coupling is through volume sources instead: the condensed
+phases act on the gas through momentum, energy, mass and species sources (see
+[Multiphase Coupling](../user/mi2.md#what-is-exchanged)).
+
+For implementation details of the coupled executables, see the
+developer-side source in `src/app/MF`, `src/app/AF` and `src/app/MI2`.
 
 ## Recommended Reading Path
 

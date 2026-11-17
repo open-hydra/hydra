@@ -18,6 +18,8 @@ Each solver in Hydra is designed for a specific class of equations and physical 
 | **FUSS** | Solid heat conduction (steady and transient) | `src/lib/FUSS` | [FUSS docs](https://open-hydra.github.io/FUSS/) |
 | **GROOT** | Radiative heat transfer | `src/lib/GROOT` | [GROOT docs](https://open-hydra.github.io/GROOT/) |
 | **ARES** | Real fluid dynamics | `src/lib/ARES` | [ARES docs](https://open-hydra.github.io/ARES/) |
+| **ICE** | Eulerian dispersed condensed phase (drops, particles) | `src/lib/ICE` | [ICE docs](https://open-hydra.github.io/ICE/) |
+| **IGLOO** | Lagrangian dispersed condensed phase (parcels) | `src/lib/IGLOO` | [IGLOO docs](https://open-hydra.github.io/IGLOO/) |
 
 !!! info "Hydra and solver repositories"
     Solver libraries are versioned in their own repositories and included in Hydra as submodules. Hydra-level docs summarize how solvers fit together; solver-level docs provide full theory and user references.
@@ -26,13 +28,13 @@ Each solver in Hydra is designed for a specific class of equations and physical 
 
 ## Multi-Physics Coupling
 
-Hydra also provides coupled applications where two solvers exchange interface data during the run. The current coupled executable in `src/app/MF` coordinates:
+Hydra also provides coupled applications where solvers exchange data during the run. Three coupled executables exist:
 
-- Fluid-side quantities from MOSE
-- Solid-side quantities from FUSS
-- Coupled wall fluxes and wall-temperature consistency
-
-This is the basis for conjugate heat-transfer style simulations in the Hydra workflow.
+| Executable | Solvers | Coupling |
+|------------|---------|----------|
+| `hydra-MF` (`src/app/MF`) | MOSE + FUSS | fluid-solid wall fluxes and wall temperature (conjugate heat transfer) |
+| `hydra-AF` (`src/app/AF`) | ARES + FUSS | the same, with a real fluid |
+| `hydra-MI2` (`src/app/MI2`) | MOSE + ICE + IGLOO | a gas and its dispersed condensed phases: the gas state to the condensed solvers, their momentum, energy, mass and species sources back to the gas ([Multiphase Coupling](user/mi2.md)) |
 
 ---
 

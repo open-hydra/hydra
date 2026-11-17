@@ -15,6 +15,9 @@ The most important decision is **socket coverage**. Within the family of layouts
 
 This page explains how to select a configuration, launch `hydra-MF`, verify CPU placement, interpret the scaling results, and measure performance reproducibly.
 
+!!! note "`hydra-MI2` is OpenMP only"
+    `hydra-MI2` refuses to configure with `--use-mpi`: MOSE partitions its blocks over the ranks, while IGLOO needs the full gas field on every rank. Run it on one node with `OMP_NUM_THREADS` threads (`figaro hydra-MI2 -p <n> solve`); see [Multiphase Coupling](mi2.md#build).
+
 ## How one coupling step works
 
 A coupled step consists of:

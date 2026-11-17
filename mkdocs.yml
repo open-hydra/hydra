@@ -94,6 +94,7 @@ nav:
     - Figaro CLI: user/figaro.md
     - Hydra Input: user/input.md
     - Running Cases in Hydra: user/using.md
+    - Multiphase Coupling (hydra-MI2): user/mi2.md
     - Parallel Execution: user/parallel.md
     - Hydra Registry: user/registry.md
 

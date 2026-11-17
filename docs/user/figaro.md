@@ -92,7 +92,11 @@ Example:
 
 ```bash
 figaro build hydra-MF --compilers=gnu --use-openmp
+figaro build hydra-MI2 --compilers=intel --use-openmp
 ```
+
+`hydra-MI2` is OpenMP only: it refuses to configure with `--use-mpi`. Its build also checks out the ICE and IGLOO
+submodules (see [Multiphase Coupling](mi2.md#build)).
 
 **Build solver submodule directly**
 
@@ -113,7 +117,7 @@ figaro compile [--edit] <target>
 
 Targets:
 
-- hydra executable target: `hydra-MF`
+- hydra executable target: `hydra-MF`, `hydra-AF`, `hydra-MI2`
 - solver submodule target: `MOSE`, `FUSS`, `GROOT`, `ATLAS`
 
 Examples:
@@ -139,7 +143,7 @@ Supported runtime targets:
 - `MOSE`
 - `FUSS`
 - `GROOT`
-- `hydra-MF` (or another `hydra-*` executable name)
+- `hydra-MF`, `hydra-AF`, `hydra-MI2`
 
 Run options:
 
@@ -152,7 +156,10 @@ Examples:
 figaro hydra-MF solve
 figaro hydra-MF -p 8 solve
 figaro MOSE -b solve
+figaro hydra-MI2 -p 8 solve
 ```
+
+A `hydra-*` run first lists `INPUT/*phase.txt` into `filelist.txt`, which the executable reads.
 
 ## `ATLAS` helper mode
 

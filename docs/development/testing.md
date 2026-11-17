@@ -19,10 +19,14 @@ test/
 │   ├── analytical.py           #   Lindstedt correlation + comparison plot
 │   ├── ks_kf_40/ 400/ 4000/    #   three solid conductivities
 │   └── reference/              #   frozen wall solutions + literature PDFs
-└── Tw-Flat-Plate-real/         # hydra-AF: ARES + FUSS, real fluid
-    ├── validate.py             #   three-panel comparison for the whole suite
-    ├── ks_kf_40_real/ 400_real/ 4000_real/
-    └── reference/              #   frozen wall solutions
+├── Tw-Flat-Plate-real/         # hydra-AF: ARES + FUSS, real fluid
+│   ├── validate.py             #   three-panel comparison for the whole suite
+│   ├── ks_kf_40_real/ 400_real/ 4000_real/
+│   └── reference/              #   frozen wall solutions
+├── evap-box*/ JPL-*/           # hydra-MI2 cases (see hydra-MI2 below)
+├── ice-*/ igloo-*/ steady-*/   #   ...
+├── vortex-cloud/               # ICE and IGLOO standalone against an exact solution
+└── mi2-checks/                 # hydra-MI2 gate scripts
 ```
 
 Each `ks_kf_*` case includes:
@@ -111,8 +115,94 @@ When modifying hydra-level code (`src/app/common`, `src/app/MF`, or
 | Input/config (`src/app/common/config/*`) | parse/launch check + one benchmark run |
 | Coupling internals (`src/app/MF/*`) | all three `ks_kf_*` runs + `analytical.py` |
 | Coupling internals (`src/app/AF/*`) | all three `ks_kf_*_real` runs + `validate.py` |
+| Coupling internals (`src/app/MI2/*`) | the `test/mi2-checks/` gates of the changed path (routing, schedule, exchange, evaporation, combustion, smoke) |
 | Shared coupling code (`src/app/common/*`) | both suites, plus the cross-solver check |
 | Build/CMake changes | clean build + run benchmark |
+
+## hydra-MI2
+
+`hydra-MI2` (MOSE + ICE + IGLOO, see [Multiphase Coupling](../user/mi2.md)) has its own cases and gate scripts.
+
+### Cases
+
+Each case directory holds `input.ini` (the `[HYDRA-*]`, solver and ATLAS sections), `MESH/` and a versioned
+`INPUT/`. 23 of the 29 also hold a `README.md` with the closed forms the case is judged against. 11 hold their own
+`check.py`; the others are judged by a script of `test/mi2-checks/` or by the `check.py` of the case they twin
+(`test/igloo-burn-box/check.py` judges the four IGLOO burning boxes of `p22_igloo_burn_box_check.sh`).
+
+| Group | Cases | Solvers | What they exercise |
+|-------|-------|---------|--------------------|
+| Evaporation | `evap-box` (steady), `evap-box-ta` (time-accurate), `evap-box-ord2` (second-order gas reconstruction in IGLOO), `evap-box-sa` (RANS, Spalart-Allmaras) | MOSE + IGLOO | water drops evaporating into N2 in a closed box: the mass and energy balances printed at the end of the run |
+| Source coupling | `evap-box-mom` | MOSE + IGLOO | momentum and energy of IGLOO's source coupling (non-evaporating drops) |
+| Source coupling | `ice-box` | MOSE + ICE | the frozen ICE source on a uniform gas, against closed forms |
+| Nozzle | `JPL-Lagrangian-20micron`, `JPL-Eulerian-20micron`, `JPL-3solver-20micron` | MOSE + IGLOO, MOSE + ICE, all three | 20 µm alumina in the JPL nozzle; `JPL_chang.dat` holds the reference curves of Chang, Hourng & Chien (1996), Fig. 11 |
+| Combustion | `ice-burn-box` (direct), `ice-burn-box-beckstead`, `igloo-burn-box`, `igloo-burn-box-direct`, `igloo-burn-box-beckstead`, `igloo-burn-box-rx` (graphite to CO2) | MOSE + ICE or IGLOO | a burning material handed to the gas: mass, species, momentum, energy |
+| Combustion | `ice-igloo-burn-box` | all three | two burning phases on two models in one run |
+| Burn-out, oxide cap | `ice-burnout-box`, `igloo-burnout-box`, `igloo-cap-box` | MOSE + ICE or IGLOO | drops burning out without a residue; an IGLOO material with an oxide cap |
+| Smoke | `ice-smoke-box`, `igloo-smoke-box`, `ice-al-box`, `ice-al-box-direct`, `igloo-al-box`, `igloo-al-box-direct`, `ice-al-freeze-box` | MOSE + ICE, all three | the condensed product of a burning material born in an ICE family; aluminium burning with steam; the smoke freezing |
+| Steady | `steady-ice-burnout`, `steady-ice-smoke`, `steady-igloo-smoke` | MOSE + ICE, all three | steady nozzle runs whose transfers are handed as rates |
+
+`vortex-cloud/` runs ICE and IGLOO standalone on a particle cloud in a frozen vortex and compares both with the
+exact solution (`python3 test/vortex-cloud/compare.py`, `--check` for a verdict; see its `README.md`).
+
+Run a case from a copy, so that its directory stays clean:
+
+```bash
+cp -r test/evap-box-ta /tmp/evap-box-ta && cd /tmp/evap-box-ta
+figaro hydra-MI2 -p 1 solve
+```
+
+A run that ends normally prints the end-of-run balances, when they apply, and `GAME OVER`.
+
+### Gates
+
+The scripts of `test/mi2-checks/` copy a case to a scratch directory, run it (with edits where a gate tests a
+refusal), judge the result and exit non-zero on failure; most print `PASS`/`FAIL` lines and a final count.
+
+```bash
+test/mi2-checks/p10_ice_box_check.sh [scratch-root] [exe]
+```
+
+The scratch root defaults to `/tmp/mi2-checks-$USER` (or `$MI2_SCRATCH`), the executable to `bin/hydra_MI2` of the
+checkout the script lives in. Exceptions: `p1_routing_checks.sh` requires the scratch root; `p1_igloo_key_check.sh`
+runs IGLOO's standalone executable; `p7_fpe_check.sh` builds its own executable with `ifx -fpe0` (the
+`bin/hydra_MI2` it overwrites is restored); `p8_solid_coherence_check.sh [scratch-root] [ice-exe] [igloo-exe]` runs
+ICE and IGLOO standalone; `p31_steady_check.sh` takes an optional list of legs.
+
+| Gate | Checks |
+|------|--------|
+| `p1_routing_checks.sh` | phase routing: the phase keys, the naming rules, the modeling token, the required files |
+| `p1_ice_key_check.sh`, `p1_igloo_key_check.sh` | a keyed phase gives the same output as the legacy unnamed one |
+| `p1_two_phase_smoke.sh` | MOSE + ICE + IGLOO on the JPL nozzle, both condensed phases routed and written |
+| `p2_frozen_source_check.sh` | the frozen-source notice and its cadence |
+| `p3_material_section_check.sh` | IGLOO's per-material keys come from the material line of the phase file |
+| `p4_ice_bc_check.sh` | ICE's boundary types 301 and 403 |
+| `p6_floor_guard_check.sh` | the consumed-species floor guard |
+| `p7_fpe_check.sh` | no floating-point exception on the coupling paths |
+| `p8_solid_coherence_check.sh` | ICE and IGLOO solidification on one stream |
+| `p9_ini_reread_check.sh` | the hot re-read of `input.ini` |
+| `p10_ice_box_check.sh` | `ice-box`: ICE's frozen source against closed forms; the MOSE + ICE time-accurate refusal |
+| `p11_mass_flux_inlet_check.sh` | the gas inflow handed to IGLOO on mass-flux inlets |
+| `p12_igloo_momentum_check.sh` | `evap-box-mom`: momentum and energy of IGLOO's source coupling |
+| `p13_rans_slot_check.sh` | `evap-box-sa`: the coupling leaves the turbulence variable alone |
+| `p18_jpl_chang_check.sh` | the three JPL cases against `JPL_chang.dat` |
+| `p19_evap_reference_check.sh` | the four evaporating boxes against an independent integration of the drop equations |
+| `p20_species_map_check.sh` | `products.txt` for an evaporating material, and its refusals |
+| `p21_ice_burn_box_check.sh` | ICE burning (direct, Beckstead) against closed forms |
+| `p22_igloo_burn_box_check.sh` | IGLOO burning against closed forms |
+| `p23_burn_twins_check.sh` | one burning section in ICE and in IGLOO gives the gas the same energy per kg |
+| `p24_two_solver_burn_check.sh` | two burning phases, two models, one run |
+| `p25_burnout_check.sh` | burn-out in ICE and IGLOO |
+| `p26_oxide_cap_check.sh` | the oxide cap, with and without its residue |
+| `p28_smoke_check.sh` | the smoke of an ICE material |
+| `p29_igloo_smoke_check.sh` | the smoke of an IGLOO material, its hand-off as amounts and as rates, its refusals |
+| `p30_al_smoke_check.sh` | aluminium burning with steam, the alumina a smoke, in both solvers |
+| `p31_steady_check.sh` | a steady run does not depend on the local time steps |
+| `p32_fusion_check.sh` | a smoke freezing: its heat of fusion reaches the gas |
+
+`run_case.sh <case> <scratch> <threads> <log> [exe]` runs one case in a scratch copy. `regen_case.sh <case> <scratch>
+<GPB|BCB|ICB ...> [--install]` regenerates a case's `INPUT/` with ATLAS (`ATLASDIR` selects the ATLAS tree) and diffs
+it against the stored one.
 
 ## Relationship to Solver-Level Tests
 

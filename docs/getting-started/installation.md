@@ -40,6 +40,15 @@ Example for the coupled executable `hydra-MF`:
 figaro build hydra-MF --compilers=gnu --use-openmp
 ```
 
+For the multiphase executable `hydra-MI2` (MOSE + ICE + IGLOO), OpenMP only:
+
+```bash
+figaro build hydra-MI2 --compilers=intel --use-openmp
+```
+
+It also checks out the ICE and IGLOO submodules; ICE is skipped by a recursive clone and fetched over SSH, so the
+build needs access to its repository.
+
 !!! note
     Build options are forwarded to the underlying CMake/install scripts.
     Use `figaro` with no arguments to print the command help.
