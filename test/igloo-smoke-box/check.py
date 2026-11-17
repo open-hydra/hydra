@@ -19,7 +19,7 @@ burns out inside the box (d-burnout), so over the blocks with sources, t_src = S
   K4  gas energy gained (MOSE, gas-energy lines) + smoke energy (ICE field, on the gas's formation scale: per kg
       h298_s + H_s(T) - H_s(T_ref) + |u|^2/2, H_s the alumina table of INPUT/partE-properties.dat, h298_s the record's)
       = SUM mdot (h_c(T0) + u_inj^2/2 + h298 - h_c(T_ref)) t_src, h_c the enthalpy of A (INPUT/partL-properties.dat)
-  K5  the state the smoke is born with: C-IGLOO9 hands, per cell residence of a parcel, the mass it burnt there and its
+  K5  the state the smoke is born with: IGLOO hands, per cell residence of a parcel, the mass it burnt there and its
       velocity and temperature weighted by the metal burnt over the residence; a parcel of this box burns out in the
       cell it is injected in, so the smoke is born at the burn-weighted mean of the parcel's life. Oracle: one parcel's
       life integrated here, outside IGLOO (IGLOO's model 5: Stokes drag, Ranz-Marshall Nu, the d^n law, beta-part of
@@ -28,7 +28,7 @@ burns out inside the box (d-burnout), so over the blocks with sources, t_src = S
       of the life, what a birth at the residence's end would give, is the non-vacuity (90 K and 0.246 m/s away).
   K6  number: each drop born at d-smoke, SUM n vol = smoke mass / (pi/6 rho_s d_smoke^3)
   K7  hand-off: the field holds what the coupler reports it delivered (igloo-smoke-delivered lines)
-With the hand-off in rates (DECISION 21: MOSE or ICE not time-accurate; the coupler says "reaches ICE as rates"), ICE's
+With the hand-off in rates (MOSE or ICE not time-accurate; the coupler says "reaches ICE as rates"), ICE's
 smoke family integrates, from empty, the rates the coupler set before ICE's block over ICE's own steps; after K0:
   R0  rate lines, one ICE block (ice-time t0 t1), no amount delivered
   R1  smoke mass above ICE's floor = M_rate (t1 - t0)        R2 momentum = P_rate (t1 - t0)

@@ -4,7 +4,7 @@
 #  books  : the case as it is: the smoke of every MOSE block joins ICE after the block; the gas, the smoke ICE holds and
 #           the streams close mass, momentum and energy; the smoke's temperature and number at birth (check.py K0-K7).
 #  rates  : MOSE steady, ICE time-accurate (RK3, three steps): the smoke is handed as rates, a source of its family
-#           over ICE's own steps (DECISION 21); what ICE holds = the rates times ICE's time (check.py R0-R5).
+#           over ICE's own steps; what ICE holds = the rates times ICE's time (check.py R0-R5).
 #  refuse : ICE not run; relaxation = true; the burning row has no d-smoke; the smoke is not a material of ICE; it is
 #           born in another phase; the Eulerian coupling (IGLOO-iter = 2): each stops before the first step. (A smoke
 #           family of another closure is refused too, but no case reaches it: ICE reads ATLAS ICB's initial condition,

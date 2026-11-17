@@ -277,7 +277,7 @@ def igloo(run, log):
         % (abs(Es), abs(Es) / E_gas))
     Tm = sum(cols['rho_p1'][c] * vol[c] * cols['T_p1'][c] for c in full) / Ms
     if not capped:
-        # the rule of C-IGLOO9: the state weighted by the metal burnt over the residence; a direct drop burns at
+        # IGLOO's rule: the state weighted by the metal burnt over the residence; a direct drop burns at
         # T-burn, so its smoke is born at T-burn; the residue parcels' time-end temperature (the residence's end,
         # where this box's drops stop at d-stop and stay) is what a birth at the residence's end would give
         Tb = float(g2['T-burn'])

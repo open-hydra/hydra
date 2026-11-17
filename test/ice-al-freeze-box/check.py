@@ -25,8 +25,8 @@ aluminium's at the start (INPUT/part-ic.tec), E_Al its at the end, G = SUM Q_j d
      table of AL2O3(a) GPB writes (test/igloo-smoke-box/INPUT/partE-properties.dat, the same database and scale).
      R = G + E_Al + E_s(true) - E0, per kg of smoke and h-fus: the error of ICE's constant cp-solid, eps(T) =
      H_a(T) - H_a(T-melt) + cp-solid (T-melt - T) (F2a: R equals SUM rho_s V eps(T_s) to 1e-6 of M_s h-fus), and
-     within TOL_TRUTH of zero (F2b): the gas received the heat of fusion. A smoke on the liquid's table alone (the
-     seventh issue's) gives R = SUM rho_s V (H_a - H)(T_s): -0.87 h-fus at 1750 K.
+     within TOL_TRUTH of zero (F2b): the gas received the heat of fusion. A smoke on the liquid's table alone (no
+     solidification model) gives R = SUM rho_s V (H_a - H)(T_s): -0.87 h-fus at 1750 K.
 Prints PASS/FAIL lines with the numbers compared and the tolerance; exits 1 on any FAIL."""
 import importlib.util
 import math

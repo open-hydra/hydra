@@ -56,7 +56,7 @@ module hydraMI2_Mod_Coupling
   !  the gas: 1/MOSE-iter of the cycle while a block runs, 0 outside one.
   real(R8), public :: goneShare = 0._R8
 
-  !> The smoke of IGLOO's burning materials (H8): per material, for the smoke of its combustion record (1) and the smoke
+  !> The smoke of IGLOO's burning materials: per material, for the smoke of its combustion record (1) and the smoke
   !  its cap oxide becomes when handed at burnout (2), the ICE family it is born in (0: none), kg per kg, the smoke's
   !  datum offset; the material's d-smoke. smokeIGOn: one at least. accIG: the amounts a MOSE block gives the smoke
   !  families, per block (6, ICE family, cell), added to ICE's state after the block.
@@ -393,7 +393,7 @@ contains
   !> The smoke an IGLOO material's burning makes in a cell, as rates [per s, the cell's]: (:,1) the smoke of its
   !  combustion record, (:,2) the smoke its cap oxide handed at burnout becomes; mass, momentum (3), energy on ICE's
   !  datum with the kinetic part, number (each drop at d-smoke); born with the parcels' velocity and temperature
-  !  weighted by what they burnt there (C-IGLOO9's columns). src: the cell's column of IGLOO's mass source.
+  !  weighted by what they burnt there (IGLOO's columns). src: the cell's column of IGLOO's mass source.
   subroutine IGLOO_Smoke_Rates ( src, imat, rate, nostate )
     use IGLOO_variables,        only: nm, smokeRow
     use ICE_Config_Types_m,     only: ICE_condensed => obj_condensed

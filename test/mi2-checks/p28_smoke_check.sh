@@ -10,7 +10,7 @@
 #           drop at d-smoke).
 #  gas    : one ICE step, its sources frozen through 5 MOSE iterations: the gas gains the record's species without the
 #           smoke, (1 - nu_s) M_b t, and the reported momentum and energy.
-#  order  : the burning family on IG, first and last (test/ice-smoke-box/order_variant.py, after the audit S7): the
+#  order  : the burning family on IG, first and last (test/ice-smoke-box/order_variant.py): the
 #           books of each; the smoke family is converted with its own closure whichever family ICE stepped last.
 #  refuse : the smoke is not a material of ICE; it is born in another phase; the burning row has no d-smoke; an
 #           IGLOO material's record makes a smoke and ICE is not run: each stops before the first step.

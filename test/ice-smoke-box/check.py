@@ -48,7 +48,7 @@ TOL_BOOK = 1e-11     # B1-B3: sums of some hundred terms printed with 17 figures
 TOL_SIZE = 1e-12     # B4, S3: a ratio of two moments the births add in proportion
 TOL_BIRTH = 1e-12    # S1, S2
 TOL_BOOK_IG = 1e-8   # B3 with the burning family on IG: an IG burning family closes its energy to 2.37e-9 with or
-#                      without a smoke (audit S7 §5, predating this plan: plan §10)
+#                      without a smoke (a property of ICE's IG closure, not of the smoke)
 TOL_GAS = 1e-8       # G1, G2: the gas's gains against the frozen rates (test/ice-burn-box's B1 and B2: 1e-10 measured)
 T_REF = 298.15
 

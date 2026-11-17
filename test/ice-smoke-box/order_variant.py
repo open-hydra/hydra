@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """order_variant.py <case-dir> <out-dir> <igfirst|iglast>: test/ice-smoke-box with the burning material A on the IG
-closure, in one of the two family orders (after the audit S7's make_order_variants.py):
+closure, in one of the two family orders:
   igfirst  A = family 1 (IG), S = family 2 (MK)
   iglast   S = family 1 (MK), A = family 2 (IG): ICE steps A last, so the smoke's birth after the family loop must
            convert S with S's own closure, not with the IG one the loop left

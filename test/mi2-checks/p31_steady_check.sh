@@ -29,7 +29,7 @@
 #           at m_burnout's drop, and the energy differs by about the range's half-width
 #  band     ICE's `burnout_band` the same in the log (removal-fo's), Mod_BC_Fluxes.f90 and the texts that name it
 # Tolerances: ten times each leg's floor rounded up to a power of ten; floor: the same deck run 40 against 50 cycles
-# (30 against 31 cycle pairs, mixed), ifx (H17i): births 1.4e-14, births-fo 5.5e-14, removal 3.0e-14,
+# (30 against 31 cycle pairs, mixed), ifx: births 1.4e-14, births-fo 5.5e-14, removal 3.0e-14,
 # removal-fo 1.2e-14, igloo 1.2e-9, igloo-fo 1.0e-9, mixed 1.2e-2. burn-fo: the pair itself (1.1e-14), its
 # 40-against-50 difference being the coupled field still moving. mixed keeps 1e-1, 8 times its floor and not ten:
 # the floor rose from 4.6e-3 when the switch began to keep an emptied cell's velocity, and the rule's 1 judges nothing.
