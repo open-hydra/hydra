@@ -182,7 +182,7 @@ A solver that has produced sources keeps them in force when a later cycle does n
 each time the cumulative MOSE iteration count crosses a multiple of `[MOSE-IO] shell-diter`:
 
 ```text
- [MI2] IGLOO source FROZEN this cycle (IGLOO-iter = 0): the gas keeps the sources produced in cycle 1, coupling step 3 [cycle 2, step 1, MOSE iter 150]
+ [MI2] IGLOO source FROZEN this cycle (IGLOO-iter = 0): the gas keeps the sources produced in cycle 1, coupling step 3  [cycle 2, step 1, MOSE iter 150]
 ```
 
 ### Under-relaxation

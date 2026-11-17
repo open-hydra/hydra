@@ -126,7 +126,9 @@ When modifying hydra-level code (`src/app/common`, `src/app/MF`, or
 ### Cases
 
 Each case directory holds `input.ini` (the `[HYDRA-*]`, solver and ATLAS sections), `MESH/` and a versioned
-`INPUT/`; most also hold a `README.md` with the closed forms the case is judged against, and a `check.py`.
+`INPUT/`. 23 of the 29 also hold a `README.md` with the closed forms the case is judged against. 11 hold their own
+`check.py`; the others are judged by a script of `test/mi2-checks/` or by the `check.py` of the case they twin
+(`test/igloo-burn-box/check.py` judges the four IGLOO burning boxes of `p22_igloo_burn_box_check.sh`).
 
 | Group | Cases | Solvers | What they exercise |
 |-------|-------|---------|--------------------|
