@@ -33,6 +33,14 @@ figaro hydra-MF solve
 This executes the Hydra application that coordinates multiple solvers
 inside one coupling loop.
 
+For a gas carrying drops or particles (MOSE with ICE and/or IGLOO):
+
+```bash
+figaro hydra-MI2 -p 8 solve
+```
+
+See [Multiphase Coupling](mi2.md) for its case directory, phase routing and coupling schedule.
+
 ### B. Single solver through Hydra CLI
 
 You can also launch an individual solver from the same command surface:
@@ -52,7 +60,8 @@ my_case/
 └── OUTPUT/
 ```
 
-The exact content of `INPUT/` depends on the solver(s) in use.
+The exact content of `INPUT/` depends on the solver(s) in use. In `hydra-MI2` every phase has its own file set,
+`INPUT/<name>-*`, named after its `[GPB-Phase*] name` (see [Case directory](mi2.md#case-directory)).
 
 ## Runtime diagnostics
 
