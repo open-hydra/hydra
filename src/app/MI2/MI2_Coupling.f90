@@ -24,6 +24,8 @@ module hydraMI2_Mod_Coupling
   public :: Gas_Momentum
   public :: ICE_To_Gas_Totals
   public :: IGLOO_To_Gas_Totals
+  public :: Gone_Delivered
+  public :: Gone_Stored
 
   !> Under-relaxation store: the previous coupling step's injected residual, per block.
   type, public :: resField
@@ -44,6 +46,10 @@ module hydraMI2_Mod_Coupling
   real(R8), public :: energyInjected  = 0._R8
   real(R8), public :: energyDatumPart = 0._R8
   logical,  public :: energyAudited   = .false.
+
+  !> The share of the removals ICE stores (cond_phase%gone) that each MOSE iteration of the current block delivers to
+  !  the gas: 1/MOSE-iter of the cycle while a block runs, 0 outside one.
+  real(R8), public :: goneShare = 0._R8
 
   !> Inflow mass flow MOSExIGLOO handed IGLOO at its last call [kg/s], and the number of face records.
   real(R8), public :: mdotHanded = 0._R8
@@ -104,7 +110,7 @@ contains
     use MOSE_Global_m,          only: nsc
     use ICE_Advanced_Types_m,   only: ICE_domain_type
     use ICE_Global_m,           only: ngroups, nbase, mat_of
-    use hydraMI2_Stoichiometry, only: nu_ice => nuICE, has_stoichiometry_ICE, dhDatumICE
+    use hydraMI2_Stoichiometry, only: nu_ice => nuICE, has_stoichiometry_ICE, dhDatumICE, dhSmokeICE
     implicit none
     type(MOSE_domain_type), intent(in)  :: MOSE_domain
     type(ICE_domain_type),  intent(in)  :: ICE_domain
@@ -121,14 +127,14 @@ contains
         do i = 1, MOSE_domain%blk(b)%dim(1)
           vol = MOSE_domain%blk(b)%vol(i,j,k)
           associate ( cp => ICE_domain%blk(b)%cond_phase(g) )
-            F = F - cp%source(2:4,i,j,k) * vol
-            Q = Q - cp%source(nbase(g)-1,i,j,k) * vol
+            F = F - (cp%source(2:4,i,j,k) + cp%birth(2:4,i,j,k)) * vol
+            Q = Q - (cp%source(nbase(g)-1,i,j,k) + cp%birth(5,i,j,k)) * vol
             taumin = min(taumin, cp%tau(i,j,k))
             taumax = max(taumax, cp%tau(i,j,k))
             if (has_stoichiometry_ICE) then
               dm = - cp%source(1,i,j,k) * vol
               M  = M + sum(nu_ice(imat,1:nsc)) * dm
-              Q  = Q + dhDatumICE(imat) * dm
+              Q  = Q + dhDatumICE(imat) * dm - dhSmokeICE(imat) * cp%birth(1,i,j,k) * vol
             endif
           end associate
         enddo; enddo; enddo
@@ -334,6 +340,95 @@ contains
   end subroutine Accumulate_Injected_Energy
 
 
+  !> After a MOSE block that delivered the share frac of the removals ICE stores: the books take what was delivered
+  !  (mass through the rows, energy with the datum offset), the stores keep the rest; M, P, E are the totals delivered
+  !  on the gas's scale. Outside any parallel region.
+  subroutine Gone_Delivered ( MOSE_domain, ICE_domain, frac, M, P, E )
+    use MOSE_Advanced_Types_m,  only: MOSE_domain_type
+    use MOSE_Global_m,          only: nsc
+    use ICE_Advanced_Types_m,   only: ICE_domain_type
+    use ICE_Global_m,           only: ngroups, mat_of
+    use hydraMI2_Stoichiometry, only: nu_ice => nuICE, has_stoichiometry_ICE, dhDatumICE, mappedICE, dhSmokeICE, &
+                                      nuSmokeICE
+    implicit none
+    type(MOSE_domain_type), intent(in)    :: MOSE_domain
+    type(ICE_domain_type),  intent(inout) :: ICE_domain
+    real(R8),               intent(in)    :: frac
+    real(R8),               intent(out)   :: M, P(3), E
+    integer  :: b, g, i, j, k, s, imat
+    real(R8) :: vol, dm, gn(5)
+
+    M = 0._R8; P = 0._R8; E = 0._R8
+    if (.not. has_stoichiometry_ICE) return
+    if (.not. allocated(massInjected)) then
+      allocate(massInjected(1:nsc)); massInjected = 0._R8
+    endif
+    do b = 1, size(MOSE_domain%blk)
+      do g = 1, ngroups
+        imat = mat_of(g)
+        if (.not. mappedICE(imat)) cycle
+        do k = 1, MOSE_domain%blk(b)%dim(3)
+        do j = 1, MOSE_domain%blk(b)%dim(2)
+        do i = 1, MOSE_domain%blk(b)%dim(1)
+          vol = MOSE_domain%blk(b)%vol(i,j,k)
+          gn  = ICE_domain%blk(b)%cond_phase(g)%gone(:,i,j,k)
+          if (all(gn == 0._R8)) cycle
+          dm = gn(1)*frac*vol
+          do s = 1, nsc
+            massInjected(s) = massInjected(s) + nu_ice(imat,s)*dm
+          enddo
+          energyInjected  = energyInjected  + gn(5)*frac*vol + (dhDatumICE(imat) - nuSmokeICE(imat)*dhSmokeICE(imat))*dm
+          energyDatumPart = energyDatumPart + (dhDatumICE(imat) - nuSmokeICE(imat)*dhSmokeICE(imat))*dm
+          energyAudited   = .true.
+          M = M + sum(nu_ice(imat,1:nsc))*dm
+          P = P + gn(2:4)*frac*vol
+          E = E + gn(5)*frac*vol + (dhDatumICE(imat) - nuSmokeICE(imat)*dhSmokeICE(imat))*dm
+          ICE_domain%blk(b)%cond_phase(g)%gone(:,i,j,k) = gn*(1._R8 - frac)
+        enddo; enddo; enddo
+      enddo
+    enddo
+
+  end subroutine Gone_Delivered
+
+
+  !> What the removals ICE stores still hold for the gas, on the gas's scale: M the mass through the rows, P the
+  !  momentum, E the energy with the datum offset. Outside any parallel region.
+  subroutine Gone_Stored ( MOSE_domain, ICE_domain, M, P, E )
+    use MOSE_Advanced_Types_m,  only: MOSE_domain_type
+    use MOSE_Global_m,          only: nsc
+    use ICE_Advanced_Types_m,   only: ICE_domain_type
+    use ICE_Global_m,           only: ngroups, mat_of
+    use hydraMI2_Stoichiometry, only: nu_ice => nuICE, has_stoichiometry_ICE, dhDatumICE, mappedICE, dhSmokeICE, &
+                                      nuSmokeICE
+    implicit none
+    type(MOSE_domain_type), intent(in)  :: MOSE_domain
+    type(ICE_domain_type),  intent(in)  :: ICE_domain
+    real(R8),               intent(out) :: M, P(3), E
+    integer  :: b, g, i, j, k, imat
+    real(R8) :: vol, dm, gn(5)
+
+    M = 0._R8; P = 0._R8; E = 0._R8
+    if (.not. has_stoichiometry_ICE) return
+    do b = 1, size(MOSE_domain%blk)
+      do g = 1, ngroups
+        imat = mat_of(g)
+        if (.not. mappedICE(imat)) cycle
+        do k = 1, MOSE_domain%blk(b)%dim(3)
+        do j = 1, MOSE_domain%blk(b)%dim(2)
+        do i = 1, MOSE_domain%blk(b)%dim(1)
+          vol = MOSE_domain%blk(b)%vol(i,j,k)
+          gn  = ICE_domain%blk(b)%cond_phase(g)%gone(:,i,j,k)
+          dm  = gn(1)*vol
+          M   = M + sum(nu_ice(imat,1:nsc))*dm
+          P   = P + gn(2:4)*vol
+          E   = E + gn(5)*vol + (dhDatumICE(imat) - nuSmokeICE(imat)*dhSmokeICE(imat))*dm
+        enddo; enddo; enddo
+      enddo
+    enddo
+
+  end subroutine Gone_Stored
+
+
   !> Accumulate what ICE's sources hand the gas over a coupling step of duration dtBlock, as ICExMOSE applies them:
   !  the mass of each material that converts, through its row, and the energy with its datum offset. Called once
   !  per coupling step when an ICE material converts.
@@ -342,7 +437,7 @@ contains
     use MOSE_Global_m,          only: nsc
     use ICE_Advanced_Types_m,   only: ICE_domain_type
     use ICE_Global_m,           only: ngroups, nbase, mat_of
-    use hydraMI2_Stoichiometry, only: nu_ice => nuICE, has_stoichiometry_ICE, dhDatumICE
+    use hydraMI2_Stoichiometry, only: nu_ice => nuICE, has_stoichiometry_ICE, dhDatumICE, dhSmokeICE
     implicit none
     type(MOSE_domain_type), intent(in) :: MOSE_domain
     type(ICE_domain_type),  intent(in) :: ICE_domain
@@ -367,7 +462,7 @@ contains
           vol = MOSE_domain%blk(b)%vol(i,j,k)
           associate ( cp => ICE_domain%blk(b)%cond_phase(g) )
             mtot = mtot - cp%source(1,i,j,k) * vol
-            etot = etot - cp%source(nbase(g)-1,i,j,k) * vol
+            etot = etot - (cp%source(nbase(g)-1,i,j,k) + cp%birth(5,i,j,k) + dhSmokeICE(imat)*cp%birth(1,i,j,k)) * vol
           end associate
         enddo; enddo; enddo
         do s = 1, nsc
@@ -1022,14 +1117,15 @@ contains
     use MOSE_Global_m,          only: nsc, nu, nw, np, nprim
     use ICE_Advanced_Types_m,   only: ICE_domain_type
     use ICE_Global_m,           only: ngroups, nbase, mat_of
-    use hydraMI2_Stoichiometry, only: nu_ice => nuICE, has_stoichiometry_ICE, dhDatumICE, mappedICE
+    use hydraMI2_Stoichiometry, only: nu_ice => nuICE, has_stoichiometry_ICE, dhDatumICE, mappedICE, dhSmokeICE, &
+                                      nuSmokeICE
     use MOSE_Config_Types_m,    only: obj_chemistry
     implicit none
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
     type(ICE_domain_type),  intent(in)    :: ICE_domain
     ! Local
     integer  :: b, g, i, j, k, imat, isp, nshare
-    real(R8) :: partial_residuals(nprim), dm, avail, dtStage
+    real(R8) :: partial_residuals(nprim), dm, avail, dtStage, dtIter, dmg
     logical  :: mapped, consumes
 
     ! the families whose material consumes a gas species share what a cell holds of it
@@ -1052,7 +1148,7 @@ contains
           if (mapped) consumes = any(nu_ice(imat,1:nsc) < 0._R8)
         endif
 
-        !$OMP DO COLLAPSE(3) PRIVATE(partial_residuals,i,j,k,isp,dm,avail,dtStage)
+        !$OMP DO COLLAPSE(3) PRIVATE(partial_residuals,i,j,k,isp,dm,avail,dtStage,dtIter,dmg)
         do k = 1, MOSE_domain%blk(b)%dim(3)
         do j = 1, MOSE_domain%blk(b)%dim(2)
         do i = 1, MOSE_domain%blk(b)%dim(1)
@@ -1069,6 +1165,26 @@ contains
               partial_residuals(isp) = nu_ice(imat,isp)*dm
             enddo
             partial_residuals(np) = partial_residuals(np) + dhDatumICE(imat)*dm
+            ! the smoke the family makes is not the gas's: its momentum, its energy and its datum offset stay out
+            partial_residuals(nu:nw) = partial_residuals(nu:nw) - ICE_domain%blk(b)%cond_phase(g)%birth(2:4,i,j,k)
+            partial_residuals(np)    = partial_residuals(np) - ICE_domain%blk(b)%cond_phase(g)%birth(5,i,j,k) &
+                                     - dhSmokeICE(imat)*ICE_domain%blk(b)%cond_phase(g)%birth(1,i,j,k)
+            ! the removals ICE stores: this MOSE iteration's share, as a rate over its step (each stage of it and both
+            ! Strang halves integrate a constant rate to rate*dtlocal)
+            if (goneShare > 0._R8) then
+              dtIter = MOSE_domain%blk(b)%dtlocal(i,j,k)
+              if (dtIter > 0._R8) then
+                dmg = ICE_domain%blk(b)%cond_phase(g)%gone(1,i,j,k)*goneShare/dtIter
+                do isp = 1, nsc
+                  partial_residuals(isp) = partial_residuals(isp) + nu_ice(imat,isp)*dmg
+                enddo
+                partial_residuals(nu:nw) = partial_residuals(nu:nw) &
+                                         + ICE_domain%blk(b)%cond_phase(g)%gone(2:4,i,j,k)*goneShare/dtIter
+                partial_residuals(np)    = partial_residuals(np) &
+                                         + ICE_domain%blk(b)%cond_phase(g)%gone(5,i,j,k)*goneShare/dtIter &
+                                         + (dhDatumICE(imat) - nuSmokeICE(imat)*dhSmokeICE(imat))*dmg
+              endif
+            endif
             ! floor guard: a consumed species leaves at most its share of what the cell holds over this stage's
             ! step, dtlocal*strangcoeff (the step MOSE's Newstate applies), as for IGLOO's rates
             if (consumes) then

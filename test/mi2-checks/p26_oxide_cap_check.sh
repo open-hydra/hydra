@@ -7,8 +7,11 @@
 #  off    : the same case with residue = off: at burnout the cap is handed to the gas through the release record, so
 #           everything a stream carries in ends in the gas, as if no cap had formed: the closed forms of
 #           test/igloo-burn-box/check.py.
+#  offset : the case with the oxide's enthalpy table shifted by 1e6 J/kg against its record, so that the datum offset
+#           of the oxide is -1e6 J/kg: check.py of "on", its closed forms on the tables as shipped, must pass.
 #  refuse : the products file without the cap record; residue = off without the release record; a cap record whose
-#           oxide ratio is not the one IGLOO's cap law holds: each stops before the first step and names the record.
+#           oxide ratio is not the one IGLOO's cap law holds; a cap word on the material line without its row in the
+#           models file: each stops before the first step and names what is missing.
 #   usage: p26_oxide_cap_check.sh [scratch-root] [exe]
 set -u
 T=${1:-${MI2_SCRATCH:-/tmp/mi2-checks-${USER:-$(id -un)}}/P26}
@@ -55,6 +58,22 @@ if grep -q ' residue=off$' "$v/INPUT/part-models.txt" && grep -q '^residue    = 
   o=$(python3 -B "$H/test/igloo-burn-box/check.py" "$d" "$log" "$H/test/evap-box-mom" 2>&1); take "$o" off
 else ko "off: the variant could not be made"; fi
 
+echo "--- offset: the oxide's table off its record by 1e6 J/kg ---"
+v=$T/offset-case; d=$T/offset; log=$T/offset.log; w=$T/offset-view; rm -rf "$v" "$d" "$w"; mkdir -p "$v" "$w"
+cp -rp "$S/INPUT" "$S/MESH" "$S/input.ini" "$v/"
+awk '/^ZONE/ { z = ($0 ~ /"OX"/) } z && /^ *[0-9.+-]+([eE][0-9+-]+)? / && NF == 4 { printf "%s %s %s %.6f\n", $1, $2, $3, $4 + 1.0e6; next } { print }' \
+    "$S/INPUT/part-properties.dat" > "$v/INPUT/part-properties.dat"
+n=$(paste "$S/INPUT/part-properties.dat" "$v/INPUT/part-properties.dat" | awk -F'\t' '$1 != $2' | wc -l)
+if [ "$n" = 5000 ]; then
+  "$RUN" "$v" "$d" 1 "$log" "$EXE" > /dev/null 2>&1; rc=$?
+  [ $rc = 0 ] && grep -q "GAME OVER" "$log" && ok "offset: run exits 0 with GAME OVER" || ko "offset: run exit=$rc: $(grep -m1 'ERROR' "$log" | cut -c1-160)"
+  off=$(grep -a 'datum offset of the oxide' "$log" | awk '{ print $NF }' | head -1)
+  python3 -c "import sys; sys.exit(0 if abs(float(sys.argv[1]) + 1.0e6) < 1.0 else 1)" "${off:-0}" \
+    && ok "offset: the coupler builds the oxide's datum offset $off J/kg" || ko "offset: the oxide's datum offset is '$off', not -1e6 J/kg"
+  cp -p "$d/input.ini" "$w/"; cp -rp "$S/INPUT" "$w/"; ln -s "$d/OUTPUT" "$w/OUTPUT"
+  o=$(python3 -B "$S/check.py" "$w" "$log" "$H/test/evap-box-mom" 2>&1); take "$o" offset
+else ko "offset: the table of OX could not be shifted ($n of its 5000 rows)"; fi
+
 echo "--- refuse ---"
 refuse() {  # refuse <name> <message> : the variant in $T/refuse-<name> must stop and print <message>
   local v=$T/refuse-$1 log=$T/refuse-$1.log
@@ -73,5 +92,14 @@ v=$T/refuse-oxide-ratio; rm -rf "$v"; mkdir -p "$v"; cp -rp "$S/INPUT" "$S/MESH"
 sed -i -e 's/^\(material A cap 1 formation [^ ]*\) OX 1.8894415674e+00 /\1 OX 1.5000000000e+00 /' \
        -e 's/^  O2 -8.8944156736e-01 /  O2 -5.0000000000e-01 /' "$v/INPUT/part-products.txt"
 grep -q ' OX 1.5000000000e+00 ' "$v/INPUT/part-products.txt" && refuse oxide-ratio "the cap law of IGLOO holds" || ko "could not change the oxide ratio"
+v=$T/refuse-oxide-ratio-7; rm -rf "$v"; mkdir -p "$v"; cp -rp "$S/INPUT" "$S/MESH" "$S/input.ini" "$v/"
+sed -i -e 's/^\(material A cap 1 formation [^ ]*\) OX 1.8894415674e+00 /\1 OX 1.8894425674e+00 /' \
+       -e 's/^  O2 -8.8944156736e-01 /  O2 -8.8944256736e-01 /' "$v/INPUT/part-products.txt"
+grep -q ' OX 1.8894425674e+00 ' "$v/INPUT/part-products.txt" && grep -q '^  O2 -8.8944256736e-01 ' "$v/INPUT/part-products.txt" \
+  && refuse oxide-ratio-7 "the cap law of IGLOO holds" || ko "could not change the oxide ratio in its 7th figure"
+v=$T/refuse-capword; rm -rf "$v"; mkdir -p "$v"; cp -rp "$S/INPUT" "$S/MESH" "$S/input.ini" "$v/"
+sed -i '/^A cap constant /d' "$v/INPUT/part-models.txt"
+grep -q '^A cap ' "$v/INPUT/part-models.txt" && ko "could not remove the cap row" \
+  || refuse capword "a cap word on the material line without its row in the models file"
 
 echo "== $pass passed, $fail failed"; [ $fail = 0 ]

@@ -7,8 +7,13 @@
 #  long   : the same case with a step twenty times longer (dt-max 2.0e-4, the relaxation-time ceiling of the step
 #           off): too long for the end of the burn. The removal fires at the first step that leaves less than it
 #           burnt, well above d-burnout; the books close, and no density is floored.
-#  frozen : the same case with d-burnout above the drops and one ICE step: the removal fires in it and its source
-#           hands the whole cloud; frozen through 5 MOSE iterations, the gas gains what the report says.
+#  frozen : the same case with d-burnout above the drops and one ICE step: the removal fires in it, its source is the
+#           burn alone and the rest of the cloud is stored; frozen through 5 MOSE iterations, the gas gains the frozen
+#           burn over their time and the store once (the inter-phase books of a removal).
+#  frozen2: the same with ICE-iter 2: the second step finds the cloud empty, and the gas still gains the first one's
+#           store.
+#  cold   : the two boxes with T-ign above any temperature their drops reach and d-burnout above the drops: no drop
+#           burns, none is removed, no mass reaches the gas.
 #  twin   : test/igloo-burnout-box against its closed forms (test/igloo-burn-box/check.py: everything a stream
 #           carries in ends in the gas), and the energy per kg handed, ICE against IGLOO.
 #  refuse : d-stop beside d-burnout on the material line stops each solver before the first step.
@@ -70,6 +75,36 @@ if grep -q '^dt-max               = 1.0e-4$' "$v/input.ini" && grep -q '^N-coupl
   [ $rc = 0 ] && grep -q "GAME OVER" "$log" && ok "frozen: run exits 0 with GAME OVER" || ko "frozen: run exit=$rc"
   o=$(python3 -B "$I/check.py" "$d" "$log" "$H/test/ice-box" frozen 2>&1); take "$o" frozen
 else ko "frozen: the variant could not be made"; fi
+
+echo "--- frozen2: two ICE steps in the coupling step ---"
+v=$T/frozen2-case; d=$T/frozen2; log=$T/frozen2.log; rm -rf "$v" "$d"; mkdir -p "$v"; cp -rp "$T/frozen-case/INPUT" "$T/frozen-case/MESH" "$T/frozen-case/input.ini" "$v/"
+sed -i 's/^ICE-iter      = 1 0$/ICE-iter      = 2 0/' "$v/input.ini"
+if grep -q '^ICE-iter      = 2 0$' "$v/input.ini" && grep -q ' d-burnout=4e-05$' "$v/INPUT/part-models.txt"; then
+  "$RUN" "$v" "$d" 1 "$log" "$EXE" > /dev/null 2>&1; rc=$?
+  [ $rc = 0 ] && grep -q "GAME OVER" "$log" && ok "frozen2: run exits 0 with GAME OVER" || ko "frozen2: run exit=$rc"
+  o=$(python3 -B "$I/check.py" "$d" "$log" "$H/test/ice-box" frozen2 2>&1); take "$o" frozen2
+else ko "frozen2: the variant could not be made"; fi
+
+echo "--- cold: drops at or below d-burnout that do not burn ---"
+v=$T/cold-case; d=$T/cold; log=$T/cold.log; rm -rf "$v" "$d"; mkdir -p "$v"; cp -rp "$I/INPUT" "$I/MESH" "$I/input.ini" "$v/"
+sed -i -e 's/^d-burnout  = 3.0e-6$/d-burnout  = 4.0e-5/' -e 's/^T-ign      = 290$/T-ign      = 500/' "$v/input.ini"
+sed -i -e 's/ T-ign=290 / T-ign=500 /' -e 's/ d-burnout=3e-06$/ d-burnout=4e-05/' "$v/INPUT/part-models.txt"
+if grep -q '^d-burnout  = 4.0e-5$' "$v/input.ini" && grep -q '^T-ign      = 500$' "$v/input.ini" \
+   && grep -q ' T-ign=500 .* d-burnout=4e-05$' "$v/INPUT/part-models.txt"; then
+  "$RUN" "$v" "$d" 1 "$log" "$EXE" > /dev/null 2>&1; rc=$?
+  [ $rc = 0 ] && grep -q "GAME OVER" "$log" && ok "cold: run exits 0 with GAME OVER" || ko "cold: run exit=$rc"
+  o=$(python3 -B "$I/check.py" "$d" "$log" "$H/test/ice-box" cold 2>&1); take "$o" cold
+else ko "cold: the variant could not be made"; fi
+v=$T/cold-igloo-case; d=$T/cold-igloo; log=$T/cold-igloo.log; rm -rf "$v" "$d"; mkdir -p "$v"; cp -rp "$L/INPUT" "$L/MESH" "$L/input.ini" "$v/"
+sed -i -e 's/ T-ign=290 / T-ign=500 /' -e 's/ d-burnout=3e-06$/ d-burnout=4e-05/' "$v/INPUT/part-models.txt"
+if grep -q ' T-ign=500 .* d-burnout=4e-05$' "$v/INPUT/part-models.txt"; then
+  "$RUN" "$v" "$d" 1 "$log" "$EXE" > /dev/null 2>&1; rc=$?
+  [ $rc = 0 ] && grep -q "GAME OVER" "$log" && ok "cold: igloo-burnout-box run exits 0 with GAME OVER" || ko "cold: igloo-burnout-box run exit=$rc"
+  # round-off of IGLOO's in - out sums: 2.5e-21 kg/s measured; a removal hands 4.0e-06 kg/s (an IGLOO that removes parcels that do not burn)
+  m=$(grep -a '\[MI2-report\] igloo-to-gas ' "$log" | awk '{ n++; v = $NF; sub(/^-/, "", v); if (v + 0 > big) big = v + 0 } END { printf "%d %.3e %d", n, big, (n > 0 && big <= 1e-15) }')
+  [ "${m##* }" = 1 ] && ok "cold: IGLOO hands the gas no mass (${m% *}: blocks, largest kg/s; tol 1e-15)" \
+                     || ko "cold: IGLOO hands the gas mass (${m% *}: blocks, largest kg/s; tol 1e-15)"
+else ko "cold: the IGLOO variant could not be made"; fi
 
 echo "--- twin: test/igloo-burnout-box ---"
 d=$T/twin; log=$T/twin.log; rm -rf "$d"
