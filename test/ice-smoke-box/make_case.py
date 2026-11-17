@@ -11,7 +11,9 @@ ice-burnout-box's files instead:
   part-models.txt      d-smoke 3 um at the end of A's row
   part-products.txt    A's record: 0.5 kg of N2 and 0.5 kg of S per kg burnt, S born in the phase
                        part- with h298 -1.0e6 J/kg; S's own record (no process)
-  part-properties.dat  S's zone, a copy of A's (rho 1000 kg/m3, c 4184 J/(kg K))
+  part-properties.dat  S's zone: A's temperatures with S's own constants (rho 2500 kg/m3,
+                       c 1200 J/(kg K)) and enthalpy c T + c0, c0 such that h(298.15 K) is the
+                       record's h298 (-1.0e6 J/kg)
   part-ic.tec          family 2 empty: ICE's empty state, 1e-25 in each of its six columns
 
 Every other file is ice-burnout-box's, byte for byte (MESH/ is test/ice-box's). The sibling
@@ -23,6 +25,7 @@ import shutil
 import sys
 
 NU_S, H_S, D_S, EMPTY = 0.5, -1.0e6, 3.0e-6, 1.0e-25
+RHO_S, CP_S, T_REF = 2500.0, 1200.0, 298.15
 
 
 def edit(path, old, new):
@@ -55,6 +58,9 @@ material S none 0 none 0.0000000000e+00
         sys.exit('[make_case] part-properties.dat: %d zones, one expected' % len(z))
     zone = lines[z[0]:]
     zone[0] = zone[0].replace('T="A"', 'T="S"')
+    c0 = H_S - CP_S * T_REF
+    zone[2:] = ['%.1f %.6f %.6f %.6f\n' % (T, CP_S, RHO_S, CP_S * T + c0)
+                for T in (float(l.split()[0]) for l in zone[2:])]
     with open(I + 'part-properties.dat', 'a') as f:
         if not lines[-1].endswith('\n'):
             f.write('\n')

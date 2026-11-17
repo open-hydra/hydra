@@ -4,13 +4,16 @@
 # ICE's phase).
 #  books  : the case as it is: the cloud burns out, ICE alone; the gas's share the coupler hands, the smoke ICE holds
 #           at the end and the cloud's start close mass, momentum and energy (check.py B1-B5).
+#  blocks : two ICE steps per coupling block (N-coupling 300 1, ICE-iter 2 0): the books close only if the gas
+#           withholds the block's mean birth, as it takes the block's mean source and heat.
 #  birth  : one ICE step: the smoke against its birth (mass nu_s M_b dt, the drop's velocity and temperature, each
 #           drop at d-smoke).
 #  gas    : one ICE step, its sources frozen through 5 MOSE iterations: the gas gains the record's species without the
 #           smoke, (1 - nu_s) M_b t, and the reported momentum and energy.
+#  order  : the burning family on IG, first and last (test/ice-smoke-box/order_variant.py): the
+#           books of each; the smoke family is converted with its own closure whichever family ICE stepped last.
 #  refuse : the smoke is not a material of ICE; it is born in another phase; the burning row has no d-smoke; an
-#           IGLOO material's record makes a smoke (IGLOO does not hand what it burns yet): each stops before the
-#           first step.
+#           IGLOO material's record makes a smoke and ICE is not run: each stops before the first step.
 #   usage: p28_smoke_check.sh [scratch-root] [exe]
 set -u
 T=${1:-${MI2_SCRATCH:-/tmp/mi2-checks-${USER:-$(id -un)}}/P28}
@@ -45,6 +48,16 @@ variant() {  # variant <name> <sed script for input.ini>...: a copy of the case 
   local v=$T/$name-case; rm -rf "$v" "$T/$name"; mkdir -p "$v"; cp -rp "$S/INPUT" "$S/MESH" "$S/input.ini" "$v/"
   for e in "$@"; do sed -i "$e" "$v/input.ini"; done
 }
+echo "--- blocks: two ICE steps per coupling block ---"
+variant blocks 's/^N-coupling    = 600 1$/N-coupling    = 300 1/' 's/^ICE-iter      = 1 0$/ICE-iter      = 2 0/'
+if grep -q '^N-coupling    = 300 1$' "$T/blocks-case/input.ini" && grep -q '^ICE-iter      = 2 0$' "$T/blocks-case/input.ini"; then
+  "$RUN" "$T/blocks-case" "$T/blocks" 1 "$T/blocks.log" "$EXE" > /dev/null 2>&1; rc=$?
+  [ $rc = 0 ] && grep -q "GAME OVER" "$T/blocks.log" && ok "blocks: run exits 0 with GAME OVER" || ko "blocks: run exit=$rc"
+  o=$(python3 -B "$S/check.py" "$T/blocks" "$T/blocks.log" "$H/test/ice-box" 2>&1); take "$o" blocks
+  echo "$o" | grep -q '(2 per block)' && ok "blocks: the report has two ICE steps per block" \
+                                       || ko "blocks: the run did not make two ICE steps per block"
+else ko "blocks: the variant could not be made"; fi
+
 echo "--- birth: one ICE step ---"
 variant birth 's/^N-coupling    = 600 1$/N-coupling    = 1 1/'
 if grep -q '^N-coupling    = 1 1$' "$T/birth-case/input.ini"; then
@@ -60,6 +73,16 @@ if grep -q '^N-coupling    = 1 5$' "$T/gas-case/input.ini" && grep -q '^sol-dite
   [ $rc = 0 ] && grep -q "GAME OVER" "$T/gas.log" && ok "gas: run exits 0 with GAME OVER" || ko "gas: run exit=$rc"
   o=$(python3 -B "$S/check.py" "$T/gas" "$T/gas.log" "$H/test/ice-box" gas 2>&1); take "$o" gas
 else ko "gas: the variant could not be made"; fi
+
+echo "--- order: the burning family on IG, first and last ---"
+for ord in igfirst iglast; do
+  v=$T/$ord-case; rm -rf "$v" "$T/$ord"
+  if python3 -B "$S/order_variant.py" "$S" "$v" "$ord" > /dev/null 2>&1; then
+    "$RUN" "$v" "$T/$ord" 1 "$T/$ord.log" "$EXE" > /dev/null 2>&1; rc=$?
+    [ $rc = 0 ] && grep -q "GAME OVER" "$T/$ord.log" && ok "$ord: run exits 0 with GAME OVER" || ko "$ord: run exit=$rc"
+    oc=$(python3 -B "$S/check.py" "$T/$ord" "$T/$ord.log" "$H/test/ice-box" 2>&1); take "$oc" "$ord"
+  else ko "$ord: the variant could not be made"; fi
+done
 
 echo "--- refuse ---"
 stop() {  # stop <name> <message> <case dir> <file of the case> <sed script>
@@ -77,7 +100,7 @@ stop phase     "is born in the phase drop-, and ICE runs the phase part-"       
                's/^\(material A combustion .*\) part-$/\1 drop-/'
 stop no-dsmoke "gives no d-smoke, the diameter each smoke drop is born with"    "$S" INPUT/part-models.txt ' s/ d-smoke=3e-06$//'
 L=$H/test/igloo-burnout-box
-stop igloo     "IGLOO does not yet hand the coupler what each parcel burns"     "$L" INPUT/part-products.txt \
+stop igloo     "and the smoke has no family: ICE is not run"                    "$L" INPUT/part-products.txt \
                's/^\(material A combustion 1 formation [^ ]*\)$/\1 S 5.0000000000e-01 -1.0000000000e+06 part-/; s/^  N2 1.0000000000e+00 1.0000000000e+00$/  N2 5.0000000000e-01 5.0000000000e-01/'
 
 echo "== $pass passed, $fail failed"; [ $fail = 0 ]

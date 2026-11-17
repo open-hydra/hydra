@@ -10,7 +10,9 @@ usage: check.py <run-dir> <log> [ice-box-dir] [birth|gas]
   birth        the variant of one ICE step: the smoke against its birth alone
   gas          the variant of one ICE step whose sources stay frozen through a few MOSE iterations: the gas's gains
 
-The material A (family 1) burns on the d^n law and burns out (d-burnout); per kg burnt the record of
+The families' order is the phase file's (the case: A family 1, S family 2; order_variant.py makes the two orders
+with A on IG); each material's density and heat capacity are its zone's of INPUT/part-properties.dat (constant).
+The material A burns on the d^n law and burns out (d-burnout); per kg burnt the record of
 INPUT/part-products.txt hands the gas 1 - nu_s kg (its species) and makes nu_s kg of the smoke S (its tail: S, nu_s,
 h298_S, the phase), born in family 2 at d-smoke with the burning drop's velocity and temperature. ICE advances alone
 (cycle 1); the report prints after ICE step j what the sources of that step hand the gas: M_j (mass, through the
@@ -45,8 +47,18 @@ import check as ib          # test/ice-box/check.py: read_ini, read_tec, uniform
 TOL_BOOK = 1e-11     # B1-B3: sums of some hundred terms printed with 17 figures
 TOL_SIZE = 1e-12     # B4, S3: a ratio of two moments the births add in proportion
 TOL_BIRTH = 1e-12    # S1, S2
+TOL_BOOK_IG = 1e-8   # B3 with the burning family on IG: an IG burning family closes its energy to 2.37e-9 with or
+#                      without a smoke (a property of ICE's IG closure, not of the smoke)
 TOL_GAS = 1e-8       # G1, G2: the gas's gains against the frozen rates (test/ice-burn-box's B1 and B2: 1e-10 measured)
 T_REF = 298.15
+
+
+def zone(run, name):
+    """Density and heat capacity of a material of constant properties: the first row of its zone of the table."""
+    lines = open(os.path.join(run, 'INPUT', 'part-properties.dat')).read().splitlines()
+    i = lines.index('ZONE T="%s"' % name)
+    f = lines[i + 2].split()
+    return float(f[2]), float(f[1])
 
 
 def fnum(s):
@@ -70,18 +82,23 @@ def main():
     birth = mode == 'birth'
     cfg = ib.read_ini(os.path.join(run, 'input.ini'))
     gpb, phys = cfg['GPB-Phase2'], cfg['ICE-Physics']
-    rho_mat, c_mat = (float(v) for v in (phys['density'].split()[0], phys['specific-heat'].split()[0]))
-    rho_S, c_S = (float(v) for v in (phys['density'].split()[1], phys['specific-heat'].split()[1]))
+    # the families' order (the phase file's), and each material's constants from its zone of the property table
+    order = [l.split()[0] for l in open(os.path.join(run, 'INPUT', 'part-phase.txt')).read().splitlines()[1:]
+             if l.strip()]
+    ka, ks = order.index('A') + 1, order.index('S') + 1
+    (rho_mat, c_mat), (rho_S, c_S) = zone(run, 'A'), zone(run, 'S')
+    clo = cfg['ICE-Family%d' % ka]['closure'].split()[0]
+    tol_e = TOL_BOOK_IG if clo == 'IG' else TOL_BOOK
     KX, nb = float(gpb['K-burn']) * float(gpb.get('X-eff', 1.0)), float(gpb.get('n-burn', 1.8))
     row = [l.split() for l in open(os.path.join(run, 'INPUT', 'part-models.txt')) if l.startswith('A combustion ')][0]
     d_s = float([t for t in row if t.startswith('d-smoke=')][0].split('=')[1])
     h298, nu_s, h298_S = record(os.path.join(run, 'INPUT', 'part-products.txt'))
     m_s = math.pi / 6.0 * rho_S * d_s ** 3
     pic = ib.read_tec(os.path.join(run, 'INPUT', 'part-ic.tec'))
-    rho_p = ib.uniform(pic['rp_11'], 'part IC rho_p')
-    up = np.array([ib.uniform(pic[k], 'part IC ' + k) for k in ('up_11', 'vp_11', 'wp_11')])
-    Tp = ib.uniform(pic['Tp_11'], 'part IC T_p')
-    n_p = ib.uniform(pic['np_11'], 'part IC n_p')
+    rho_p = ib.uniform(pic['rp_%d1' % ka], 'part IC rho_p')
+    up = np.array([ib.uniform(pic[k], 'part IC ' + k) for k in ('up_%d1' % ka, 'vp_%d1' % ka, 'wp_%d1' % ka)])
+    Tp = ib.uniform(pic['Tp_%d1' % ka], 'part IC T_p')
+    n_p = ib.uniform(pic['np_%d1' % ka], 'part IC n_p')
     mesh = ib.read_tec(os.path.join(run, 'MESH', 'mesh.tec'))
     V = float(np.prod([mesh[k].max() - mesh[k].min() for k in ('x', 'y', 'z')]))
     m0 = rho_p * V
@@ -91,9 +108,9 @@ def main():
             % (m0, nu_s, d_s, m_s, delta_s))
 
     field = ib.read_tec(os.path.join(run, 'OUTPUT', 'part-field.tec'))
-    rho_s, n_s = field['rho_p2'], field['n_p2']
-    u_s = np.array([field[k] for k in ('u_p2', 'v_p2', 'w_p2')])
-    T_s = field['T_p2']
+    rho_s, n_s = field['rho_p%d' % ks], field['n_p%d' % ks]
+    u_s = np.array([field[k] for k in ('u_p%d' % ks, 'v_p%d' % ks, 'w_p%d' % ks)])
+    T_s = field['T_p%d' % ks]
     ncell = rho_s.size
     Vc = V / ncell
     M_s = float(rho_s.sum()) * Vc
@@ -161,25 +178,29 @@ def main():
         elif line.startswith(' [MI2-report] ice-removed-stored '):
             Ss.append(np.array([fnum(v) for v in line.split()[2:7]]) + dsum)
     n = len(Ms)
-    (ib.ok if n > 0 and len(dts) == n and len(Fs) == n and len(Ss) == n else ib.ko)(
-        'P  %d ICE steps, %d mass lines, %d source lines and %d store lines in the report' % (len(dts), n, len(Fs), len(Ss)))
-    if n == 0 or len(dts) != n or len(Fs) != n or len(Ss) != n:
+    # a report line per coupling block of kb ICE steps (ICE-iter): the gas takes the block's mean rates
+    kb = len(dts) // n if n else 1
+    (ib.ok if n > 0 and len(dts) == kb * n and len(Fs) == n and len(Ss) == n else ib.ko)(
+        'P  %d ICE steps (%d per block), %d mass lines, %d source lines and %d store lines in the report'
+        % (len(dts), kb, n, len(Fs), len(Ss)))
+    if n == 0 or len(dts) != kb * n or len(Fs) != n or len(Ss) != n:
         print('== check.py: %d passed, %d failed' % (ib.npass, ib.nfail)); sys.exit(1)
     dt_max = float(cfg['ICE-Numerics']['dt-max'])
     worst_dt = max(abs(d - dt_max) / dt_max for d in dts)
-    (ib.ok if worst_dt <= 1e-6 else ib.ko)('P  every one of the %d ICE steps is dt-max %.6e s: worst %.1e' % (n, dt_max, worst_dt))
+    (ib.ok if worst_dt <= 1e-6 else ib.ko)('P  every one of the %d ICE steps is dt-max %.6e s: worst %.1e'
+                                           % (len(dts), dt_max, worst_dt))
     R = Ss[-1]
-    sM = sum(M * dt_max for M in Ms) + R[0]
-    sF = sum(F * dt_max for F in Fs) + R[1:4]
-    sQ = sum(Q * dt_max for Q in Qs) + R[4]
+    sM = sum(M * kb * dt_max for M in Ms) + R[0]
+    sF = sum(F * kb * dt_max for F in Fs) + R[1:4]
+    sQ = sum(Q * kb * dt_max for Q in Qs) + R[4]
     ib.info('the gas\'s share: mass %.9e kg (the removal %.3e), the smoke: %.9e kg' % (sM, R[0], M_s))
     ib.judge('B1 mass', sM + M_s, m0, TOL_BOOK, 'SUM M dt + removal + smoke vs rho_p V')
     ib.judge('B1 the smoke', M_s, nu_s * m0, TOL_BOOK, 'SUM rho_s V vs nu_s rho_p V')
     ib.judge('B2 momentum', sF[0] + P_s[0], m0 * up[0], TOL_BOOK, 'SUM Fx dt + removal + smoke vs rho_p V u_p')
-    ib.judge('B3 energy', sQ + E_s, E0, TOL_BOOK, 'SUM Q dt + removal + smoke (with its offset) vs E0')
+    ib.judge('B3 energy', sQ + E_s, E0, tol_e, 'SUM Q dt + removal + smoke (with its offset) vs E0')
     (ib.ok if worst <= TOL_SIZE else ib.ko)('B4 each smoke drop keeps the mass it is born with: rho_s/n_s vs %.6e kg, worst %.1e (tol %.0e)'
                                             % (m_s, worst, TOL_SIZE))
-    rmax = float(np.abs(field['rho_p1']).max())
+    rmax = float(np.abs(field['rho_p%d' % ka]).max())
     (ib.ok if rmax <= 1e-20 else ib.ko)('B5 the burning family ends empty: largest bulk density %.1e kg/m3' % rmax)
     print('== check.py: %d passed, %d failed' % (ib.npass, ib.nfail))
     sys.exit(0 if ib.nfail == 0 else 1)

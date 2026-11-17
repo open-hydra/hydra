@@ -9,6 +9,7 @@ module hydraMI2_Stoichiometry
   public :: nuICE, has_stoichiometry_ICE, dhDatumICE, mappedICE
   public :: capped, nuCap, nuRel, nuOxide, dhProduct
   public :: Smoke_Record, Set_Smoke_Datum, nuSmokeICE, dhSmokeICE
+  public :: Release_Smoke_Record
   public :: MAP_IGLOO, MAP_ICE
 
   !> The two condensed solvers a map is loaded for.
@@ -53,6 +54,8 @@ module hydraMI2_Stoichiometry
     real(R8), allocatable :: hprod(:)     !> that oxide's formation-inclusive enthalpy at T_datum_ref [J/kg]
     character(len=64), allocatable :: smoke(:), sphase(:)   !> the smoke a burning material makes, the phase it is of
     real(R8), allocatable :: nusm(:), hsm(:)                !> kg of smoke per kg burnt, its h298 [J/kg]
+    character(len=64), allocatable :: rsmoke(:), rsphase(:) !> the smoke a cap oxide handed at burnout becomes, its phase
+    real(R8), allocatable :: rnusm(:), rhsm(:)              !> kg of it per kg of oxide handed, its h298 [J/kg]
   end type map_book_t
   type(map_book_t) :: book(2)
 
@@ -86,8 +89,8 @@ contains
     logical  :: exists, gasline
     logical,  allocatable :: listed(:), found(:), capfound(:), relfound(:), relwanted(:)
     integer,  allocatable :: prod(:)
-    real(R8), allocatable :: nu_s(:,:), cap_s(:,:), rel_s(:,:), capnu(:), caph(:), smnu(:), smh(:)
-    character(len=64), allocatable :: capname(:), smn(:), smph(:)
+    real(R8), allocatable :: nu_s(:,:), cap_s(:,:), rel_s(:,:), capnu(:), caph(:), smnu(:), smh(:), rsmnu(:), rsmh(:)
+    character(len=64), allocatable :: capname(:), smn(:), smph(:), rsmn(:), rsmph(:)
     type(file_ini) :: fini
 
     nmat = size(material_names)
@@ -99,6 +102,8 @@ contains
     cap_s = 0._R8; rel_s = 0._R8; capnu = 0._R8; caph = 0._R8; capname = ''
     allocate(smnu(max(nmat,1)), smh(max(nmat,1)), smn(max(nmat,1)), smph(max(nmat,1)))
     smnu = 0._R8; smh = 0._R8; smn = ''; smph = ''
+    allocate(rsmnu(max(nmat,1)), rsmh(max(nmat,1)), rsmn(max(nmat,1)), rsmph(max(nmat,1)))
+    rsmnu = 0._R8; rsmh = 0._R8; rsmn = ''; rsmph = ''
     capfound = .false.; relfound = .false.; relwanted = .false.; prod = 0
     if (present(product)) prod(1:nmat) = product(1:nmat)
     if (present(releases)) then
@@ -109,10 +114,13 @@ contains
     associate ( bk => book(which) )
     if (allocated(bk%process)) deallocate(bk%process, bk%energy, bk%h298, bk%prod, bk%hprod)
     if (allocated(bk%smoke)) deallocate(bk%smoke, bk%sphase, bk%nusm, bk%hsm)
+    if (allocated(bk%rsmoke)) deallocate(bk%rsmoke, bk%rsphase, bk%rnusm, bk%rhsm)
     allocate(bk%process(max(nmat,1)), bk%energy(max(nmat,1)), bk%h298(max(nmat,1)), bk%prod(max(nmat,1)), &
              bk%hprod(max(nmat,1)))
     allocate(bk%smoke(max(nmat,1)), bk%sphase(max(nmat,1)), bk%nusm(max(nmat,1)), bk%hsm(max(nmat,1)))
     bk%smoke = ''; bk%sphase = ''; bk%nusm = 0._R8; bk%hsm = 0._R8
+    allocate(bk%rsmoke(max(nmat,1)), bk%rsphase(max(nmat,1)), bk%rnusm(max(nmat,1)), bk%rhsm(max(nmat,1)))
+    bk%rsmoke = ''; bk%rsphase = ''; bk%rnusm = 0._R8; bk%rhsm = 0._R8
     bk%process = PROC_NONE; bk%energy = EN_NONE; bk%h298 = 0._R8; bk%prod = prod; bk%hprod = 0._R8
     do m = 1, nmat
       if (burns(m)) then
@@ -171,15 +179,15 @@ contains
           read(line,*,iostat=ios) key, mname, proc, nterm, enword, h298, pname, cprod, hprod
           if (ios /= 0) call Bad('a cap record that does not end with "<product> <kg per kg> <its h298>"')
         endif
-        ! a combustion record whose reaction makes a condensed product: the smoke, the ICE phase it is born in
+        ! a combustion or release record whose reaction makes a condensed product: the smoke, the ICE phase it is born in
         sname = ''; snu = 0._R8; sh = 0._R8; sphase = ''
-        if (trim(proc) == 'combustion') then
+        if (trim(proc) == 'combustion' .or. trim(proc) == 'release') then
           read(line,*,iostat=ios) key, mname, proc, nterm, enword, h298, sname
           if (ios == 0) then
             read(line,*,iostat=ios) key, mname, proc, nterm, enword, h298, sname, snu, sh, sphase
-            if (ios /= 0) call Bad('a combustion record whose smoke does not read "<material> <kg per kg> <its h298> '// &
-                                   '<ICE phase>"')
-            if (.not. snu > 0._R8) call Bad('a combustion record whose smoke forms no mass')
+            if (ios /= 0) call Bad('a '//trim(proc)//' record whose smoke does not read "<material> <kg per kg> '// &
+                                   '<its h298> <ICE phase>"')
+            if (.not. snu > 0._R8) call Bad('a '//trim(proc)//' record whose smoke forms no mass')
           else
             sname = ''
           endif
@@ -206,13 +214,14 @@ contains
         case ('none');        if (nterm /= 0 .or. en /= EN_NONE) call Bad('a record "none" with terms or an energy word')
         case ('evaporation'); if (nterm < 1 .or. en /= EN_LATENT) call Bad('an evaporation record that is not "latent"')
                               if (bk%process(im) == PROC_EVAP) row = 1
-        case ('combustion');  if (nterm < 1 .or. en /= EN_FORMATION) &
+        case ('combustion');  if ((nterm < 1 .and. len_trim(sname) == 0) .or. en /= EN_FORMATION) &
                                 call Bad('a combustion record that is not "formation"')
                               if (bk%process(im) == PROC_COMB) row = 1
         case ('cap');         if (nterm < 0 .or. en /= EN_FORMATION .or. .not. cprod > 0._R8) &
                                 call Bad('a cap record that is not "formation" or forms no product')
                               if (prod(im) > 0) row = 2
-        case ('release');     if (nterm < 1 .or. en /= EN_FORMATION) call Bad('a release record that is not "formation"')
+        case ('release');     if ((nterm < 1 .and. len_trim(sname) == 0) .or. en /= EN_FORMATION) &
+                                call Bad('a release record that is not "formation"')
                               if (relwanted(im)) row = 3
         case default;         call Bad('the process "'//trim(proc)//'"')
         end select
@@ -244,6 +253,7 @@ contains
           capfound(im) = .true.; capnu(im) = cprod; caph(im) = hprod; capname(im) = pname
         case (3)
           relfound(im) = .true.
+          rsmn(im) = sname; rsmnu(im) = snu; rsmh(im) = sh; rsmph(im) = sphase
         end select
       case default
         call Bad('the record "'//trim(key)//'"')
@@ -313,7 +323,7 @@ contains
             'particle-mechanism and run ATLAS GPB again, or keep the residue (residue = on)'
           error stop 1
         endif
-        rowsum = sum(rel_s(prod(m),1:ns))
+        rowsum = sum(rel_s(prod(m),1:ns)) + rsmnu(prod(m))
         if (abs(rowsum - 1._R8) > 1.e-8_R8) then
           write(*,'(A,ES23.15)') E//trim(fname)//': the release record of '//trim(adjustl(material_names(prod(m))))// &
             ' does not sum to 1: ', rowsum
@@ -323,6 +333,7 @@ contains
       bk%hprod(m) = caph(m)
     enddo
     bk%smoke = smn; bk%sphase = smph; bk%nusm = smnu; bk%hsm = smh
+    bk%rsmoke = rsmn; bk%rsphase = rsmph; bk%rnusm = rsmnu; bk%rhsm = rsmh
     end associate
     call Store()
 
@@ -406,6 +417,21 @@ contains
     name = book(which)%smoke(m); phase = book(which)%sphase(m); nus = book(which)%nusm(m); h298 = book(which)%hsm(m)
     Smoke_Record = .true.
   end function Smoke_Record
+
+
+  !> The smoke the release record of material m (a cap oxide handed to the gas at burnout) makes: as Smoke_Record.
+  logical function Release_Smoke_Record ( which, m, name, nus, h298, phase )
+    integer,          intent(in)  :: which, m
+    character(len=*), intent(out) :: name, phase
+    real(R8),         intent(out) :: nus, h298
+    name = ''; phase = ''; nus = 0._R8; h298 = 0._R8
+    Release_Smoke_Record = .false.
+    if (.not. allocated(book(which)%rsmoke)) return
+    if (m < 1 .or. m > size(book(which)%rsmoke)) return
+    if (len_trim(book(which)%rsmoke(m)) == 0) return
+    name = book(which)%rsmoke(m); phase = book(which)%rsphase(m); nus = book(which)%rnusm(m); h298 = book(which)%rhsm(m)
+    Release_Smoke_Record = .true.
+  end function Release_Smoke_Record
 
 
   !> The datum offset of the smoke of ICE material m: its formation enthalpy less ICE's energy of it at T_datum_ref.

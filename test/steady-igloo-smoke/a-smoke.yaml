@@ -1,0 +1,5 @@
+name: a-smoke
+description: the burning material A of test/igloo-smoke-box becomes nitrogen and solid alumina, the smoke (half its mass)
+reference: none (a test case)
+reactions:
+- equation: A => AL2O3(a) + 3.6396 N2
