@@ -25,7 +25,7 @@ program hydra_MI2_program
                                      Check_ICE_Source_Finite, Check_IGLOO_Source_Finite, &
                                      Check_IGLOO_Euler_Finite, &
                                      Gas_Momentum, ICE_To_Gas_Totals, IGLOO_To_Gas_Totals, &
-                                     mdotHanded, nHanded
+                                     mdotHanded, nHanded, goneShare, Gone_Delivered, Gone_Stored
   use hydraMI2_Build_Stamp,    only: Print_Build_Stamp
   use Lib_ORION_data,          only: orion_data
 
@@ -70,6 +70,7 @@ program hydra_MI2_program
   !> Coupling mode in force when the sources MOSE is about to consume were produced.
   logical :: IGLOO_src_eulerian = .false.
   integer :: nAuditSkipped      = 0        ! coupling steps whose sources were Eulerian, so not audited
+  integer :: nRunMOSE           = 0        ! MOSE iterations of the block that ran: the share of ICE's removals delivered
   real(R8) :: momRep0(3), momRep1(3), enRep0 = 0._R8, enRep1 = 0._R8   ! gas totals around a MOSE block
 
   call Print_Build_Stamp()
@@ -122,22 +123,24 @@ program hydra_MI2_program
     block
       use ICE_Global_m,       only: ICE_phase_prefix
       use ICE_Lib_Properties, only: mat_e, mat_cp_const, mat_lv
+      use ICE_Config_Types_m, only: COMB_BECKSTEAD
       character(len=64), allocatable :: matnames(:)
       logical,           allocatable :: evap(:), burn(:), beck(:)
-      real(R8),          allocatable :: eICEref(:), Lvmat(:), qmat(:), Thot(:), eICEhot(:)
+      real(R8),          allocatable :: eICEref(:), Lvmat(:), qmat(:), Thot(:), eICEhot(:), beta(:)
       logical,           allocatable :: Lvconst(:)
       integer :: im, nm
       nm = size(ICE_obj_condensed)
       allocate(matnames(nm), evap(nm), burn(nm), eICEref(nm), Lvmat(nm), qmat(nm), Thot(nm), eICEhot(nm), Lvconst(nm))
-      allocate(beck(nm))
+      allocate(beck(nm), beta(nm))
       do im = 1, nm
         matnames(im) = ICE_obj_condensed(im)%name
         evap(im)     = ICE_obj_condensed(im)%evapSelect > 0
         burn(im)     = ICE_obj_condensed(im)%combSelect > 0
-        beck(im)     = ICE_obj_condensed(im)%combSelect == 2
+        beck(im)     = ICE_obj_condensed(im)%combSelect == COMB_BECKSTEAD
+        beta(im)     = merge(ICE_obj_condensed(im)%betaPart, 0._R8, beck(im))
         ! where the material converts: its boiling temperature, or the one it burns from (Beckstead: T-ign)
         Thot(im) = ICE_obj_condensed(im)%Tboil
-        if ( ICE_obj_condensed(im)%combSelect == 2 ) Thot(im) = ICE_obj_condensed(im)%Tign
+        if ( beck(im) ) Thot(im) = ICE_obj_condensed(im)%Tign
         ! the energy ICE credits the material at T_ref and there on its own datum: its table's, or cp*T
         if ( ICE_obj_condensed(im)%cs_varies ) then
           eICEref(im) = mat_e( ICE_obj_condensed(im), T_datum_ref )
@@ -152,8 +155,8 @@ program hydra_MI2_program
       enddo
       call Load_Species_Map( MAP_ICE, ICE_phase_prefix, matnames, evap, burn )
       call Report_Stoichiometry( MAP_ICE, matnames, nm )
-      call Build_Datum_Offsets( MAP_ICE, matnames, nm, beck, eICEref, Lvmat, qmat, Thot, eICEhot, Lvconst )
-      deallocate(matnames, evap, burn, beck, eICEref, Lvmat, qmat, Thot, eICEhot, Lvconst)
+      call Build_Datum_Offsets( MAP_ICE, matnames, nm, beck, beta, eICEref, Lvmat, qmat, Thot, eICEhot, Lvconst )
+      deallocate(matnames, evap, burn, beck, beta, eICEref, Lvmat, qmat, Thot, eICEhot, Lvconst)
     end block
   endif
   ! IGLOO%setup includes the reset_state of the first solve; every later solve needs its own
@@ -193,21 +196,23 @@ program hydra_MI2_program
       ! enthalpy-datum offsets; hIGLOOref is the enthalpy IGLOO credits for the material at T_ref on
       ! the datum of its table: cp*T_ref + hOff for constant cp, hTab interpolated at T_ref otherwise
       block
-        real(R8), allocatable :: hIGLOOref(:), Lvmat(:), qmat(:), Thot(:), hIGLOOhot(:)
+        use IGLOO_Lib_Evaporation, only: IGLOO_COMB_BECKSTEAD => COMB_BECKSTEAD
+        real(R8), allocatable :: hIGLOOref(:), Lvmat(:), qmat(:), Thot(:), hIGLOOhot(:), beta(:)
         logical,  allocatable :: beck(:)
         logical,  allocatable :: Lvconst(:)
         integer :: it
         allocate(hIGLOOref(size(IGLOO%material)), Lvmat(size(IGLOO%material)), qmat(size(IGLOO%material)), &
                  Thot(size(IGLOO%material)), hIGLOOhot(size(IGLOO%material)), Lvconst(size(IGLOO%material)))
-        allocate(beck(size(IGLOO%material)))
+        allocate(beck(size(IGLOO%material)), beta(size(IGLOO%material)))
         do im = 1, size(IGLOO%material)
           Lvmat(im)   = IGLOO%material(im)%Lv
           Lvconst(im) = .not. IGLOO%material(im)%LvVariable
           qmat(im)    = IGLOO%material(im)%qComb
           ! where the material converts: its boiling temperature, or the one it burns from (Beckstead: T-ign)
           Thot(im) = IGLOO%material(im)%Tboil
-          if ( IGLOO%material(im)%combSelect == 1 ) Thot(im) = IGLOO%material(im)%Tign
-          beck(im) = IGLOO%material(im)%combSelect == 1
+          beck(im) = IGLOO%material(im)%combSelect == IGLOO_COMB_BECKSTEAD
+          if ( beck(im) ) Thot(im) = IGLOO%material(im)%Tign
+          beta(im) = merge(IGLOO%material(im)%betaPart, 0._R8, beck(im))
           if ( IGLOO%material(im)%cpVariable ) then
             associate ( ht => IGLOO%material(im)%hTab )
               it = max(lbound(ht,1), min(int(T_datum_ref), ubound(ht,1)-1))
@@ -222,10 +227,10 @@ program hydra_MI2_program
           write(*,'(A,I0,A,ES14.7,A)') ' [MI2] IGLOO material ', im, ': table datum '// &
             trim(IGLOO%material(im)%hDatum)//', hOff = ', IGLOO%material(im)%hOff, ' J/kg'
         enddo
-        call Build_Datum_Offsets( MAP_IGLOO, matnames, size(IGLOO%material), beck, hIGLOOref, Lvmat, qmat, Thot, &
-                                  hIGLOOhot, Lvconst )
+        call Build_Datum_Offsets( MAP_IGLOO, matnames, size(IGLOO%material), beck, beta, hIGLOOref, Lvmat, qmat, &
+                                  Thot, hIGLOOhot, Lvconst )
         deallocate(hIGLOOref, Lvmat, qmat, Thot, hIGLOOhot, Lvconst)
-        deallocate(beck)
+        deallocate(beck, beta)
       end block
 
       deallocate(matnames, evap, burn, handsCap, oxide)
@@ -287,12 +292,26 @@ program hydra_MI2_program
         call Gas_Total_Energy( MOSE_simulation%domain(1), enRep0 )
       endif
 
+      ! the removals ICE stores reach the gas over this block: each MOSE iteration delivers 1/MOSE-iter of them
+      nRunMOSE = 0
+      if ( hydra_MI2_obj%run_ICE .and. ICE_has_sources .and. hydra_obj_sim_param%MOSE_iter(n_cycle) > 0 ) &
+        goneShare = 1._R8 / real(hydra_obj_sim_param%MOSE_iter(n_cycle), R8)
       do i_MOSE = 1, hydra_obj_sim_param%MOSE_iter(n_cycle)
         if ( MOSE_obj_sim_param%TODO <= 2 ) then
           call MOSE%solve( MOSE_simulation, MOSE_external_routine )
+          nRunMOSE = nRunMOSE + 1
           if ( MOSE_obj_sim_param%TODO <= 2 ) call MOSE%postprocess( MOSE_simulation )
         endif
       enddo
+      if ( goneShare > 0._R8 ) then
+        block
+          real(R8) :: Mg, Pg(3), Eg
+          call Gone_Delivered( MOSE_simulation%domain(1), ICE_simulation%domain(1), real(nRunMOSE, R8)*goneShare, &
+                               Mg, Pg, Eg )
+          if ( hydra_MI2_obj%report ) write(*,'(A,5ES24.16)') ' [MI2-report] ice-removed-delivered', Mg, Pg, Eg
+        end block
+        goneShare = 0._R8
+      endif
 
       ! audit the mass and energy this block injected (source branch only: the Eulerian branch
       ! is mass-inert)
@@ -650,8 +669,9 @@ contains
     use ICE_Global_m,    only: ICE_phase_prefix
     use IGLOO_variables, only: IGLOO_phase_prefix
     implicit none
-    character(len=9), parameter :: ICE_WORD(0:2) = ['none     ', 'direct   ', 'Beckstead']
-    character(len=9), parameter :: IGL_WORD(0:2) = ['none     ', 'Beckstead', 'direct   ']
+    ! the two solvers number their models alike (COMB_BECKSTEAD = 1, COMB_DIRECT = 2)
+    character(len=9), parameter :: ICE_WORD(0:2) = ['none     ', 'Beckstead', 'direct   ']
+    character(len=9), parameter :: IGL_WORD(0:2) = ICE_WORD
     integer :: mi, mg
     logical :: saidICE, saidIGLOO
 
@@ -741,6 +761,11 @@ contains
       call ICE_To_Gas_Totals( MOSE_simulation%domain(1), ICE_simulation%domain(1), F, Q, M, taumin, taumax )
       write(*,'(A,6ES24.16)') ' [MI2-report] ice-to-gas', F, Q, taumin, taumax
       if ( has_stoichiometry_ICE ) write(*,'(A,ES24.16)') ' [MI2-report] ice-to-gas-mass', M
+      ! what ICE's removals still hold for the gas, on the gas's scale (mass through the rows, momentum, energy)
+      if ( has_stoichiometry_ICE ) then
+        call Gone_Stored( MOSE_simulation%domain(1), ICE_simulation%domain(1), M, F, Q )
+        write(*,'(A,5ES24.16)') ' [MI2-report] ice-removed-stored', M, F, Q
+      endif
     endif
     if ( hydra_MI2_obj%run_IGLOO .and. IGLOO_has_sources .and. .not. IGLOO_src_eulerian ) then
       call IGLOO_To_Gas_Totals( MOSE_simulation%domain(1), IGLOO, F, Q, M )

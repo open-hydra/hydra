@@ -270,7 +270,8 @@ contains
         error stop 1
       endif
       if (present(oxide_ratio)) then
-        if (abs(capnu(m) - oxide_ratio) > 1.e-4_R8*oxide_ratio) then
+        ! one formula, two tables of atomic weights that differ in their last digit (rev7/derive/oxide_ratio.py)
+        if (abs(capnu(m) - oxide_ratio) > 1.e-7_R8*oxide_ratio) then
           write(*,'(A,ES15.7,A,ES15.7,A)') E//trim(fname)//': the cap record of '//trim(adjustl(material_names(m)))// &
             ' forms ', capnu(m), ' kg of oxide per kg, and the cap law of '//trim(SOLVER(which))//' holds ', &
             oxide_ratio, ' (alumina from aluminium): the gas would not receive what the cap does not take'
@@ -434,7 +435,7 @@ contains
   !  and the same of the oxide of a capped material. Thot is the temperature the material converts at (boiling,
   !  burning) and hhot the enthalpy its solver credits there: they size two messages, never an offset.
   !  [MI2-Coupling] datum-correction = false zeroes the offsets.
-  subroutine Build_Datum_Offsets ( which, material_names, nmat, beck, href, Lv, qcomb, Thot, hhot, Lvconst )
+  subroutine Build_Datum_Offsets ( which, material_names, nmat, beck, beta, href, Lv, qcomb, Thot, hhot, Lvconst )
     use Finer,                   only: file_ini
     use FLINT_Lib_Thermodynamic, only: ns, species_names, H0i
     implicit none
@@ -442,6 +443,7 @@ contains
     character(len=*), intent(in) :: material_names(:)
     integer,          intent(in) :: nmat
     logical,          intent(in) :: beck(:)    !> the material burns on Beckstead's law: q-comb is a share of its heat
+    real(R8),         intent(in) :: beta(:)    !> beta-part, the share of q-comb the drop keeps (Beckstead) [-]
     real(R8),         intent(in) :: href(:)    !> enthalpy the solver credits at T_ref, its own datum [J/kg]
     real(R8),         intent(in) :: Lv(:)      !> latent heat at T_ref [J/kg]
     real(R8),         intent(in) :: qcomb(:)   !> the solver's q-comb [J/kg]
@@ -519,12 +521,14 @@ contains
           write(*,'(A,F8.2,A,ES15.7)') '        the same from the material at ', Thot(m), ' K, where it burns : ', qhot
           write(*,'(A,ES15.7)')   '        q-comb of the solver               : ', qcomb(m)
           if (beck(m)) then
-            if (qcomb(m) > 0._R8 .and. abs(qcomb(m) - qhot) > 0.05_R8*abs(qhot)) then
+            if ((qcomb(m) > 0._R8 .or. beta(m) > 0._R8) .and. abs(qcomb(m) - qhot) > 0.05_R8*abs(qhot)) then
               write(*,'(A,ES15.7,A)') '        [WARNING] q-comb = ', qcomb(m), ' differs from it by more than 5 %: '// &
                 'the share beta-part*q-comb the drop keeps is taken from another heat than the gas receives'
             endif
           else
             write(*,'(A)')        '        (combustion = direct: q-comb sets the rate; the gas receives the heat above)'
+            if (qcomb(m) == 0._R8) write(*,'(A)') '        (q-comb = 0: the rate is pure vaporisation, '// &
+              'B = cp (T_g - T_p)/L_v; it ignores the heat of reaction the gas receives)'
           endif
           ! the oxide of a capped material, on the same two datums
           if (which == MAP_IGLOO) then
