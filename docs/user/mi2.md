@@ -117,7 +117,7 @@ run, each needs its own phase: one phase cannot feed both (its mass would reach 
 `models.txt` exists only when a material has constants of a burning model; the solvers read it, `hydra-MI2` does not.
 Its format and the keys it carries are in the solvers' input pages
 ([ICE](https://open-hydra.github.io/ICE/user/input/), [IGLOO](https://open-hydra.github.io/IGLOO/user/input/)) and
-in [ATLAS GPB](https://open-hydra.github.io/ATLAS/user-guide/gpb/condensed-solid/).
+in [ATLAS GPB](https://open-hydra.github.io/ATLAS/user-guide/gpb/condensed-solid/#the-constants-of-the-burning-models-namemodelstxt).
 
 ### Naming rules
 
@@ -313,7 +313,7 @@ naming the solver, block, cell and slot.
 
 ATLAS GPB writes `INPUT/<name>-products.txt` for each condensed phase from its `[GPB-Phase*]` section (the vapour of
 an evaporating material, the reactions of `particle-mechanism` for a burning one); the record format is in
-[ATLAS GPB](https://open-hydra.github.io/ATLAS/user-guide/gpb/output/). `hydra-MI2` reads it after each condensed
+[ATLAS GPB](https://open-hydra.github.io/ATLAS/user-guide/gpb/output/#prefixproductstxt). `hydra-MI2` reads it after each condensed
 solver's setup and keeps, for each material, the record of the process the solver runs on it: `combustion` when it
 burns, else `evaporation` when it evaporates. It stops when:
 
@@ -355,7 +355,9 @@ in a time-accurate one.
 A burning material whose reaction makes a condensed product, the **smoke**, has it born in an ICE family: the smoke
 material is named, with its kg per kg burnt and the ICE phase, at the end of the material's `combustion` record (or of
 the `release` record of an IGLOO cap handed at burn-out). The smoke takes mass, momentum and energy from what the
-burning material hands over; the gas receives the rest. For a smoke of either solver the run stops unless:
+burning material hands over; the gas receives the rest. What ATLAS GPB requires of a smoke when it writes the files is
+in [ATLAS GPB](https://open-hydra.github.io/ATLAS/user-guide/gpb/condensed-solid/#the-smoke-of-a-burning-material).
+For a smoke of either solver the run stops unless:
 
 - the smoke material is a material of ICE's phase, the phase the record names;
 - it has exactly one family, of closure `MK`, and neither evaporates nor burns;
