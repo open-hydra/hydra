@@ -22,11 +22,16 @@ hydra/
 │   │   ├── common/
 │   │   │   ├── base/             # Framework globals/utilities
 │   │   │   └── config/           # HYDRA-* input registry and parsing
-│   │   └── MF/                   # Coupled MOSE+FUSS executable logic
+│   │   ├── MF/                   # Coupled MOSE+FUSS executable logic
+│   │   ├── AF/                   # Coupled ARES+FUSS executable logic
+│   │   └── MI2/                  # Coupled MOSE+ICE+IGLOO executable logic
 │   └── lib/                      # Solver libraries as submodules
 │       ├── MOSE/
 │       ├── FUSS/
-│       └── GROOT/
+│       ├── GROOT/
+│       ├── ARES/
+│       ├── ICE/
+│       └── IGLOO/
 ├── lib/                          # Shared dependencies (ORION, FLINT, OSLO, FiNeR)
 ├── test/                         # Framework-level validation assets
 │   ├── hydra-MF.sh
@@ -46,8 +51,8 @@ A practical rule: put solver-specific math/physics in solver repos, and put cros
 
 ## Executable Model
 
-The current framework executable is selected by `EXE_NAME` in CMake.
-At the moment, `MF` is the supported target, producing `hydra_MF`.
+The framework executable is selected by `EXE_NAME` in CMake: `MF`, `AF` or
+`MI2`, producing `bin/hydra_MF`, `bin/hydra_AF` or `bin/hydra_MI2`.
 
 ```mermaid
 flowchart LR
@@ -76,6 +81,27 @@ At a high level, `src/app/MF/hydra_MF.f90` does the following:
    - trigger intermediate/final postprocess
 6. Finalize schedules and MPI state.
 
+## Runtime Pipeline (`hydra_MI2`)
+
+`src/app/MI2/hydra_MI2.f90` couples a gas with dispersed condensed phases
+(see [Multiphase Coupling](../user/mi2.md)):
+
+1. Print the build stamp (`MI2_Build_Stamp.cmake` writes it at every build).
+2. Read the `HYDRA-*` sections and MI2's own keys (`MI2_Read_Ini.f90`,
+   `MI2_Register_Params.f90`) and print the coupling schedule.
+3. Route each `INPUT/*phase.txt` to MOSE, ICE or IGLOO and check the files
+   each will open (`MI2_Mod_Import.f90`).
+4. Set up MOSE, then ICE and IGLOO when enabled; read each condensed phase's
+   `products.txt` into gas-species rows and enthalpy-datum offsets
+   (`MI2_Stoichiometry.f90`); set up the smoke families.
+5. Run the cycles: per coupling step a MOSE block (the condensed sources
+   applied at every Runge-Kutta stage through MOSE's external routine), an
+   IGLOO solve, an ICE block (`MI2_Coupling.f90` holds the exchanges).
+6. Final postprocess of each solver and the end-of-run balances.
+
+`hydra_MI2` is OpenMP only: the top-level `CMakeLists.txt` stops the configure
+step when `USE_MPI` is set with `EXE_NAME=MI2`.
+
 ## Configuration Subsystem
 
 Framework input registration lives in `src/app/common/config`.
@@ -87,7 +113,8 @@ Registered sections are:
 
 These sections coexist with solver sections in the same `input.ini`
 file. Hydra consumes only `HYDRA-*` keys; solver libraries consume
-their own sections.
+their own sections. `hydra_MI2` adds its keys to `HYDRA-Parameters`
+(`src/app/MI2/MI2_Register_Params.f90`) and reads `[MI2-Coupling]`.
 
 ## Build and Task Orchestration
 
@@ -111,6 +138,12 @@ For `EXE_NAME=MF`, top-level CMake brings in:
 - shared deps: ORION, FiNeR, FLINT
 - solver libs: FUSS and MOSE
 - framework executable sources from `src/app/common/*` and `src/app/MF`
+
+For `EXE_NAME=MI2`:
+
+- shared deps: ORION (linked explicitly, since ICE links it privately), FiNeR
+- solver libs: MOSE, ICE and IGLOO
+- framework executable sources from `src/app/common/*` (without the shared timers) and `src/app/MI2`
 
 This keeps Hydra focused on composition while solver internals remain
 in their dedicated repositories.

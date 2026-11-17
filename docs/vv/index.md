@@ -38,6 +38,7 @@ Three things, in increasing order of strength:
 | Fluid and solid physics, numerics, turbulence, radiation | the solver suites below |
 | Parallel efficiency of the coupled run | [Parallel Execution](../user/parallel.md) |
 | Which checks to run against which change | [Testing](../development/testing.md) |
+| Gas–condensed-phase coupling of `hydra-MI2` | the cases and gates of [Testing](../development/testing.md#hydra-mi2) |
 
 Solver-level verification lives in the solver repositories:
 [MOSE](https://open-hydra.github.io/MOSE/vv/) ·
