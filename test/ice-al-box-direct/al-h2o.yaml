@@ -1,0 +1,5 @@
+name: al-h2o
+description: liquid aluminium burns with steam into hydrogen and liquid alumina, the smoke (an ICE family)
+reference: none (a test case; the rate is the solver's)
+reactions:
+- equation: 2 AL(L) + 3 H2O => AL2O3(L) + 3 H2

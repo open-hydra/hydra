@@ -10,8 +10,8 @@
 #  frozen : the same case with d-burnout above the drops and one ICE step: the removal fires in it, its source is the
 #           burn alone and the rest of the cloud is stored; frozen through 5 MOSE iterations, the gas gains the frozen
 #           burn over their time and the store once (the inter-phase books of a removal).
-#  frozen2: the same with ICE-iter 2: the second step finds the cloud empty, and the gas still gains the first one's
-#           store.
+#  frozen2: the same with ICE-iter 2: the second step finds the cloud empty; the gas takes the block's rate (the two
+#           steps' sources weighted by their dt) over its time, and the first one's store.
 #  cold   : the two boxes with T-ign above any temperature their drops reach and d-burnout above the drops: no drop
 #           burns, none is removed, no mass reaches the gas.
 #  twin   : test/igloo-burnout-box against its closed forms (test/igloo-burn-box/check.py: everything a stream

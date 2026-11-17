@@ -1,0 +1,2 @@
+condensed-dispersed modeling=eulerian
+AL2O3(L) 1 solidification=on T-melt=2327 h-fus=1092578 T-nuc=1861.6 cp-solid=1433.17

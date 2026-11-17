@@ -26,7 +26,8 @@ M = n_p V rho pi K X d0^(3-n)/(2n) (the d^n law at d0), and the rest of the clou
 the source frozen through a few MOSE iterations of total duration t and hands the store once, in its first block:
 the gas gains M t + (m0 - M dt), Fx t + the stored momentum, Q t + the stored energy (the inter-phase books).
 "frozen2" is the same with two ICE steps in the coupling step (ICE-iter 2): the second finds the cloud empty, its
-source is zero, and the gas gains what the first one stored, m0 - M dt.
+source is zero; the gas takes the block's rate, the steps' sources weighted by their dt, M dt/(2 dt) = M/2, over its
+time t, and what the first step stored: it gains m0 + M t/2 - M dt.
 "cold" checks a variant whose drops never burn (T-ign above any temperature they reach) with d-burnout above them:
 no step hands mass, nothing is stored, the cloud keeps its mass.
 Prints PASS/FAIL lines with the numbers compared and the tolerance; exits 1 on any FAIL."""
@@ -94,10 +95,11 @@ def frozen(run, log, m0, up, E0, dt, rho_gas0, V, Mb, iters):
         ib.judge('F1 energy', Q * dt + D[4], E0, TOL_BOOK, 'Q dt and the stored energy vs rho_p V (c T_p + u_p^2/2 + h298 - c T_ref)')
         whole = m0 + Mb * (t - dt)
     else:
-        (ib.ok if M == 0.0 and abs(Q) < 1e-20 else ib.ko)(
-            'F1 the second ICE step found the cloud empty: its source is zero (M %.3e kg/s, Q %.3e W)' % (M, Q))
+        # the block's rate: the first step burns M_b over dt, the second (the cloud empty) nothing, over the same dt
+        ib.judge('F1 the block\'s rate', M, 0.5 * Mb, TOL_RATE,
+                 'reported M vs M_b dt / (2 dt), the mean of the two ICE steps (the second finds the cloud empty)')
         ib.judge('F1 mass', D[0], m0 - Mb * dt, TOL_RATE, 'the store vs rho_p V less the first step\'s burn, the d^n law at d0')
-        whole = m0 - Mb * dt
+        whole = m0 + 0.5 * Mb * t - Mb * dt
     field = ib.read_tec(os.path.join(run, 'OUTPUT', 'gas-field.tec'))
     rho1 = ib.uniform(sum(field[k] for k in field if k.startswith('rho')), 'final gas rho', tol=1e-10)
     gain = (rho1 - rho_gas0) * V
@@ -105,7 +107,7 @@ def frozen(run, log, m0, up, E0, dt, rho_gas0, V, Mb, iters):
     ib.judge('F2 gas momentum', (last[-1]['p1'] - last[0]['p0'])[0], F[0] * t + D[1], TOL_GAS, 'gas x-momentum gain vs Fx t + the store')
     ib.judge('F2 gas energy', last[-1]['E1'] - last[0]['E0'], Q * t + D[4], TOL_GAS, 'gas energy gain vs Q t + the store')
     ib.judge('F2 the whole cloud', gain, whole, TOL_GAS, 'gas mass gain vs %s' % (
-        'rho_p V + M_b (t - dt), M_b the d^n law at d0' if iters == 1 else 'rho_p V - M_b dt'))
+        'rho_p V + M_b (t - dt), M_b the d^n law at d0' if iters == 1 else 'rho_p V + M_b t/2 - M_b dt'))
     em = re.search(r'closed-domain mass balance.*?\n.*?\n\s+1\s+\S+\s+\S+\s+(\S+)', txt)
     try:
         eb = float(em.group(1)) if em else None
