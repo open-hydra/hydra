@@ -186,6 +186,7 @@ ICE and IGLOO standalone; `p31_steady_check.sh` takes an optional list of legs.
 | `p11_mass_flux_inlet_check.sh` | the gas inflow handed to IGLOO on mass-flux inlets |
 | `p12_igloo_momentum_check.sh` | `evap-box-mom`: momentum and energy of IGLOO's source coupling |
 | `p13_rans_slot_check.sh` | `evap-box-sa`: the coupling leaves the turbulence variable alone |
+| `p15_vapour_coherence_check.sh` | ICE and IGLOO read the vapour columns of one property table under the same names, with the same code, to the same values |
 | `p17_two_materials_check.sh` | `evap-box-2mat`: each IGLOO material's lost mass reaches its own gas species |
 | `p18_jpl_chang_check.sh` | the three JPL cases against `JPL_chang.dat` |
 | `p19_evap_reference_check.sh` | the four evaporating boxes against an independent integration of the drop equations |
