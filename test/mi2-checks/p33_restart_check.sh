@@ -30,10 +30,19 @@
 #  layout  : the jpl restart with a variable of part-coupling.tec renamed stops ("does not match");
 #  zero    : the jpl restart with ICE-iter 0: ICE writes no end-of-run output (its field and history as part 1 left
 #            them);
-#  igloo   : test/evap-box-ta (MOSE + IGLOO) restarted with [MOSE-Parameters] newrun = false: IGLOO keeps no parcels
-#            and no sources, it starts empty: one warning, the run completes; with IGLOO-iter 0 (igloo-off) no warning;
-#  3solver : test/JPL-3solver-20micron, 1 coupling step restarted for 1 more: ICE's hand-off read, IGLOO's warning,
-#            the run completes.
+# A restart with IGLOO is a new IGLOO start (IGLOO keeps no parcels and no sources from one run to the next): it stops
+# when a cycle in which IGLOO iterates is time-accurate (MOSE's time-accurate key on, MOSE iterating in the schedule;
+# or ICE iterating in that cycle with its own key on), one warning and a completed run otherwise, nothing when no cycle
+# runs IGLOO:
+#  igloo       : test/evap-box-ta (MOSE time-accurate + IGLOO) restarted: stops before any iteration, names the way out
+#                (the field as the initial condition, newrun = true), the fields as part 1 left them;
+#  igloo-steady: test/evap-box (MOSE steady + IGLOO) restarted: one warning, the run completes;
+#  igloo-off   : test/evap-box-ta with IGLOO-iter 0: no stop, no warning;
+#  mixed       : test/igloo-al-box with MOSE steady and ICE time-accurate (MOSE + IGLOO, then ICE alone): IGLOO in
+#                MOSE's steady cycle, one warning, the run completes (ICE's hand-off read); with IGLOO moved to ICE's
+#                cycle (mixed-ice) it stops on ICE's key;
+#  3solver     : test/JPL-3solver-20micron (steady), 1 coupling step restarted for 1 more: ICE's hand-off read, IGLOO's
+#                warning, the run completes.
 #   usage: p33_restart_check.sh [scratch-root] [exe]
 set -u
 T=${1:-${MI2_SCRATCH:-/tmp/mi2-checks-${USER:-$(id -un)}}/P33}
@@ -47,6 +56,7 @@ ok() { pass=$((pass+1)); echo "PASS  $1"; }
 ko() { fail=$((fail+1)); echo "FAIL  $1"; }
 echo "  exe $EXE ($(md5sum < "$EXE" | cut -c1-8))"
 IGW='newrun = false with IGLOO: IGLOO keeps no parcels and no sources'
+IGS='newrun = false with IGLOO, and IGLOO iterates in cycle'
 READ='ICE restarts with what its last coupling step handed the gas, from OUTPUT/part-coupling.tec'
 
 sched() {  # sched <input.ini> <N-coupling> <MOSE-iter> <ICE-iter>
@@ -190,22 +200,46 @@ if cmp -s "$p/part-field.tec" "$z/part-field.tec" && cmp -s "$p/part-residual-hi
   ok "zero: ICE made no iteration: part-field.tec and part-residual-history.dat as part 1 left them ($(grep -c . "$z/part-residual-history.dat") rows, output number $(auxv "$z/part-field.tec" ICE_OUTPUT_NUMBER))"
 else ko "zero: ICE made no iteration and rewrote its files (rows $(grep -c . "$p/part-residual-history.dat") -> $(grep -c . "$z/part-residual-history.dat"), output number $(auxv "$p/part-field.tec" ICE_OUTPUT_NUMBER) -> $(auxv "$z/part-field.tec" ICE_OUTPUT_NUMBER))"; fi
 
-# --- igloo: a restart with IGLOO is a new IGLOO start, with one warning; none when IGLOO never advances ---
+# --- igloo: a restart with IGLOO is a new IGLOO start: it stops in a time-accurate cycle, warns in a steady one ---
 d=$(mk "$H/test/evap-box-ta" igloo-part1 1 50 0 50 1); "$RUN" "$d" "$d/run" 1 "$T/igloo-part1.log" "$EXE" > /dev/null 2>&1
 clean igloo-part1 "$T/igloo-part1.log" $?
 restart "$T/igloo-part1/run" "$T/igloo" 1 50 0
-warned igloo "$T/igloo.log" $? "$IGW"
+refused igloo "$T/igloo.log" $? "$IGS 1, a time-accurate cycle: the gas IGLOO hands its sources to steps in physical time"
+p=$T/igloo-part1/run/OUTPUT; z=$T/igloo/OUTPUT
+if grep -qF 'start a new run from them: copy OUTPUT/gas-field.tec to INPUT/gas-ic.tec' "$T/igloo.log" && \
+   grep -qF 'set newrun = true in [MOSE-Parameters]' "$T/igloo.log" && cmp -s "$p/gas-field.tec" "$z/gas-field.tec" && \
+   cmp -s "$p/gas-residual-history.dat" "$z/gas-residual-history.dat"
+then ok "igloo: the stop names the way out (OUTPUT/gas-field.tec to INPUT/gas-ic.tec, newrun = true); gas-field.tec and gas-residual-history.dat as part 1 left them"
+else ko "igloo: the way out is not named, or the stopped run changed the fields (field equal: $(cmp -s "$p/gas-field.tec" "$z/gas-field.tec" && echo yes || echo no))"; fi
+d=$(mk "$H/test/evap-box" igloo-steady-part1 1 50 0 50 1); "$RUN" "$d" "$d/run" 1 "$T/igloo-steady-part1.log" "$EXE" > /dev/null 2>&1
+clean igloo-steady-part1 "$T/igloo-steady-part1.log" $?
+restart "$T/igloo-steady-part1/run" "$T/igloo-steady" 1 50 0
+warned igloo-steady "$T/igloo-steady.log" $? "$IGW" "$IGS"
 d=$(mk "$H/test/evap-box-ta" igloo-off-part1 1 50 0 50 1 's/^IGLOO-iter *=.*/IGLOO-iter    = 0/')
 "$RUN" "$d" "$d/run" 1 "$T/igloo-off-part1.log" "$EXE" > /dev/null 2>&1; clean igloo-off-part1 "$T/igloo-off-part1.log" $?
 restart "$T/igloo-off-part1/run" "$T/igloo-off" 1 50 0; rc=$?; clean igloo-off "$T/igloo-off.log" $rc
-grep -qF 'newrun = false with IGLOO' "$T/igloo-off.log" && ko "igloo-off: IGLOO-iter = 0 everywhere and the IGLOO warning printed" \
-                                                     || ok "igloo-off: IGLOO-iter = 0 everywhere: no IGLOO warning"
+grep -qF 'newrun = false with IGLOO' "$T/igloo-off.log" && ko "igloo-off: IGLOO-iter = 0 everywhere and an IGLOO stop or warning printed" \
+                                                     || ok "igloo-off: IGLOO-iter = 0 everywhere: no IGLOO stop, no IGLOO warning"
+
+# --- mixed: MOSE steady with IGLOO, then ICE time-accurate alone; IGLOO moved to ICE's cycle stops on ICE's key ---
+MS='/^\[MOSE-Numerics\]/,/^\[/ s/^time-accurate *= *true/time-accurate         = false/'
+d=$(mk "$H/test/igloo-al-box" mixed-part1 "1 1" "50 0" "0 1" 50 1 "$MS"); "$RUN" "$d" "$d/run" 1 "$T/mixed-part1.log" "$EXE" > /dev/null 2>&1
+clean mixed-part1 "$T/mixed-part1.log" $?
+restart "$T/mixed-part1/run" "$T/mixed" "1 1" "50 0" "0 1"; rc=$?
+warned mixed "$T/mixed.log" $rc "$IGW" "$IGS"
+grep -qF 'ICE restarts with what its last coupling step handed the gas, from OUTPUT/partE-coupling.tec' "$T/mixed.log" \
+  && ok "mixed: MI2 reads ICE's hand-off (OUTPUT/partE-coupling.tec)" \
+  || ko "mixed: ICE's hand-off not read: $(grep -m1 -e WARNING -e ERROR "$T/mixed.log" | cut -c1-160)"
+rm -rf "$T/mixed-ice-src"; cp -rp "$T/mixed-part1/run" "$T/mixed-ice-src"
+sed -i 's/^IGLOO-iter *=.*/IGLOO-iter    = 0 1/' "$T/mixed-ice-src/input.ini"
+restart "$T/mixed-ice-src" "$T/mixed-ice" "1 1" "50 0" "0 1"; rc=$?; rm -rf "$T/mixed-ice-src"
+refused mixed-ice "$T/mixed-ice.log" $rc "$IGS 2, a time-accurate cycle: ICE iterates in it in physical time ([ICE-Numerics] time-accurate = true)"
 
 # --- 3solver: MOSE + ICE + IGLOO, 1 coupling step restarted for 1 more ---
 d=$(mk "$H/test/JPL-3solver-20micron" 3solver-part1 1 $M $K $M $K); "$RUN" "$d" "$d/run" 1 "$T/3solver-part1.log" "$EXE" > /dev/null 2>&1
 clean 3solver-part1 "$T/3solver-part1.log" $?
 restart "$T/3solver-part1/run" "$T/3solver" 1 $M $K
-warned 3solver "$T/3solver.log" $? "$IGW"
+warned 3solver "$T/3solver.log" $? "$IGW" "$IGS"
 grep -qF 'ICE restarts with what its last coupling step handed the gas, from OUTPUT/partE-coupling.tec' "$T/3solver.log" \
   && ok "3solver: MI2 reads ICE's hand-off (OUTPUT/partE-coupling.tec) with IGLOO in the case" \
   || ko "3solver: ICE's hand-off not read: $(grep -m1 -e WARNING -e ERROR "$T/3solver.log" | cut -c1-160)"
