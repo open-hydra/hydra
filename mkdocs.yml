@@ -22,20 +22,19 @@ validation:
 
 theme:
   name: material
-  custom_dir: docs/overrides
   font:
     text: Roboto
     code: Fira Code
   palette:
     - scheme: default
       primary: indigo
-      accent: cyan
+      accent: indigo
       toggle:
         icon: material/weather-night
         name: Switch to dark mode
     - scheme: slate
       primary: blue grey
-      accent: cyan
+      accent: indigo
       toggle:
         icon: material/weather-sunny
         name: Switch to light mode
@@ -93,13 +92,13 @@ extra_javascript:
 
 extra_css:
   - stylesheets/extra.css
+  - stylesheets/hydra.css      # the Hydra scheme of the home page, shared with the other codes
 
 nav:
   - Home: index.md
-  - Overview: overview.md
 
   - Getting Started:
-    - getting-started/index.md
+    - Overview: getting-started/index.md
     - Installation: getting-started/installation.md
     - Quick Start: getting-started/quick-start.md
 
