@@ -126,7 +126,7 @@ When modifying hydra-level code (`src/app/common`, `src/app/MF`, or
 ### Cases
 
 Each case directory holds `input.ini` (the `[HYDRA-*]`, solver and ATLAS sections), `MESH/` and a versioned
-`INPUT/`. 23 of the 29 also hold a `README.md` with the closed forms the case is judged against. 11 hold their own
+`INPUT/`. 24 of the 30 also hold a `README.md` with the closed forms the case is judged against. 11 hold their own
 `check.py`; the others are judged by a script of `test/mi2-checks/` or by the `check.py` of the case they twin
 (`test/igloo-burn-box/check.py` judges the four IGLOO burning boxes of `p22_igloo_burn_box_check.sh`).
 
@@ -134,6 +134,7 @@ Each case directory holds `input.ini` (the `[HYDRA-*]`, solver and ATLAS section
 |-------|-------|---------|--------------------|
 | Evaporation | `evap-box` (steady), `evap-box-ta` (time-accurate), `evap-box-ord2` (second-order gas reconstruction in IGLOO), `evap-box-sa` (RANS, Spalart-Allmaras) | MOSE + IGLOO | water drops evaporating into N2 in a closed box: the mass and energy balances printed at the end of the run |
 | Source coupling | `evap-box-mom` | MOSE + IGLOO | momentum and energy of IGLOO's source coupling (non-evaporating drops) |
+| Two materials | `evap-box-2mat` | MOSE + IGLOO | two injected IGLOO materials, water evaporating and graphite burning, each handing the gas its own species |
 | Source coupling | `ice-box` | MOSE + ICE | the frozen ICE source on a uniform gas, against closed forms |
 | Nozzle | `JPL-Lagrangian-20micron`, `JPL-Eulerian-20micron`, `JPL-3solver-20micron` | MOSE + IGLOO, MOSE + ICE, all three | 20 µm alumina in the JPL nozzle; `JPL_chang.dat` holds the reference curves of Chang, Hourng & Chien (1996), Fig. 11 |
 | Combustion | `ice-burn-box` (direct), `ice-burn-box-beckstead`, `igloo-burn-box`, `igloo-burn-box-direct`, `igloo-burn-box-beckstead`, `igloo-burn-box-rx` (graphite to CO2) | MOSE + ICE or IGLOO | a burning material handed to the gas: mass, species, momentum, energy |
@@ -185,6 +186,7 @@ ICE and IGLOO standalone; `p31_steady_check.sh` takes an optional list of legs.
 | `p11_mass_flux_inlet_check.sh` | the gas inflow handed to IGLOO on mass-flux inlets |
 | `p12_igloo_momentum_check.sh` | `evap-box-mom`: momentum and energy of IGLOO's source coupling |
 | `p13_rans_slot_check.sh` | `evap-box-sa`: the coupling leaves the turbulence variable alone |
+| `p17_two_materials_check.sh` | `evap-box-2mat`: each IGLOO material's lost mass reaches its own gas species |
 | `p18_jpl_chang_check.sh` | the three JPL cases against `JPL_chang.dat` |
 | `p19_evap_reference_check.sh` | the four evaporating boxes against an independent integration of the drop equations |
 | `p20_species_map_check.sh` | `products.txt` for an evaporating material, and its refusals |

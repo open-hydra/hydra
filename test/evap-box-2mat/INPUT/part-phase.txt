@@ -1,0 +1,3 @@
+condensed-dispersed modeling=lagrangian
+water 1 combustion=none alpha-e=1
+C(gr) 1 combustion=Beckstead alpha-e=1
