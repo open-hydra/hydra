@@ -35,6 +35,6 @@ developer-side source in `src/app/MF`, `src/app/AF` and `src/app/MI2`.
 
 ## Recommended Reading Path
 
-1. Start from [Overview](../overview.md) for architecture and solver roles.
+1. Start from [Overview](../getting-started/index.md#core-idea) for architecture and solver roles.
 2. Read the solver-specific theory pages for the solver you are using.
 3. Return to Hydra docs for integration and coupled-run workflow.
