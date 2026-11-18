@@ -1,0 +1,34 @@
+# Prose rendered under the AUTHORS.md heading.
+intro: |
+  Cumulative record of everyone who has contributed to Hydra. Names are never
+  removed from this file; per-release credit is recorded in `CITATION.cff`.
+
+original_authors:
+  - name: Marco Grossi
+  - name: Vincenzo Barbato
+  - name: Alessio Sereno
+  - name: Alessandro Montanari
+  - name: Alex Falco
+  - name: Giacomo Passarani
+  - name: Andrea Giacomi
+  - name: Gianluca Cocirla
+  - name: Marco Fabiani
+
+present_maintainers:
+  - name: Marco Grossi
+  - name: Vincenzo Barbato
+  - name: Alessio Sereno
+  - name: Alessandro Montanari
+  - name: Alex Falco
+  - name: Giacomo Passarani
+  - name: Andrea Giacomi
+  - name: Gianluca Cocirla
+  - name: Marco Fabiani
+
+# Substring-matched against the whole "Name <email>" identity.
+exclude:
+  - dependabot[bot]
+  - github-actions[bot]
+  # AI assistants appear as Co-authored-by trailers; they are tools, not authors.
+  - noreply@anthropic.com
+  - copilot@users.noreply.github.com
