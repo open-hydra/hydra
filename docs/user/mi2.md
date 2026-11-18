@@ -294,13 +294,34 @@ no ICE source. The restart stops when the file is missing, or when its blocks, d
 do not match ICE's set-up. Not checked: the order of the materials (two cases with the same families per material in
 another order are taken for one) and, for a time-accurate ICE, the time of the file.
 
-IGLOO keeps neither its parcels nor the sources it hands the gas from one run to the next. `newrun = false` in either
-solver of a case whose schedule advances IGLOO is a new IGLOO start on the restored gas, not a continuation (a steady run
-converges again, a time-accurate run is not continued); the run says so once at set-up:
+IGLOO keeps neither its parcels nor the sources it hands the gas from one run to the next: `newrun = false` in either
+solver of a case whose schedule runs IGLOO (`IGLOO-iter` ≠ 0 in some cycle) starts IGLOO empty on the restored fields,
+a new IGLOO start. Whether that may go on depends on the cycles in which IGLOO iterates. Such a cycle is
+**time-accurate** when
 
-```text
- [WARNING] MI2: newrun = false with IGLOO: IGLOO keeps no parcels and no sources from one run to the next, so it starts empty on the restored gas. ...
-```
+- the gas IGLOO hands its sources to steps in physical time: `[MOSE-Numerics] time-accurate = true` and MOSE iterates
+  in the schedule (IGLOO's sources stay in force until its next solve, whichever cycle MOSE iterates in), or
+- ICE iterates in that cycle with `[ICE-Numerics] time-accurate = true`.
+
+`[HYDRA-Parameters] time-accurate` is not read for this (it only labels the end-of-run balances), nor is IGLOO's
+coupling mode (`IGLOO-iter` 1 or 2): IGLOO's own solve has no time step.
+
+- A cycle in which IGLOO iterates is time-accurate: the restart stops at set-up, before any iteration, since a cold
+  IGLOO start does not continue a time-accurate run. The message names the cycle, the reason and the way out, a new
+  run from the restored fields (`test/evap-box-ta` restarted):
+
+    ```text
+     [ERROR] MI2: newrun = false with IGLOO, and IGLOO iterates in cycle 1, a time-accurate cycle: the gas IGLOO hands its sources to steps in physical time ([MOSE-Numerics] time-accurate = true). ... To go on from these fields, start a new run from them: copy OUTPUT/gas-field.tec to INPUT/gas-ic.tec (ic-format: the format of the field), and set newrun = true in [MOSE-Parameters]
+    ```
+
+- Every cycle in which IGLOO iterates is steady: the run goes on, IGLOO's start is new and the run converges again;
+  it says so once at set-up:
+
+    ```text
+     [WARNING] MI2: newrun = false with IGLOO: IGLOO keeps no parcels and no sources from one run to the next, so it starts empty on the restored gas. ...
+    ```
+
+- No cycle runs IGLOO (`IGLOO-iter = 0` in every cycle): nothing is said.
 
 ---
 
@@ -540,6 +561,7 @@ table quotes their characteristic words.
 | setup | `the smoke has no family: ICE is not run`; `relaxation = true blends two coupling steps` | smoke of an IGLOO material |
 | setup | `cycle <c> advances MOSE and ICE together with time-accurate on` | [time modes](#steady-and-time-accurate-runs) |
 | setup | `ICE restarts ([ICE-Parameters] newrun = false) and OUTPUT/<prefix>coupling.tec is missing`; `... does not match the ICE set-up of this run`; `... is not a file MI2 wrote` | [restart](#restart) |
+| setup | `newrun = false with IGLOO, and IGLOO iterates in cycle <c>, a time-accurate cycle` | a cold IGLOO start does not continue a time-accurate run: start a new run from the fields ([restart](#restart)) |
 | step | `MOSExIGLOO: IGLOO gasblock <b> extends beyond MOSE's ghosted range` | the gas and particle meshes disagree |
 | step | `record <i> of INPUT/<gas>-bc.txt is of block ...` | gas boundary records out of order |
 | step | `particles injected in proportion to the gas mass flow (particle BC 401) on a gas boundary of kind ...` | |
