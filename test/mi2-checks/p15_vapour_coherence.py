@@ -119,8 +119,9 @@ def static(root):
     li = labels(ri.get('classify_table_tokens', ''))
     lc = labels(rc.get('classify_table_tokens', ''))
     si, sc = {s for t in li for s in t}, {s for t in lc for s in t}
-    (ok if li and li == lc else ko)('S1 the column names both classifiers accept, every spelling: %s%s' % (
-        ' '.join(t[0] for t in li), '' if li == lc else ' | IGLOO only: %s; ICE only: %s; order or grouping differs: %s'
+    same = bool(li) and {frozenset(t) for t in li} == {frozenset(t) for t in lc}   # the branches in any order
+    (ok if same else ko)('S1 the column names both classifiers accept, every spelling: %s%s' % (
+        ' '.join(t[0] for t in li), '' if same else ' | IGLOO only: %s; ICE only: %s; grouped differently: %s'
         % (' '.join(sorted(si - sc)) or '-', ' '.join(sorted(sc - si)) or '-', 'yes' if si == sc else '-')))
     gi, gc = grammar(ti), grammar(tc)
     (ok if gi and gi == gc else ko)('S2 the header grammar both print on a refusal is the same text (%d characters)'
