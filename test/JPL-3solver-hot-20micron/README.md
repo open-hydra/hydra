@@ -15,3 +15,7 @@ Inputs: `test/mi2-checks/regen_case.sh <case> <scratch> GPB BCB ICB --install` w
 
 Design estimate (a quasi-1D two-phase march, not a reference): nucleation near x = 0.116 m (axis 0.110–0.122 m, wall
 row 0.103–0.105 m), exit frozen fraction about 0.28.
+
+First runs (hydra 2afbfc8, 8 threads, 2026-11-18; no reference is stored: the gas does not meet p14's W1 and W1b, its
+axis exit Mach number moving by up to 1.6e-6 from one coupling step to the next): nucleation on the axis at x = 0.120 m
+(both solvers), inner exit frozen fraction 0.243 (both), below the estimate's 0.267–0.294.
