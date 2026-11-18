@@ -91,7 +91,7 @@ judge() {  # judge <mode> <args...>: the .py's lines counted; a crash counts as 
 auxv() {  # auxv <file> <key>: the value of a DATASETAUXDATA record (last one), empty if absent
   [ -f "$1" ] && tail -c 4000 "$1" | grep -a -o "DATASETAUXDATA $2 = \"[^\"]*\"" | tail -1 | sed 's/.*= "//; s/"$//'; }
 inum() { awk -v x="${1:-}" 'BEGIN { if (x == "") print -1; else printf "%d\n", x + 0 }'; }
-lastrow() { [ -f "$1" ] && tail -n 1 "$1" | awk '{print $1+0}' || echo -1; }
+lastrow() { [ -s "$1" ] && tail -n 1 "$1" | awk 'END { print (NR ? $1 + 0 : -1) }' || echo -1; }
 alive() { [ -e "/proc/$1" ] && ! grep -q '^State:.*zombie' "/proc/$1/status" 2>/dev/null; }
 until_or_end() {  # until_or_end <pid> <seconds> <test command...>: poll every 0.05 s; 1 if the run ended or time ran out
   local pid=$1 t=$2 n=0; shift 2
