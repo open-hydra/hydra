@@ -37,9 +37,10 @@ mixing). Then, per sweep:
   L  the run log, every sweep: no line of IGLOO's LK-interface: warning (a parcel whose Langmuir-Knudsen fixed
      point was not bracketed carries the bracket's estimate of its rate, not the model's)
 
-The last sweep's per-stream checks and the Eulerian integrals are gated only when OUTPUT/gas-field.tec was
-written at the MOSE iteration that sweep sampled (the last line of gas-residual-history.dat); otherwise they
-are printed as information.
+The last sweep's per-stream checks, the Eulerian integrals and the coupler's lines are gated only when
+OUTPUT/gas-field.tec was written at the MOSE iteration that sweep sampled: the iteration its header records
+(DATASETAUXDATA MOSE_ITERATION) against the last line of gas-residual-history.dat; when the two differ they are
+printed as information. A file whose iteration cannot be read fails (row I), and the sweep is then information.
 
 Usage: check_reference.py [RUN_DIR] [--ini PATH] [--props PATH] [--log PATH] [--sweeps 0,last]
                           [--psat auto|cc|table] [--interface auto|LK|VLE]
@@ -656,14 +657,16 @@ def box_length(run):
     return math.sqrt(sum((b - a) ** 2 for a, b in zip(lo, hi)))
 
 
-def check_sweep(rep, run, drop, field, sweep_tag, streams, dt_q, gated, label):
-    """Per-stream comparison of one sweep's IGLOO output with the reference integration."""
+def check_sweep(rep, run, drop, field, sweep_tag, streams, dt_q, gated, label, note=None):
+    """Per-stream comparison of one sweep's IGLOO output with the reference integration (note: a row printed first)."""
     out = os.path.join(run, "OUTPUT")
     scat, _ = read_particles(os.path.join(out, "part-scatter-A%s.dat" % sweep_tag))
     exits, ecol = read_particles(os.path.join(out, "part-outloc-A%s.dat" % sweep_tag))
     trajrows, _ = read_particles(os.path.join(out, "part-trajectories-A%s.dat" % sweep_tag))
     print("\n== %s (%s)%s" % ("sweep 0" if not sweep_tag else sweep_tag.strip("-"), label,
                               "" if gated else " -- per-stream checks informational"))
+    if note:
+        rep.check(*note)
     results = {}
     w = {"ratio": 0.0, "arg": "", "qs": 0.0, "lead": -1e300, "lag": 0.0, "n": 0, "node": 0}
     for sid, s0, mdot in streams:
@@ -863,6 +866,35 @@ def check_log(rep, log):
                                                                  " -- " + hits[0] if hits else ""))
 
 
+def mose_iteration(path):
+    """The MOSE iteration a gas field was written at, from its header (DATASETAUXDATA MOSE_ITERATION); None when
+    absent, not a whole number, or given twice with two values. SOLUTIONTIME is not it: the physical time when the
+    gas is time accurate."""
+    vals = set()
+    for l in open(path, errors="replace"):
+        m = re.match(r'\s*DATASETAUXDATA\s+MOSE_ITERATION\s*=\s*"\s*([-+0-9.EeDd]+)\s*"', l)
+        if m:
+            try:
+                vals.add(float(m.group(1).replace("D", "E").replace("d", "e")))
+            except ValueError:
+                return None
+    if len(vals) != 1:
+        return None
+    v = vals.pop()
+    return int(v) if v == int(v) else None
+
+
+def last_history_iteration(path):
+    """The first column of the last line of a residual history: the last MOSE iteration of the run; None if unread."""
+    if not os.path.exists(path):
+        return None
+    rows = [l.split() for l in open(path, errors="replace") if l.strip() and not l.lstrip().startswith("#")]
+    try:
+        return int(rows[-1][0])
+    except (IndexError, ValueError):
+        return None
+
+
 def cell_volumes(f, names):
     x, y, z = (f[n] for n in names[:3])
     dx = np.diff(x[0, 0, :])
@@ -928,6 +960,7 @@ def main():
     for sw in a.sweeps.split(","):
         k = ncoup - 1 if sw == "last" else int(sw)
         tag = "" if k == 0 else "-sweep%d" % k
+        note = None
         if k == 0:
             _, f, _ = read_tec_block(os.path.join(inp, "gas-ic.tec"))
             names = list(f.keys())
@@ -943,16 +976,20 @@ def main():
         elif k == ncoup - 1:
             gf = os.path.join(run, "OUTPUT", "gas-field.tec")
             field = CellGas(tables, gf)
-            # a steady field carries its iteration as the solution time, negative when ORION prints the sign
-            it_file = abs(float(re.search(r"SOLUTIONTIME=\s*([-+0-9.EeDd]+)", open(gf).read(2000)).group(1).replace("D", "E")))
-            hist = [l.split() for l in open(os.path.join(run, "OUTPUT", "gas-residual-history.dat")) if l.strip()]
-            it_last = int(hist[-1][0])
-            gated = int(round(it_file)) == it_last
-            label = "OUTPUT/gas-field.tec at MOSE iteration %d; the sweep sampled iteration %d" % (it_file, it_last)
+            # a coupling step runs MOSE, then IGLOO: the last sweep sampled the gas after the run's last MOSE iteration
+            it_file = mose_iteration(gf)
+            it_last = last_history_iteration(os.path.join(run, "OUTPUT", "gas-residual-history.dat"))
+            gated = it_file is not None and it_file == it_last
+            if it_file is None or it_last is None:
+                note = ("I", False, "%s: the gas the last sweep is checked against is of an unknown iteration"
+                        % ("OUTPUT/gas-field.tec carries no readable MOSE_ITERATION in its header" if it_file is None
+                           else "OUTPUT/gas-residual-history.dat has no last iteration"))
+            label = "OUTPUT/gas-field.tec at MOSE iteration %s; the sweep sampled iteration %s" % (
+                "unknown" if it_file is None else it_file, "unknown" if it_last is None else it_last)
         else:
             print("\n  [note] sweep %d: its gas field is not in OUTPUT; skipped" % k)
             continue
-        results = check_sweep(rep, run, drop, field, tag, streams, dt_q, gated, label)
+        results = check_sweep(rep, run, drop, field, tag, streams, dt_q, gated, label, note)
         check_global(rep, run, tag, streams, results, drop, gated)
         if k == ncoup - 1 and k > 0:
             check_coupler(rep, run, inp, a.log or os.path.join(run, "run.log"), gated)
