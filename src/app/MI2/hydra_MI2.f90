@@ -132,22 +132,8 @@ program hydra_MI2_program
 
   ! ICE and IGLOO ingest the gas field as ORION data; each is set up only when enabled
   if (hydra_MI2_obj%run_ICE)   call ICE%setup( ICE_simulation, MOSE_simulation%IOfield(1) )
-  ! IGLOO keeps neither its parcels nor the sources it hands the gas from one run to the next: on a restored gas it starts
-  ! empty, a new IGLOO start
-  if ( hydra_MI2_obj%run_IGLOO ) then
-    block
-      logical :: restarting
-      restarting = .not. MOSE_obj_sim_param%newrun
-      if ( hydra_MI2_obj%run_ICE ) restarting = restarting .or. .not. ICE_obj_sim_param%newrun
-      if ( restarting .and. any( hydra_MI2_obj%IGLOO_iter > 0 ) ) then
-        write(*,*)
-        write(*,'(A)') ' [WARNING] MI2: newrun = false with IGLOO: IGLOO keeps no parcels and no sources from one run '// &
-          'to the next, so it starts empty on the restored gas. This is a new IGLOO start, not a continuation: a steady '// &
-          'run converges again, a time-accurate run is not continued'
-        write(*,*)
-      endif
-    end block
-  endif
+  ! a restart with IGLOO is a new IGLOO start: stopped when it would not continue a time-accurate cycle
+  if ( hydra_MI2_obj%run_IGLOO ) call Check_IGLOO_Restart()
   ! an ICE restart takes back what ICE's last coupling step handed the gas and left for its next, not in its field file
   if ( hydra_MI2_obj%run_ICE ) then
     if ( ICE_obj_sim_param%newrun ) then
@@ -944,6 +930,78 @@ contains
     enddo
 
   end subroutine Check_Time_Accuracy
+
+
+  !> newrun = false with IGLOO: IGLOO keeps neither its parcels nor the sources it hands the gas from one run to the
+  !  next, so it starts empty on the restored fields. Stop when a cycle in which IGLOO iterates is time-accurate (a cold
+  !  IGLOO start does not continue it); one warning when every such cycle is steady; nothing when IGLOO never iterates.
+  subroutine Check_IGLOO_Restart()
+    use MOSE_Global_m,   only: MOSE_phase_prefix
+    use ICE_Global_m,    only: ICE_phase_prefix
+    use ICE_IO_Solution, only: ICE_condinit => condinit
+    implicit none
+    character(len=:), allocatable :: why, files, keys
+    logical :: moseRe, iceRe
+    integer :: c
+
+    moseRe = .not. MOSE_obj_sim_param%newrun
+    iceRe  = .false.
+    if ( hydra_MI2_obj%run_ICE ) iceRe = .not. ICE_obj_sim_param%newrun
+    if ( .not. (moseRe .or. iceRe) .or. .not. any( hydra_MI2_obj%IGLOO_iter /= 0 ) ) return
+
+    do c = 1, size( hydra_MI2_obj%IGLOO_iter )
+      if ( hydra_MI2_obj%IGLOO_iter(c) == 0 ) cycle
+      why = Cycle_Clock( c )
+      if ( len(why) == 0 ) cycle
+      files = ''
+      keys  = ''
+      if ( moseRe ) then
+        files = As_IC( trim(MOSE_obj_io%nameinit), MOSE_phase_prefix )
+        keys  = '[MOSE-Parameters]'
+      endif
+      if ( iceRe ) then
+        files = files//trim(merge(' and ', '     ', moseRe))//' '//As_IC( trim(ICE_condinit), ICE_phase_prefix )
+        keys  = keys//trim(merge(' and ', '     ', moseRe))//' [ICE-Parameters]'
+      endif
+      write(*,'(A,I0,A)') ' [ERROR] MI2: newrun = false with IGLOO, and IGLOO iterates in cycle ', c, ', a time-'// &
+        'accurate cycle: '//why//'. IGLOO keeps no parcels and no sources from one run to the next, so it would start '// &
+        'empty on the restored fields, and a cold IGLOO start does not continue a time-accurate run. To go on from '// &
+        'these fields, start a new run from them: copy '//trim(adjustl(files))//' (ic-format: the format of the field), '// &
+        'and set newrun = true in '//trim(adjustl(keys))
+      error stop 1
+    enddo
+
+    write(*,*)
+    write(*,'(A)') ' [WARNING] MI2: newrun = false with IGLOO: IGLOO keeps no parcels and no sources from one run '// &
+      'to the next, so it starts empty on the restored gas. This is a new IGLOO start, not a continuation; no cycle in '// &
+      'which IGLOO iterates is time-accurate, and the run converges again'
+    write(*,*)
+
+  end subroutine Check_IGLOO_Restart
+
+
+  !> Why cycle c, in which IGLOO iterates, is time-accurate ('' if it is not): the gas IGLOO hands its sources to
+  !  steps in physical time (they stay in force until IGLOO's next solve, whichever cycle MOSE iterates in), or ICE
+  !  iterates in it in physical time
+  function Cycle_Clock( c ) result( why )
+    integer, intent(in) :: c
+    character(len=:), allocatable :: why
+    why = ''
+    if ( MOSE_obj_time_scheme%time_accurate .and. any( hydra_obj_sim_param%MOSE_iter > 0 ) ) then
+      why = 'the gas IGLOO hands its sources to steps in physical time ([MOSE-Numerics] time-accurate = true)'
+    elseif ( hydra_MI2_obj%run_ICE ) then
+      if ( hydra_MI2_obj%ICE_iter(c) > 0 .and. ICE_obj_time_scheme%time_accurate ) &
+        why = 'ICE iterates in it in physical time ([ICE-Numerics] time-accurate = true)'
+    endif
+  end function Cycle_Clock
+
+
+  !> 'OUTPUT/<field> to INPUT/<prefix>ic.<the field''s extension>': a field read back as an initial condition
+  function As_IC( field, prefix ) result( s )
+    character(len=*), intent(in)  :: field, prefix
+    character(len=:), allocatable :: s
+    s = field//' to INPUT/'//trim(prefix)//'ic'//field(index(field, '.', back=.true.):)
+  end function As_IC
 
 
   !> The smoke of ICE's burning materials (the tail of their combustion records): the smoke material is a material
