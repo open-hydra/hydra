@@ -166,7 +166,7 @@ test/mi2-checks/p10_ice_box_check.sh [scratch-root] [exe]
 The scratch root defaults to `/tmp/mi2-checks-$USER` (or `$MI2_SCRATCH`), the executable to `bin/hydra_MI2` of the
 checkout the script lives in. Exceptions: `p1_routing_checks.sh` requires the scratch root; `p1_igloo_key_check.sh`
 runs IGLOO's standalone executable; `p7_fpe_check.sh` builds its own executable with `ifx -fpe0` (the
-`bin/hydra_MI2` it overwrites is restored); `p8_solid_coherence_check.sh [scratch-root] [ice-exe] [igloo-exe]` runs
+`bin/hydra_MI2` it overwrites is restored); `p8_solid_coherence_check.sh [scratch-root] [ice-exe] [igloo-exe] [legs]` runs
 ICE and IGLOO standalone; `p31_steady_check.sh` takes an optional list of legs.
 
 | Gate | Checks |
@@ -179,7 +179,7 @@ ICE and IGLOO standalone; `p31_steady_check.sh` takes an optional list of legs.
 | `p4_ice_bc_check.sh` | ICE's boundary types 301 and 403 |
 | `p6_floor_guard_check.sh` | the consumed-species floor guard |
 | `p7_fpe_check.sh` | no floating-point exception on the coupling paths |
-| `p8_solid_coherence_check.sh` | ICE and IGLOO solidification on one stream |
+| `p8_solid_coherence_check.sh` | ICE and IGLOO on one stream: freezing, melting, freezing on a liquid heat capacity that varies; the drop's internal heating (`liquid-conduction = P2T`) and boiling through the boiling limit (`boiling = ZGR`) |
 | `p9_ini_reread_check.sh` | the hot re-read of `input.ini` |
 | `p10_ice_box_check.sh` | `ice-box`: ICE's frozen source against closed forms; the MOSE + ICE time-accurate refusal |
 | `p11_mass_flux_inlet_check.sh` | the gas inflow handed to IGLOO on mass-flux inlets |
@@ -199,6 +199,7 @@ ICE and IGLOO standalone; `p31_steady_check.sh` takes an optional list of legs.
 | `p30_al_smoke_check.sh` | aluminium burning with steam, the alumina a smoke, in both solvers |
 | `p31_steady_check.sh` | a steady run does not depend on the local time steps |
 | `p32_fusion_check.sh` | a smoke freezing: its heat of fusion reaches the gas |
+| `p33_restart_check.sh` | a MOSE + ICE restart (`newrun = false` in both) goes on as the run in one go, every value equal, once a coupling step without MOSE primes ICE's source; the plain restart's difference reported |
 
 `run_case.sh <case> <scratch> <threads> <log> [exe]` runs one case in a scratch copy. `regen_case.sh <case> <scratch>
 <GPB|BCB|ICB ...> [--install]` regenerates a case's `INPUT/` with ATLAS (`ATLASDIR` selects the ATLAS tree) and diffs
