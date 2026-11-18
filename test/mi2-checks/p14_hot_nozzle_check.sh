@@ -1,14 +1,15 @@
 #!/bin/bash
-# P14: the hot JPL nozzle, solidification on in both condensed solvers, ICE against IGLOO on one gas:
-# JPL-3solver-hot-2micron (T0 2500 K, 2 um alumina that freezes completely: --design full) and
+# P14: the hot JPL nozzle, solidification on in both condensed solvers, ICE against IGLOO on one gas. The gate's leg:
 # JPL-3solver-hot-20micron (T0 2400 K, 20 um, T-nuc 2227 K, drops that leave on the plateau: --design partial).
+# JPL-3solver-hot-2micron (T0 2500 K, 2 um alumina that freezes completely: --design full) is judged on demand only,
+# P14_VARIANT=2micron: not a leg of the gate, its gas missing W1 in both schedules tried (decision of 2026-11-18).
 # Per case: G1 the inputs (p14_hot_nozzle.py g1), a scratch copy with p18's two exit probes of the gas Mach number
 # (p14_hot_nozzle.py inject), run_case.sh at P14_THREADS threads (default 8), G2 the run witnesses (p14_hot_nozzle.py
 # g2: hygiene, solidification active, W1 MOSE residual, W1b exit-probe range, W2 ICE's last two fields, W3 IGLOO's
 # last sweeps), the comparison (JPL-3solver-hot-2micron/compare_freezing.py) and its refutation (refute_compare.py:
 # every check fails on a copy doctored against it, and only that one).
-# Measured 2026-11-18 (hydra 2afbfc8, ifx, 8 threads, 50 x 500/2/250 as the cases ship): each run 15-20 min; RED today
-# on the gas witnesses of both cases, nothing else: 2 um W1 4.9e-8 (still falling; 1.5e-8, a floor, in blocks of 250),
+# Measured 2026-11-18 (hydra 2afbfc8, ifx, 8 threads, 50 x 500/2/250 as the cases ship): each run 12-20 min; RED today
+# on the gas witnesses, nothing else: 2 um W1 4.9e-8 (still falling; 1.5e-8, a floor, in blocks of 250),
 # W1b 5.6e-9; 20 um W1 1.7e-7, W1b 6.4e-7 (the axis probe jumps by ~1e-6 at every other coupling step, in blocks of 250
 # too). The comparison passes both (9 and 7 checks), the refutation too (12 and 9). The cold JPL-3solver-20micron with
 # these output settings: W1 3.7e-9, W1b 1.1e-9, W2, W3 PASS. RED on: the cold case directory (G1 (a), (c), (d)); a
@@ -17,9 +18,9 @@
 # T-nuc 2277 K in ICE's only, 20 um (T2: 23-25 cells); h-fus 1.635e6 in IGLOO's only, 20 um (C2p 0.081 against 0.009,
 # C1 -35 %). The cold reference judged with P14_RUN: 'solidification active' and the comparison fail, W1 and W3 pass.
 #   usage: p14_hot_nozzle_check.sh [scratch-root] [exe]
-#   P14_VARIANT=2micron|20micron (default both, one after the other); P14_CASE=<dir> judges a copy of the case (a
-#   mutated input) instead of test/JPL-3solver-hot-<variant>; P14_RUN=<dir> judges a stored run (input.ini, INPUT/,
-#   OUTPUT/ and run.log, or <dir>.log; one variant; no solver run; without OUTPUT/ the run checks print SKIP).
+#   P14_VARIANT=20micron|2micron (default 20micron; both: "20micron 2micron"); P14_CASE=<dir> judges a copy of the
+#   case (a mutated input) instead of test/JPL-3solver-hot-<variant>; P14_RUN=<dir> judges a stored run (input.ini,
+#   INPUT/, OUTPUT/ and run.log, or <dir>.log; one variant; no solver run; without OUTPUT/ the run checks print SKIP).
 set -u
 export LC_ALL=C
 T=${1:-${MI2_SCRATCH:-/tmp/mi2-checks-${USER:-$(id -un)}}/P14}
@@ -28,7 +29,7 @@ EXE=${2:-$H/bin/hydra_MI2}
 NT=${P14_THREADS:-8}
 M=$H/test/mi2-checks
 CMP=$H/test/JPL-3solver-hot-2micron
-VARIANTS=${P14_VARIANT:-2micron 20micron}
+VARIANTS=${P14_VARIANT:-20micron}
 if [ -n "${P14_RUN:-}" ] && [ -z "${P14_VARIANT:-}" ]; then
   echo "P14_RUN judges one run: set P14_VARIANT=2micron or 20micron"; echo "== 0 passed, 1 failed"; exit 1
 fi
