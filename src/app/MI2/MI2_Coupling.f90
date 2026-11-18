@@ -1766,10 +1766,11 @@ contains
   end function Exchange_Value
 
 
-  !> At the end of a run with ICE: the arrays ICExMOSE and Gone_To_Rate read and those ICE's next step starts from, to
-  !  ICE_Exchange_File, with ICE's iteration (CYCLE), whether ICE has produced sources and MOSE's iteration. Tecplot ASCII
-  !  through ORION: 17 digits, read back exactly.
-  subroutine Write_ICE_Exchange ( ICE_sim, hasSources, iterMOSE )
+  !> At the end of a coupling step that left both solvers' fields on disk, and at the end of a run with ICE: the arrays
+  !  ICExMOSE and Gone_To_Rate read and those ICE's next step starts from, to ICE_Exchange_File, with ICE's iteration
+  !  (CYCLE), whether ICE has produced sources and MOSE's iteration. Tecplot ASCII through ORION: 17 digits, read back
+  !  exactly. quiet: no line in the log (the writes of the coupling steps).
+  subroutine Write_ICE_Exchange ( ICE_sim, hasSources, iterMOSE, quiet )
     use ICE_Advanced_Types_m, only: ICE_simulation_type
     use ICE_Global_m,         only: ngroups
     use ICE_Config_Types_m,   only: ice_sim_param => obj_sim_param
@@ -1779,6 +1780,7 @@ contains
     type(ICE_simulation_type), intent(in) :: ICE_sim
     logical,                   intent(in) :: hasSources
     integer,                   intent(in) :: iterMOSE
+    logical, optional,         intent(in) :: quiet
     type(orion_data)              :: io
     type(xvar_t),     allocatable :: xv(:)
     character(len=:), allocatable :: names, f
@@ -1814,14 +1816,20 @@ contains
       write(*,'(A,I0,A)') ' [ERROR] MI2: cannot write '//f//' (error ', err, ' of the writer)'
       error stop 1
     endif
+    if (present(quiet)) then
+      if (quiet) return
+    endif
     write(*,'(A)') ' [MI2] what ICE''s last coupling step hands the gas, for a restart: '//f
 
   end subroutine Write_ICE_Exchange
 
 
-  !> An ICE restart: the arrays of Write_ICE_Exchange read back from ICE_Exchange_File, which must be of ICE's restored
-  !  iteration and of its layout; hasSources and iterMOSE as written. Without the file the run stops.
-  subroutine Read_ICE_Exchange ( ICE_sim, hasSources, iterMOSE )
+  !> An ICE restart whose solvers resumed their counters: the arrays of Write_ICE_Exchange read back from
+  !  ICE_Exchange_File (used) when it was written at ICE's restored iteration and, when MOSE restarts too (checkMOSE), at
+  !  MOSE's (iterMOSE). Written at another iteration (the run stopped between its outputs), it is not used: a warning,
+  !  the first MOSE block then runs without ICE's source, as in a new coupled run. Without the file, or with another
+  !  layout or mesh, the run stops.
+  subroutine Read_ICE_Exchange ( ICE_sim, iterMOSE, checkMOSE, used, hasSources )
     use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_positive_inf
     use ICE_Advanced_Types_m, only: ICE_simulation_type
     use ICE_Global_m,         only: ngroups, ncond
@@ -1830,8 +1838,10 @@ contains
     use Lib_Tecplot,          only: tec_read_structured_multiblock
     implicit none
     type(ICE_simulation_type), intent(inout) :: ICE_sim
-    logical,                   intent(out)   :: hasSources
-    integer,                   intent(out)   :: iterMOSE
+    integer,                   intent(in)    :: iterMOSE
+    logical,                   intent(in)    :: checkMOSE
+    logical,                   intent(out)   :: used
+    logical,                   intent(inout) :: hasSources
     type(orion_data)              :: io
     type(xvar_t),     allocatable :: xv(:)
     character(len=:), allocatable :: f
@@ -1842,13 +1852,15 @@ contains
     logical     :: found(2), there, srate(ngroups), rate
     integer     :: b, g, v, i, j, k, err, nv, ndir
 
+    used = .false.
     f = ICE_Exchange_File()
     inquire(file=f, exist=there)
     if (.not. there) then
       write(*,'(A)') ' [ERROR] MI2: ICE restarts ([ICE-Parameters] newrun = false) and '//f//' is missing. MI2 writes '// &
-        'it at the end of a run with ICE: what ICE''s last coupling step hands the gas, which ICE''s field file does '// &
-        'not hold; without it the first MOSE block would run without ICE''s source. Restart from the OUTPUT/ of a '// &
-        'run that ended, or start ICE anew (newrun = true)'
+        'it with the fields at the end of each coupling step that leaves both solvers'' fields on disk, and at the end '// &
+        'of a run with ICE: what ICE''s last coupling step hands the gas, which ICE''s field file does not hold. Without '// &
+        'it the first MOSE block would run without ICE''s source. Restart from the OUTPUT/ of a run with ICE that '// &
+        'wrote it, or start ICE anew (newrun = true)'
       error stop 1
     endif
     err = tec_read_structured_multiblock( orion=io, filename=f, cycle=cyc, fldnames=XAUX, fldvalues=aux, fldfound=found )
@@ -1857,15 +1869,27 @@ contains
         trim(XAUX(1))//' and '//trim(XAUX(2))//')'
       error stop 1
     endif
-    if (cyc /= ice_sim_param%iter_general) then
-      write(*,'(A,I0,A,I0,A)') ' [ERROR] MI2: '//f//' was written at ICE iteration ', cyc, ' and ICE restarts from '// &
-        'iteration ', ice_sim_param%iter_general, ': the two files are not of the same end of a run'
-      error stop 1
+    if (cyc /= ice_sim_param%iter_general .or. (checkMOSE .and. nint(aux(2)) /= iterMOSE)) then
+      write(*,'(A,I0,A,I0,A,I0,A)',advance='no') ' [WARNING] MI2: '//f//' is of ICE iteration ', cyc, &
+        ' and MOSE iteration ', nint(aux(2)), ', the fields restored of ICE iteration ', ice_sim_param%iter_general
+      if (checkMOSE) then
+        write(*,'(A,I0)',advance='no') ' and MOSE iteration ', iterMOSE
+      else
+        write(*,'(A)',advance='no') ' (MOSE starts anew)'
+      endif
+      write(*,'(A)') ': the run that wrote them stopped between two of its outputs. The restart is not a continuation: '// &
+        'the file is not used, and the first MOSE block runs without ICE''s source, as in a new coupled run'
+      return
     endif
     if (size(io%block) /= ICE_sim%domain(1)%nb) call Refuse( 'its number of blocks' )
     do b = 1, size(io%block)
       if (any([io%block(b)%Ni, io%block(b)%Nj, io%block(b)%Nk] /= ICE_sim%domain(1)%blk(b)%dim(1:3))) &
         call Refuse( 'the dimensions of a block' )
+      ! the mesh: written from ICE's ORION data and read back exactly
+      if (.not. (allocated(io%block(b)%mesh) .and. allocated(ICE_sim%ODP(1)%block(b)%mesh))) &
+        call Refuse( 'the mesh of a block' )
+      if (any(shape(io%block(b)%mesh) /= shape(ICE_sim%ODP(1)%block(b)%mesh))) call Refuse( 'the mesh of a block' )
+      if (any(io%block(b)%mesh /= ICE_sim%ODP(1)%block(b)%mesh)) call Refuse( 'the mesh of a block' )
     enddo
     nv   = size(io%block(1)%vars, 1)
     ndir = size(io%varnames) - nv
@@ -1910,7 +1934,7 @@ contains
       enddo; enddo; enddo
     enddo
     hasSources = aux(1) > 0.5_R8
-    iterMOSE   = nint(aux(2))
+    used       = .true.
 
   contains
 
