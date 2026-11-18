@@ -5,6 +5,8 @@ site_url: https://open-hydra.github.io/hydra/
 repo_name: open-hydra/hydra
 repo_url: https://github.com/open-hydra/hydra
 
+docs_dir: docs
+
 # Strict mode turns these warnings into errors: a link to a missing page or anchor, an absolute link (it would
 # leave https://open-hydra.github.io/hydra/ on the published site) and a link to a directory
 validation:
@@ -21,8 +23,6 @@ validation:
 theme:
   name: material
   custom_dir: docs/overrides
-  highlightjs: true
-  code_style: monokai
   font:
     text: Roboto
     code: Fira Code
@@ -49,7 +49,7 @@ theme:
     - search.suggest
     - search.highlight
     - content.tabs.link
-    - content.code.annotation
+    - content.code.annotate
   icon:
     repo: fontawesome/brands/github
 
@@ -88,7 +88,6 @@ plugins:
   - search:
       lang: en
 
-
 extra_javascript:
   - https://cdn.jsdelivr.net/npm/mathjax@3/es5/tex-mml-chtml.js
 
@@ -99,7 +98,7 @@ nav:
   - Home: index.md
   - Overview: overview.md
 
-  - Getting Started: 
+  - Getting Started:
     - getting-started/index.md
     - Installation: getting-started/installation.md
     - Quick Start: getting-started/quick-start.md
@@ -113,7 +112,7 @@ nav:
     - Parallel Execution: user/parallel.md
     - Hydra Registry: user/registry.md
 
-  - Theory Guide: 
+  - Theory Guide:
     - theory/index.md
 
   - Verification & Validation:
