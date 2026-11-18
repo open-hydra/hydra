@@ -28,8 +28,7 @@ Hydra integrates or coordinates multiple solver-oriented projects:
 
 | Project | Website | Contribution | License |
 |---------|---------|--------------|---------|
-| MkDocs | [mkdocs.org](https://www.mkdocs.org) | Static documentation generation | BSD-2-Clause |
-| Material for MkDocs | [squidfunk.github.io/mkdocs-material](https://squidfunk.github.io/mkdocs-material/) | Documentation theme and navigation/UI components | MIT |
+| Zensical | [zensical.org](https://zensical.org) | Documentation site generation, by the team of Material for MkDocs; it reads the configuration of MkDocs (`mkdocs.yml`), with which the documentation was first written | MIT |
 
 ## Community and Institutional Context
 

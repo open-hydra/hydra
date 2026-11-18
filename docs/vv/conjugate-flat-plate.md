@@ -239,7 +239,7 @@ Each run writes `OUTPUT/hydra-wall.tec`. The suite-level scripts read the frozen
 
 <figure>
 
-  {% include "vv/images/conjugate-flat-plate-profiles.svg" %}
+  --8<-- "docs/vv/images/conjugate-flat-plate-profiles.svg"
 
 </figure>
 
@@ -258,7 +258,7 @@ Errors are measured against $\Delta T = T_B - T_\infty = 100$ K and exclude $Re_
 
 <figure>
 
-  {% include "vv/images/conjugate-flat-plate-error.svg" %}
+  --8<-- "docs/vv/images/conjugate-flat-plate-error.svg"
 
 </figure>
 
@@ -285,7 +285,7 @@ This is the check only Hydra can perform. The two variants solve the same physic
 
 <figure>
 
-  {% include "vv/images/conjugate-flat-plate-cross-solver.svg" %}
+  --8<-- "docs/vv/images/conjugate-flat-plate-cross-solver.svg"
 
 </figure>
 

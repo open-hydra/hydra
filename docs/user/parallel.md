@@ -130,7 +130,7 @@ The benchmark uses nodes with 4 sockets × 20 physical cores.
 
 <figure>
 
-  {% include "user/images/hmf-strong.svg" %}
+  --8<-- "docs/user/images/hmf-strong.svg"
 
 </figure>
 
@@ -158,7 +158,7 @@ The main bottleneck is **within-node memory bandwidth**, not inter-node communic
 
 <figure>
 
-  {% include "user/images/hmf-modes.svg" %}
+  --8<-- "docs/user/images/hmf-modes.svg"
 
 </figure>
 

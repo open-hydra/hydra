@@ -36,7 +36,9 @@ hydra/
 ├── test/                         # Framework-level validation assets
 │   ├── hydra-MF.sh
 │   └── Tw-Flat-Plate/
-└── docs/                         # Framework documentation
+├── docs/                         # Framework documentation (Zensical, mkdocs.yml)
+├── mkdocs.yml                    # Documentation site configuration
+└── requirements-docs.txt         # Zensical version the site is built with
 ```
 
 ## Framework vs Solver Responsibilities

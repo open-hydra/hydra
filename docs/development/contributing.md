@@ -70,6 +70,20 @@ figaro submodule update --remote MOSE
 - Link to solver docs for solver-deep details.
 - Avoid duplicating full solver manuals in this repository.
 
+The site is built with [Zensical](https://zensical.org) from `docs/` and `mkdocs.yml`:
+
+```bash
+pip install -r requirements-docs.txt
+zensical serve            # preview at http://localhost:8000
+zensical build --strict   # what CI checks: fails on a broken link or anchor
+```
+
+Write links relative to the page: a link that starts with `/` would leave the published
+site, and CI refuses it. A new page goes into the `nav` of `mkdocs.yml`. A figure goes inline
+with a snippet, `--8<-- "docs/<path>.svg"`, inside a `<figure>`, so it follows the light and
+dark themes. The home page is `docs/index.md`, plain Markdown styled by `docs/stylesheets/extra.css`; its
+Hydra scheme is `docs/stylesheets/hydra.css`, the same file in every code of the suite.
+
 ## Pull Request Checklist
 
 - [ ] Change scope is clear (framework vs solver repository)
