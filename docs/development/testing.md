@@ -202,7 +202,7 @@ ICE and IGLOO standalone; `p31_steady_check.sh` takes an optional list of legs.
 | `p30_al_smoke_check.sh` | aluminium burning with steam, the alumina a smoke, in both solvers |
 | `p31_steady_check.sh` | a steady run does not depend on the local time steps |
 | `p32_fusion_check.sh` | a smoke freezing: its heat of fusion reaches the gas |
-| `p33_restart_check.sh` | a MOSE + ICE restart (`newrun = false` in both) goes on as the run in one go, every value equal, once a coupling step without MOSE primes ICE's source; the plain restart's difference reported |
+| `p33_restart_check.sh` | a MOSE + ICE restart (`newrun = false` in both) goes on as the run in one go, every value equal: ICE's source alone (`JPL-Eulerian-20micron`), a burning family's smoke and the relaxation times that bound ICE's steps (`steady-ice-smoke`), the removals a time-accurate ICE stores in alternate cycles (`steady-ice-burnout`), and a run whose iterations are no multiple of `sol-diter`; each run's end written once (no residual row twice, output numbers = outputs written); a restart without `OUTPUT/part-coupling.tec` and a restart with IGLOO are refused |
 
 `run_case.sh <case> <scratch> <threads> <log> [exe]` runs one case in a scratch copy. `regen_case.sh <case> <scratch>
 <GPB|BCB|ICB ...> [--install]` regenerates a case's `INPUT/` with ATLAS (`ATLASDIR` selects the ATLAS tree) and diffs

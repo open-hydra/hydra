@@ -29,7 +29,7 @@ program hydra_MI2_program
                                      mdotHanded, nHanded, goneShare, Gone_Delivered, Gone_Stored, Gone_Clock, &
                                      Gone_To_Rate, Source_Clock, Source_Mean, &
                                      smokeIG, smokeIGOn, IGLOO_Smoke_Accumulate, IGLOO_Smoke_Deliver, nSmokeNoState, &
-                                     handRates
+                                     handRates, ICE_Exchange_File, Write_ICE_Exchange, Read_ICE_Exchange
   use hydraMI2_Build_Stamp,    only: Print_Build_Stamp
   use Lib_ORION_data,          only: orion_data
 
@@ -71,6 +71,10 @@ program hydra_MI2_program
   integer :: IGLOO_src_cycle = 0, IGLOO_src_step = 0   ! (cycle, coupling step) that produced IGLOO's sources
   integer :: ICE_src_cycle   = 0, ICE_src_step   = 0   ! same for ICE
   integer :: frozenPrintIter = -1                      ! cumulative MOSE iteration of the last frozen notice
+  !> The solver made the iteration the schedule gives as its last of the run (its postprocess is the end-of-run output)
+  logical :: MOSE_ended = .false., ICE_ended = .false.
+  logical :: lastIter
+  integer :: itermaxKept
   logical :: eulCoupling       = .false.   ! true when this cycle uses the Eulerian coupling mode
   !> Coupling mode in force when the sources MOSE is about to consume were produced.
   logical :: IGLOO_src_eulerian = .false.
@@ -123,6 +127,39 @@ program hydra_MI2_program
 
   ! ICE and IGLOO ingest the gas field as ORION data; each is set up only when enabled
   if (hydra_MI2_obj%run_ICE)   call ICE%setup( ICE_simulation, MOSE_simulation%IOfield(1) )
+  ! IGLOO keeps neither its parcels nor the sources it hands the gas from one run to the next: a restart would begin
+  ! without them
+  if ( hydra_MI2_obj%run_IGLOO ) then
+    block
+      logical :: restarting
+      restarting = .not. MOSE_obj_sim_param%newrun
+      if ( hydra_MI2_obj%run_ICE ) restarting = restarting .or. .not. ICE_obj_sim_param%newrun
+      if ( restarting ) then
+        write(*,'(A)') ' [ERROR] MI2: newrun = false with IGLOO: IGLOO has no restart. It keeps neither its parcels '// &
+          'nor the sources it hands the gas from one run to the next, so the restarted run would begin without '// &
+          'IGLOO''s source and would not go on as the run in one go. Run a case with IGLOO from its start (newrun = '// &
+          'true in [MOSE-Parameters] and [ICE-Parameters])'
+        error stop 1
+      endif
+    end block
+  endif
+  ! an ICE restart takes back what ICE's last coupling step handed the gas and left for its next, not in its field file
+  if ( hydra_MI2_obj%run_ICE ) then
+    if ( .not. ICE_obj_sim_param%newrun ) then
+      block
+        integer :: iterM
+        call Read_ICE_Exchange( ICE_simulation, ICE_has_sources, iterM )
+        if ( .not. MOSE_obj_sim_param%newrun .and. iterM /= MOSE_obj_sim_param%iter_general ) then
+          write(*,'(A,I0,A,I0,A)') ' [ERROR] MI2: '//ICE_Exchange_File()//' was written at MOSE iteration ', iterM, &
+            ' and MOSE restarts from iteration ', MOSE_obj_sim_param%iter_general, ': the files are not of the same '// &
+            'end of a run'
+          error stop 1
+        endif
+        write(*,'(A,I0,A,I0,A)') ' [MI2] ICE restarts with what its last coupling step handed the gas, from '// &
+          ICE_Exchange_File()//' (ICE iteration ', ICE_obj_sim_param%iter_general, ', MOSE iteration ', iterM, ')'
+      end block
+    endif
+  endif
   ! what the coupler hands between ICE and the gas or IGLOO (the removals, IGLOO's smoke): rates when MOSE or ICE steps
   ! in pseudo-time, so that a converged steady field holds per unit time; amounts when both are time-accurate
   handRates = hydra_MI2_obj%run_ICE .and. &
@@ -317,9 +354,21 @@ program hydra_MI2_program
       elseif ( hydra_MI2_obj%run_ICE .and. ICE_has_sources .and. hydra_obj_sim_param%MOSE_iter(n_cycle) > 0 ) then
         goneShare = 1._R8 / real(hydra_obj_sim_param%MOSE_iter(n_cycle), R8)
       endif
+      if ( MOSE_ended .and. hydra_obj_sim_param%MOSE_iter(n_cycle) > 0 ) call Resumed( 'MOSE', MOSE_ended )
       do i_MOSE = 1, hydra_obj_sim_param%MOSE_iter(n_cycle)
         if ( MOSE_obj_sim_param%TODO <= 2 ) then
+          ! the run's last MOSE iteration ends on MOSE's own iteration limit (TODO = 3), as a run of MOSE alone: its
+          ! postprocess is the end-of-run output
+          lastIter = Last_Of_Run( hydra_obj_sim_param%MOSE_iter, i_MOSE )
+          if ( lastIter ) then
+            itermaxKept = MOSE_simulation%domain(1)%itermax
+            MOSE_simulation%domain(1)%itermax = MOSE_obj_sim_param%iter_from_call + 1
+          endif
           call MOSE%solve( MOSE_simulation, MOSE_external_routine )
+          if ( lastIter ) then
+            MOSE_simulation%domain(1)%itermax = itermaxKept
+            MOSE_ended = .true.
+          endif
           nRunMOSE = nRunMOSE + 1
           if ( smokeIGOn .and. hydra_MI2_obj%run_IGLOO .and. IGLOO_has_sources .and. .not. IGLOO_src_eulerian ) &
             call IGLOO_Smoke_Accumulate( MOSE_simulation%domain(1), IGLOO )
@@ -413,9 +462,20 @@ program hydra_MI2_program
         endif
 
         t_ice0 = ICE_simulation%domain(1)%time
+        if ( ICE_ended .and. hydra_MI2_obj%ICE_iter(n_cycle) > 0 ) call Resumed( 'ICE', ICE_ended )
         do i_ICE = 1, hydra_MI2_obj%ICE_iter(n_cycle)
           if ( ICE_obj_sim_param%TODO <= 2 ) then
+            ! the run's last ICE iteration ends on ICE's own iteration limit, as MOSE's
+            lastIter = Last_Of_Run( hydra_MI2_obj%ICE_iter, i_ICE )
+            if ( lastIter ) then
+              itermaxKept = ICE_simulation%domain(1)%itermax
+              ICE_simulation%domain(1)%itermax = ICE_obj_sim_param%iter_from_call + 1
+            endif
             call ICE%solve( ICE_simulation, Dummy_Function )
+            if ( lastIter ) then
+              ICE_simulation%domain(1)%itermax = itermaxKept
+              ICE_ended = .true.
+            endif
             ! a steady run: the time the removals of this iteration were made over
             if ( handRates ) call Gone_Clock( ICE_simulation%domain(1) )
             ! a time-accurate ICE: the gas takes the block's rates, the steps' weighted by their dt
@@ -455,13 +515,16 @@ program hydra_MI2_program
   ! ---------------------------------------------------------------------------
   ! Final postprocess
   ! ---------------------------------------------------------------------------
+  ! each solver's end-of-run output (TODO = 3): its last iteration's rows and the solution due there, written once, then
+  ! its final solution
   write(*,*)
   write(*,'(A)') ' HYDRA-MI2: FINAL POSTPROCESS'
-  MOSE_obj_sim_param%TODO = 2
+  MOSE_obj_sim_param%TODO = 3
   call MOSE%postprocess( MOSE_simulation )
   if (hydra_MI2_obj%run_ICE) then
-    ICE_obj_sim_param%TODO = 2
+    ICE_obj_sim_param%TODO = 3
     call ICE%postprocess( ICE_simulation )
+    call Write_ICE_Exchange( ICE_simulation, ICE_has_sources, MOSE_obj_sim_param%iter_general )
   endif
   if (hydra_MI2_obj%run_IGLOO) call IGLOO%writeout()
 
@@ -594,6 +657,32 @@ contains
   end subroutine MOSE_external_routine
 
 
+  !> Whether iteration i of the current coupling step is the solver's last of the run: the step ends its cycle, i is
+  !  the cycle's X-iter and no later cycle advances the solver (the schedule as last read).
+  logical function Last_Of_Run ( Xiter, i )
+    implicit none
+    integer, intent(in) :: Xiter(:), i
+
+    Last_Of_Run = n_couple >= hydra_obj_sim_param%N_Coupling(n_cycle) .and. i == Xiter(n_cycle) .and. &
+                  all( Xiter(n_cycle+1:N_cycles) <= 0 )
+
+  end function Last_Of_Run
+
+
+  !> A re-read of input.ini that advances a solver after the iteration the schedule had made its last: the run goes on,
+  !  that iteration's rows and due solution were not written.
+  subroutine Resumed ( solver, ended )
+    implicit none
+    character(len=*), intent(in)    :: solver
+    logical,          intent(inout) :: ended
+
+    write(*,'(A)') ' [WARNING] MI2: input.ini, read again, advances '//solver//' after the iteration the schedule had '// &
+      'made its last: the rows and the solution due at that iteration were not written'
+    ended = .false.
+
+  end subroutine Resumed
+
+
   !> ICE accepts an external routine but never calls it; this satisfies the argument list.
   subroutine Dummy_Function
   end subroutine Dummy_Function
@@ -623,10 +712,13 @@ contains
       ' [MI2] IGLOO source FROZEN this cycle (IGLOO-iter = 0): the gas keeps the sources produced in cycle ', &
       IGLOO_src_cycle, ', coupling step ', IGLOO_src_step, '  [cycle ', n_cycle, ', step ', n_couple, &
       ', MOSE iter ', iterNow, ']'
-    if ( iceFrozen ) write(*,'(A,I0,A,I0,A,I0,A,I0,A,I0,A)') &
+    if ( iceFrozen .and. ICE_src_cycle > 0 ) write(*,'(A,I0,A,I0,A,I0,A,I0,A,I0,A)') &
       ' [MI2] ICE source FROZEN this cycle (ICE-iter = 0): the gas keeps the sources produced in cycle ', &
       ICE_src_cycle, ', coupling step ', ICE_src_step, '  [cycle ', n_cycle, ', step ', n_couple, &
       ', MOSE iter ', iterNow, ']'
+    if ( iceFrozen .and. ICE_src_cycle == 0 ) write(*,'(A,I0,A,I0,A,I0,A)') &
+      ' [MI2] ICE source FROZEN this cycle (ICE-iter = 0): the gas keeps the sources read at the restart  [cycle ', &
+      n_cycle, ', step ', n_couple, ', MOSE iter ', iterNow, ']'
 
   end subroutine Report_Frozen_Sources
 

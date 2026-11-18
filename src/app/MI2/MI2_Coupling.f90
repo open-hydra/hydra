@@ -31,6 +31,7 @@ module hydraMI2_Mod_Coupling
   public :: Gone_Clock
   public :: Source_Clock, Source_Mean
   public :: Gone_To_Rate
+  public :: ICE_Exchange_File, Write_ICE_Exchange, Read_ICE_Exchange
 
   !> Under-relaxation store: the previous coupling step's injected residual, per block.
   type, public :: resField
@@ -98,6 +99,16 @@ module hydraMI2_Mod_Coupling
   !> Inflow mass flow MOSExIGLOO handed IGLOO at its last call [kg/s], and the number of face records.
   real(R8), public :: mdotHanded = 0._R8
   integer,  public :: nHanded    = 0
+
+  !> A variable of the file a run with ICE ends with (ICE_Exchange_File): its name, what it holds (XS source, XH heat,
+  !  XB birth, XG the removals' store, XU the relaxation time, XR a smoke family's srate, XA and XT goneRate's a and t),
+  !  family, component.
+  type :: xvar_t
+    character(len=32) :: name = ''
+    integer :: what = 0, g = 0, n = 0
+  end type xvar_t
+  integer, parameter :: XS = 1, XH = 2, XB = 3, XG = 4, XR = 5, XA = 6, XT = 7, XU = 8
+  character(len=24), parameter :: XAUX(2) = [character(len=24) :: 'MI2_ICE_HAS_SOURCES', 'MI2_MOSE_ITERATION']
 
 contains
 
@@ -1658,6 +1669,275 @@ contains
     enddo
 
   end subroutine ICExMOSE
+
+
+  !> What ICE's last coupling step hands the gas and leaves for its next step, kept for a restart: the source of its last
+  !  step's stages (or block), and the relaxation times and smoke rates its next step starts from, are not functions of
+  !  the state ICE writes, so its field file cannot give them back.
+  function ICE_Exchange_File () result(f)
+    use ICE_Global_m, only: ICE_phase_prefix
+    implicit none
+    character(len=:), allocatable :: f
+
+    f = 'OUTPUT/'//trim(ICE_phase_prefix)//'coupling.tec'
+
+  end function ICE_Exchange_File
+
+
+  !> The variables of ICE_Exchange_File, family by family: source, heat, birth, the removals' store, the relaxation time
+  !  that bounds the next step; srate where a smoke family holds one (srate(g)), goneRate where the coupler keeps it.
+  subroutine Exchange_Vars ( srate, rate, xv )
+    use ICE_Global_m, only: ngroups, ncond
+    implicit none
+    logical,                   intent(in)  :: srate(:), rate
+    type(xvar_t), allocatable, intent(out) :: xv(:)
+    integer :: g, n
+
+    allocate(xv(0))
+    do g = 1, ngroups
+      do n = 1, ncond(g)
+        call Add( 'S', XS, n )
+      enddo
+      call Add( 'H', XH, 0 )
+      do n = 1, 5
+        call Add( 'B', XB, n )
+      enddo
+      do n = 1, 5
+        call Add( 'G', XG, n )
+      enddo
+      call Add( 'TAU', XU, 0 )
+      if (srate(g)) then
+        do n = 1, ncond(g)
+          call Add( 'R', XR, n )
+        enddo
+      endif
+      if (rate) then
+        do n = 1, 5
+          call Add( 'GA', XA, n )
+        enddo
+        call Add( 'GT', XT, 0 )
+      endif
+    enddo
+
+  contains
+
+    subroutine Add ( tag, what, n )
+      character(len=*), intent(in) :: tag
+      integer,          intent(in) :: what, n
+      character(len=32) :: nm
+
+      if (n > 0) then
+        write(nm,'(A,I0,A,I0)') tag, n, '_p', g
+      else
+        write(nm,'(A,A,I0)') tag, '_p', g
+      endif
+      xv = [xv, xvar_t(nm, what, g, n)]
+
+    end subroutine Add
+
+  end subroutine Exchange_Vars
+
+
+  !> The value of the exchange variable v in cell (i,j,k) of block b; a smoke family without srate there holds none, an
+  !  infinite relaxation time (no drag) is written -1.
+  function Exchange_Value ( ICE_domain, b, v, i, j, k ) result(x)
+    use ICE_Advanced_Types_m, only: ICE_domain_type
+    implicit none
+    type(ICE_domain_type), intent(in) :: ICE_domain
+    integer,               intent(in) :: b, i, j, k
+    type(xvar_t),          intent(in) :: v
+    real(R8) :: x
+
+    x = 0._R8
+    associate (cp => ICE_domain%blk(b)%cond_phase(v%g))
+      select case (v%what)
+      case (XS); x = cp%source(v%n,i,j,k)
+      case (XH); x = cp%heat(i,j,k)
+      case (XB); x = cp%birth(v%n,i,j,k)
+      case (XG); x = cp%gone(v%n,i,j,k)
+      case (XU); x = cp%tau(i,j,k)
+                 if (x > huge(x)) x = -1._R8
+      case (XR); if (allocated(cp%srate)) x = cp%srate(v%n,i,j,k)
+      case (XA); x = goneRate(b)%a(v%n,v%g,i,j,k)
+      case (XT); x = goneRate(b)%t(v%g,i,j,k)
+      end select
+    end associate
+
+  end function Exchange_Value
+
+
+  !> At the end of a run with ICE: the arrays ICExMOSE and Gone_To_Rate read and those ICE's next step starts from, to
+  !  ICE_Exchange_File, with ICE's iteration (CYCLE), whether ICE has produced sources and MOSE's iteration. Tecplot ASCII
+  !  through ORION: 17 digits, read back exactly.
+  subroutine Write_ICE_Exchange ( ICE_sim, hasSources, iterMOSE )
+    use ICE_Advanced_Types_m, only: ICE_simulation_type
+    use ICE_Global_m,         only: ngroups
+    use ICE_Config_Types_m,   only: ice_sim_param => obj_sim_param
+    use Lib_ORION_data,       only: orion_data, copyORION
+    use Lib_Tecplot,          only: tec_write_structured_multiblock
+    implicit none
+    type(ICE_simulation_type), intent(in) :: ICE_sim
+    logical,                   intent(in) :: hasSources
+    integer,                   intent(in) :: iterMOSE
+    type(orion_data)              :: io
+    type(xvar_t),     allocatable :: xv(:)
+    character(len=:), allocatable :: names, f
+    logical :: srate(ngroups)
+    integer :: b, g, v, i, j, k, err
+
+    do g = 1, ngroups
+      srate(g) = any([(allocated(ICE_sim%domain(1)%blk(b)%cond_phase(g)%srate), b = 1, ICE_sim%domain(1)%nb)])
+    enddo
+    call Exchange_Vars( srate, allocated(goneRate), xv )
+    call copyORION( ICE_sim%ODP(1), io )
+    io%tec%format = 'ascii'; io%tec%node = .false.; io%tec%bc = .false.
+    names = ''
+    do v = 1, size(xv)
+      names = names//' "'//trim(xv(v)%name)//'"'
+    enddo
+    do b = 1, size(io%block)
+      if (allocated(io%block(b)%vars)) deallocate(io%block(b)%vars)
+      allocate(io%block(b)%vars(size(xv), io%block(b)%Ni, io%block(b)%Nj, io%block(b)%Nk))
+      do k = 1, io%block(b)%Nk
+      do j = 1, io%block(b)%Nj
+      do i = 1, io%block(b)%Ni
+        do v = 1, size(xv)
+          io%block(b)%vars(v,i,j,k) = Exchange_Value( ICE_sim%domain(1), b, xv(v), i, j, k )
+        enddo
+      enddo; enddo; enddo
+    enddo
+    f = ICE_Exchange_File()
+    err = tec_write_structured_multiblock( orion=io, varnames=names, filename=f, &
+                                           cycle=int(ice_sim_param%iter_general, I4), fldnames=XAUX, &
+                                           fldvalues=[merge(1._R8, 0._R8, hasSources), real(iterMOSE, R8)] )
+    if (err /= 0) then
+      write(*,'(A,I0,A)') ' [ERROR] MI2: cannot write '//f//' (error ', err, ' of the writer)'
+      error stop 1
+    endif
+    write(*,'(A)') ' [MI2] what ICE''s last coupling step hands the gas, for a restart: '//f
+
+  end subroutine Write_ICE_Exchange
+
+
+  !> An ICE restart: the arrays of Write_ICE_Exchange read back from ICE_Exchange_File, which must be of ICE's restored
+  !  iteration and of its layout; hasSources and iterMOSE as written. Without the file the run stops.
+  subroutine Read_ICE_Exchange ( ICE_sim, hasSources, iterMOSE )
+    use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_positive_inf
+    use ICE_Advanced_Types_m, only: ICE_simulation_type
+    use ICE_Global_m,         only: ngroups, ncond
+    use ICE_Config_Types_m,   only: ice_sim_param => obj_sim_param
+    use Lib_ORION_data,       only: orion_data
+    use Lib_Tecplot,          only: tec_read_structured_multiblock
+    implicit none
+    type(ICE_simulation_type), intent(inout) :: ICE_sim
+    logical,                   intent(out)   :: hasSources
+    integer,                   intent(out)   :: iterMOSE
+    type(orion_data)              :: io
+    type(xvar_t),     allocatable :: xv(:)
+    character(len=:), allocatable :: f
+    integer,          allocatable :: col(:)
+    character(len=32) :: nm
+    integer(I4) :: cyc
+    real(R8)    :: aux(2)
+    logical     :: found(2), there, srate(ngroups), rate
+    integer     :: b, g, v, i, j, k, err, nv, ndir
+
+    f = ICE_Exchange_File()
+    inquire(file=f, exist=there)
+    if (.not. there) then
+      write(*,'(A)') ' [ERROR] MI2: ICE restarts ([ICE-Parameters] newrun = false) and '//f//' is missing. MI2 writes '// &
+        'it at the end of a run with ICE: what ICE''s last coupling step hands the gas, which ICE''s field file does '// &
+        'not hold; without it the first MOSE block would run without ICE''s source. Restart from the OUTPUT/ of a '// &
+        'run that ended, or start ICE anew (newrun = true)'
+      error stop 1
+    endif
+    err = tec_read_structured_multiblock( orion=io, filename=f, cycle=cyc, fldnames=XAUX, fldvalues=aux, fldfound=found )
+    if (err /= 0 .or. .not. all(found)) then
+      write(*,'(A,I0,A)') ' [ERROR] MI2: '//f//' is not a file MI2 wrote (read error ', err, ', or no records '// &
+        trim(XAUX(1))//' and '//trim(XAUX(2))//')'
+      error stop 1
+    endif
+    if (cyc /= ice_sim_param%iter_general) then
+      write(*,'(A,I0,A,I0,A)') ' [ERROR] MI2: '//f//' was written at ICE iteration ', cyc, ' and ICE restarts from '// &
+        'iteration ', ice_sim_param%iter_general, ': the two files are not of the same end of a run'
+      error stop 1
+    endif
+    if (size(io%block) /= ICE_sim%domain(1)%nb) call Refuse( 'its number of blocks' )
+    do b = 1, size(io%block)
+      if (any([io%block(b)%Ni, io%block(b)%Nj, io%block(b)%Nk] /= ICE_sim%domain(1)%blk(b)%dim(1:3))) &
+        call Refuse( 'the dimensions of a block' )
+    enddo
+    nv   = size(io%block(1)%vars, 1)
+    ndir = size(io%varnames) - nv
+    rate = Column('GA1_p1') > 0
+    do g = 1, ngroups
+      write(nm,'(A,I0)') 'R1_p', g
+      srate(g) = Column(nm) > 0
+    enddo
+    call Exchange_Vars( srate, rate, xv )
+    if (size(xv) /= nv) call Refuse( 'its variables' )
+    allocate(col(size(xv)))
+    do v = 1, size(xv)
+      col(v) = Column(xv(v)%name)
+      if (col(v) == 0) call Refuse( 'its variables ('//trim(xv(v)%name)//' missing)' )
+    enddo
+
+    if (rate) call Gone_Rate_Setup( ICE_sim%domain(1) )
+    do b = 1, ICE_sim%domain(1)%nb
+      do g = 1, ngroups
+        if (srate(g) .and. .not. allocated(ICE_sim%domain(1)%blk(b)%cond_phase(g)%srate)) &
+          allocate(ICE_sim%domain(1)%blk(b)%cond_phase(g)%srate(ncond(g), ICE_sim%domain(1)%blk(b)%dim(1), &
+                   ICE_sim%domain(1)%blk(b)%dim(2), ICE_sim%domain(1)%blk(b)%dim(3)))
+      enddo
+      do k = 1, ICE_sim%domain(1)%blk(b)%dim(3)
+      do j = 1, ICE_sim%domain(1)%blk(b)%dim(2)
+      do i = 1, ICE_sim%domain(1)%blk(b)%dim(1)
+        do v = 1, size(xv)
+          associate (cp => ICE_sim%domain(1)%blk(b)%cond_phase(xv(v)%g), x => io%block(b)%vars(col(v),i,j,k), &
+                     n => xv(v)%n, g_ => xv(v)%g)
+            select case (xv(v)%what)
+            case (XS); cp%source(n,i,j,k)       = x
+            case (XH); cp%heat(i,j,k)           = x
+            case (XB); cp%birth(n,i,j,k)        = x
+            case (XG); cp%gone(n,i,j,k)         = x
+            case (XU); cp%tau(i,j,k)            = merge(ieee_value(1._R8, ieee_positive_inf), x, x == -1._R8)
+            case (XR); cp%srate(n,i,j,k)        = x
+            case (XA); goneRate(b)%a(n,g_,i,j,k) = x
+            case (XT); goneRate(b)%t(g_,i,j,k)   = x
+            end select
+          end associate
+        enddo
+      enddo; enddo; enddo
+    enddo
+    hasSources = aux(1) > 0.5_R8
+    iterMOSE   = nint(aux(2))
+
+  contains
+
+    !> The column of variable name among the file's variables, 0 if absent.
+    integer function Column ( name )
+      character(len=*), intent(in) :: name
+      integer :: c
+
+      Column = 0
+      do c = 1, nv
+        if (trim(io%varnames(ndir+c)) == trim(name)) then
+          Column = c
+          return
+        endif
+      enddo
+
+    end function Column
+
+    subroutine Refuse ( what )
+      character(len=*), intent(in) :: what
+
+      write(*,'(A)') ' [ERROR] MI2: '//f//' does not match the ICE set-up of this run: '//what
+      error stop 1
+
+    end subroutine Refuse
+
+  end subroutine Read_ICE_Exchange
 
 
 end module hydraMI2_Mod_Coupling

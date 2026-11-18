@@ -173,7 +173,14 @@ Each coupling step runs, in this order:
    sources.
 
 A cycle ends after `N-coupling` coupling steps. A solver's own stopping condition (`res-threshold`, ...) ends only
-the current block of its iterations, never the cycle. After the last cycle every solver writes its final solution.
+the current block of its iterations, never the cycle.
+
+The run ends as a run of each solver alone ends. The last iteration the schedule gives a solver (the last of its
+cycle's last coupling step, no later cycle advancing it) is its last: MI2 sets the solver's own iteration limit there.
+After the last cycle each solver writes its end-of-run output once: the residual and probe rows of its last iteration,
+the solution due there (with its output number), then its final solution, `OUTPUT/<prefix>field.tec`, whatever
+`sol-diter`. Each solver's output number is then the number of outputs it wrote, and a run whose iterations are no
+multiple of `sol-diter` can be restarted from its end.
 
 ### Frozen sources
 
@@ -184,6 +191,8 @@ each time the cumulative MOSE iteration count crosses a multiple of `[MOSE-IO] s
 ```text
  [MI2] IGLOO source FROZEN this cycle (IGLOO-iter = 0): the gas keeps the sources produced in cycle 1, coupling step 3  [cycle 2, step 1, MOSE iter 150]
 ```
+
+After an ICE [restart](#restart), ICE's sources not yet renewed are those read at the restart, and the notice says so.
 
 ### Under-relaxation
 
@@ -246,6 +255,31 @@ Every `[HYDRA-IO] ini-diter` coupling steps (default 1000) the values of the `[H
 long run can be steered without a restart; the number of values of a list is not. The re-read checks the registry
 (required keys and the allowed range of each scalar key): `N-coupling` and `time-accurate` must then be present (`[ERROR] Required parameter not set: <key>`); `FUSS-iter` and
 the multigrid levels are not required. `[MI2-Coupling]` and the phase keys are read once, at start.
+
+### Restart
+
+`newrun = false` in `[MOSE-Parameters]` and `[ICE-Parameters]` starts each solver from the files a run left in
+`OUTPUT/`: MOSE from `gas-field.tec`, ICE from `<prefix>field.tec`, each with its iteration and output counters. The
+schedule of the restarted run is what remains of the run: a run of four coupling steps, and a run of two restarted for
+two more, end with the same files, the output numbers and the residual histories included. ICE sets the components a mesh holds at zero (`w` on a 2-D mesh) to zero at every
+set-up, so the round-off a run leaves there is not carried over.
+
+What ICE's last coupling step hands the gas is not in its field file: it is the source of the stages of ICE's last step
+(averaged over its last block when ICE is time-accurate), not a function of the state ICE writes; nor is what ICE's next
+step starts from in a coupled run, the relaxation times that bound its steps and a smoke family's birth rate. At the end
+of every run with ICE, MI2 writes them to `OUTPUT/<prefix>coupling.tec` (Tecplot ASCII, 17 digits; per family the
+source, the heat, the smoke's birth, the removals' store, the relaxation time and, where they exist, a smoke family's
+birth rate and the removals' rate; ICE's iteration as `CYCLE`, MOSE's as `MI2_MOSE_ITERATION`), and an ICE restart reads
+them back before the first MOSE block:
+
+```text
+ [MI2] ICE restarts with what its last coupling step handed the gas, from OUTPUT/part-coupling.tec (ICE iteration 100, MOSE iteration 200)
+```
+
+The restart stops when the file is missing, when it was written at another ICE iteration than the field ICE restarts
+from (or another MOSE iteration than MOSE's, when MOSE restarts too), or when its blocks or variables do not match
+ICE's set-up. IGLOO has no restart: it keeps neither its parcels nor the sources it hands the gas, so `newrun = false`
+in either solver of a case that runs IGLOO stops the run.
 
 ---
 
@@ -484,6 +518,8 @@ table quotes their characteristic words.
 | setup | `burns into the smoke ... and its row of INPUT/<name>-models.txt gives no d-smoke`; `which is not a material of ICE's phase`; `is born in the phase ..., and ICE runs the phase ...`; `has <n> families in ICE`; `whose closure is ...`; `evaporates or burns in ICE: a smoke does neither` | [smoke](#smoke) |
 | setup | `the smoke has no family: ICE is not run`; `relaxation = true blends two coupling steps` | smoke of an IGLOO material |
 | setup | `cycle <c> advances MOSE and ICE together with time-accurate on` | [time modes](#steady-and-time-accurate-runs) |
+| setup | `newrun = false with IGLOO: IGLOO has no restart` | [restart](#restart) |
+| setup | `ICE restarts ([ICE-Parameters] newrun = false) and OUTPUT/<prefix>coupling.tec is missing`; `... was written at ICE iteration` (or `MOSE iteration`); `... does not match the ICE set-up of this run`; `... is not a file MI2 wrote` | [restart](#restart) |
 | step | `MOSExIGLOO: IGLOO gasblock <b> extends beyond MOSE's ghosted range` | the gas and particle meshes disagree |
 | step | `record <i> of INPUT/<gas>-bc.txt is of block ...` | gas boundary records out of order |
 | step | `particles injected in proportion to the gas mass flow (particle BC 401) on a gas boundary of kind ...` | |
@@ -504,6 +540,7 @@ Warnings and notes do not stop the run:
 | `[WARNING] MI2: material ... burns as ... in ICE and as ... in IGLOO` | a section default decided one model |
 | `[WARNING] MI2: in <n> cells ... a smoke was born with no parcel's state` | smoke born at rest, 298.15 K |
 | `[MI2] ... source FROZEN this cycle` | [frozen sources](#frozen-sources) |
+| `[WARNING] MI2: input.ini, read again, advances <solver> after the iteration the schedule had made its last` | the rows and the solution due at that iteration were not written ([one coupling step](#one-coupling-step)) |
 | `[MI2] WARNING: the consumed-species floor guard clamped <n> (cell,species) extractions` | end of run: a mass-limited reaction |
 | `[WARNING] <n> coupling step(s) used the EULERIAN branch` | end of run: those steps are not in the balances |
 
