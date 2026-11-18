@@ -35,12 +35,13 @@
 # or ICE iterating in that cycle with its own key on), one warning and a completed run otherwise, nothing when no cycle
 # runs IGLOO:
 #  igloo       : test/evap-box-ta (MOSE time-accurate + IGLOO) restarted: stops before any iteration, names the way out
-#                (the field as the initial condition, newrun = true), the fields as part 1 left them;
+#                (the field as the initial condition, newrun = true), the fields as part 1 left them; the way out
+#                followed (each field copied as the message says, newrun = true) runs clean (igloo-way-out);
 #  igloo-steady: test/evap-box (MOSE steady + IGLOO) restarted: one warning, the run completes;
 #  igloo-off   : test/evap-box-ta with IGLOO-iter 0: no stop, no warning;
 #  mixed       : test/igloo-al-box with MOSE steady and ICE time-accurate (MOSE + IGLOO, then ICE alone): IGLOO in
 #                MOSE's steady cycle, one warning, the run completes (ICE's hand-off read); with IGLOO moved to ICE's
-#                cycle (mixed-ice) it stops on ICE's key;
+#                cycle (mixed-ice) it stops on ICE's key, and its way out (both fields) runs clean;
 #  3solver     : test/JPL-3solver-20micron (steady), 1 coupling step restarted for 1 more: ICE's hand-off read, IGLOO's
 #                warning, the run completes.
 #   usage: p33_restart_check.sh [scratch-root] [exe]
@@ -110,6 +111,16 @@ aux_ge() { [ "$(inum "$(auxv "$1" "$2")")" -ge "$3" ]; }
 aux_eq() { [ "$(inum "$(auxv "$1" "$2")")" -eq "$3" ]; }
 aux_mid() { local v; v=$(inum "$(auxv "$1" "$2")"); [ "$v" -ge "$3" ] && [ $((v % $4)) -eq $(($4 / 2)) ]; }
 row_ge() { [ "$(lastrow "$1")" -ge "$2" ]; }
+way_out() {  # way_out <name> <stopped run dir>: follow the stop's way out in a copy (each 'copy <field> to <ic>' of its
+             # message, newrun = false lines removed, OUTPUT/ emptied) and expect a clean new run
+  local d=$T/$1 log=$T/$1.log pairs n=0 a b
+  rm -rf "$d"; cp -rp "$2" "$d"; rm -rf "$d/OUTPUT"; mkdir -p "$d/OUTPUT"
+  pairs=$(grep -o 'OUTPUT/[^ ]*field[^ ]* to INPUT/[^ ]*ic\.[a-z]*' "$T/$(basename "$2").log" | sed 's/ to / /')
+  while read -r a b; do [ -n "$a" ] && cp -p "$2/$a" "$d/$b" && n=$((n+1)); done <<< "$pairs"
+  sed -i '/^newrun = false$/d' "$d/input.ini"
+  go "$d" "$log"; local rc=$?
+  if [ $n -ge 1 ]; then clean "$1 ($n field(s) as initial condition, newrun = true)" "$log" $rc
+  else ko "$1: the stop names no field to copy"; fi; }
 killed_run() {  # killed_run <dir> <log> <test command...>: start the run, kill -9 its PID once the test holds
   ( cd "$1" && mkdir -p OUTPUT && ls INPUT/*phase.txt > filelist.txt && ulimit -s unlimited &&
     export KMP_STACKSIZE=100M OMP_NUM_THREADS=1 && exec "$EXE" > "$2" 2>&1 ) &
@@ -211,6 +222,7 @@ if grep -qF 'start a new run from them: copy OUTPUT/gas-field.tec to INPUT/gas-i
    cmp -s "$p/gas-residual-history.dat" "$z/gas-residual-history.dat"
 then ok "igloo: the stop names the way out (OUTPUT/gas-field.tec to INPUT/gas-ic.tec, newrun = true); gas-field.tec and gas-residual-history.dat as part 1 left them"
 else ko "igloo: the way out is not named, or the stopped run changed the fields (field equal: $(cmp -s "$p/gas-field.tec" "$z/gas-field.tec" && echo yes || echo no))"; fi
+way_out igloo-way-out "$T/igloo"
 d=$(mk "$H/test/evap-box" igloo-steady-part1 1 50 0 50 1); "$RUN" "$d" "$d/run" 1 "$T/igloo-steady-part1.log" "$EXE" > /dev/null 2>&1
 clean igloo-steady-part1 "$T/igloo-steady-part1.log" $?
 restart "$T/igloo-steady-part1/run" "$T/igloo-steady" 1 50 0
@@ -234,6 +246,7 @@ rm -rf "$T/mixed-ice-src"; cp -rp "$T/mixed-part1/run" "$T/mixed-ice-src"
 sed -i 's/^IGLOO-iter *=.*/IGLOO-iter    = 0 1/' "$T/mixed-ice-src/input.ini"
 restart "$T/mixed-ice-src" "$T/mixed-ice" "1 1" "50 0" "0 1"; rc=$?; rm -rf "$T/mixed-ice-src"
 refused mixed-ice "$T/mixed-ice.log" $rc "$IGS 2, a time-accurate cycle: ICE iterates in it in physical time ([ICE-Numerics] time-accurate = true)"
+way_out mixed-ice-way-out "$T/mixed-ice"
 
 # --- 3solver: MOSE + ICE + IGLOO, 1 coupling step restarted for 1 more ---
 d=$(mk "$H/test/JPL-3solver-20micron" 3solver-part1 1 $M $K $M $K); "$RUN" "$d" "$d/run" 1 "$T/3solver-part1.log" "$EXE" > /dev/null 2>&1
