@@ -1,7 +1,22 @@
+# Built with Zensical (zensical build), which reads this file: see requirements-docs.txt. MkDocs with Material for
+# MkDocs and the macros plugin builds it too
 site_name: hydra Documentation
 site_url: https://open-hydra.github.io/hydra/
 repo_name: open-hydra/hydra
 repo_url: https://github.com/open-hydra/hydra
+
+# Strict mode turns these warnings into errors: a link to a missing page or anchor, an absolute link (it would
+# leave https://open-hydra.github.io/hydra/ on the published site) and a link to a directory
+validation:
+  nav:
+    omitted_files: warn
+    not_found: warn
+    absolute_links: warn
+  links:
+    not_found: warn
+    absolute_links: warn
+    unrecognized_links: warn
+    anchors: warn
 
 theme:
   name: material
@@ -69,7 +84,8 @@ markdown_extensions:
 
 # Plugins
 plugins:
-  - macros
+  - macros:
+      on_error_fail: true      # a missing file (a figure) fails the build
   - search:
       lang: en
 
