@@ -79,8 +79,9 @@ zensical build --strict   # what CI checks: fails on a broken link or anchor
 ```
 
 Write links relative to the page: a link that starts with `/` would leave the published
-site, and CI refuses it. A new page goes into the `nav` of `mkdocs.yml`. The home page is
-the template `docs/overrides/home.html`.
+site, and CI refuses it. A new page goes into the `nav` of `mkdocs.yml`. A figure goes inline
+with a snippet, `--8<-- "docs/<path>.svg"`, inside a `<figure>`, so it follows the light and
+dark themes. The home page is the template `docs/overrides/home.html`.
 
 ## Pull Request Checklist
 

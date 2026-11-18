@@ -1,5 +1,5 @@
 # Built with Zensical (zensical build), which reads this file: see requirements-docs.txt. MkDocs with Material for
-# MkDocs and the macros plugin builds it too
+# MkDocs builds it too
 site_name: hydra Documentation
 site_url: https://open-hydra.github.io/hydra/
 repo_name: open-hydra/hydra
@@ -60,7 +60,8 @@ markdown_extensions:
       line_spans: __span
       pygments_lang_class: true
   - pymdownx.inlinehilite
-  - pymdownx.snippets
+  - pymdownx.snippets:
+      check_paths: true        # a missing file (a figure) fails the build
   - pymdownx.superfences:
       custom_fences:
         - name: mermaid
@@ -84,8 +85,6 @@ markdown_extensions:
 
 # Plugins
 plugins:
-  - macros:
-      on_error_fail: true      # a missing file (a figure) fails the build
   - search:
       lang: en
 
