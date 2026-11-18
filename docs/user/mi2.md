@@ -173,7 +173,14 @@ Each coupling step runs, in this order:
    sources.
 
 A cycle ends after `N-coupling` coupling steps. A solver's own stopping condition (`res-threshold`, ...) ends only
-the current block of its iterations, never the cycle. After the last cycle every solver writes its final solution.
+the current block of its iterations, never the cycle.
+
+The run ends as a run of each solver alone ends. The last iteration the schedule gives a solver (the last of its
+cycle's last coupling step, no later cycle advancing it) is its last: MI2 sets the solver's own iteration limit there.
+After the last cycle each solver writes its end-of-run output once: the residual and probe rows of its last iteration,
+the solution due there (with its output number), then its final solution, `OUTPUT/<prefix>field.tec`, whatever
+`sol-diter`. Each solver's output number is then the number of outputs it wrote, and a run whose iterations are no
+multiple of `sol-diter` can be restarted from its end.
 
 ### Frozen sources
 
@@ -254,7 +261,7 @@ the multigrid levels are not required. `[MI2-Coupling]` and the phase keys are r
 `newrun = false` in `[MOSE-Parameters]` and `[ICE-Parameters]` starts each solver from the files a run left in
 `OUTPUT/`: MOSE from `gas-field.tec`, ICE from `<prefix>field.tec`, each with its iteration and output counters. The
 schedule of the restarted run is what remains of the run: a run of four coupling steps, and a run of two restarted for
-two more, end with the same values. ICE sets the components a mesh holds at zero (`w` on a 2-D mesh) to zero at every
+two more, end with the same files, the output numbers and the residual histories included. ICE sets the components a mesh holds at zero (`w` on a 2-D mesh) to zero at every
 set-up, so the round-off a run leaves there is not carried over.
 
 What ICE's last coupling step hands the gas is not in its field file: it is the source of the stages of ICE's last step
@@ -533,6 +540,7 @@ Warnings and notes do not stop the run:
 | `[WARNING] MI2: material ... burns as ... in ICE and as ... in IGLOO` | a section default decided one model |
 | `[WARNING] MI2: in <n> cells ... a smoke was born with no parcel's state` | smoke born at rest, 298.15 K |
 | `[MI2] ... source FROZEN this cycle` | [frozen sources](#frozen-sources) |
+| `[WARNING] MI2: input.ini, read again, advances <solver> after the iteration the schedule had made its last` | the rows and the solution due at that iteration were not written ([one coupling step](#one-coupling-step)) |
 | `[MI2] WARNING: the consumed-species floor guard clamped <n> (cell,species) extractions` | end of run: a mass-limited reaction |
 | `[WARNING] <n> coupling step(s) used the EULERIAN branch` | end of run: those steps are not in the balances |
 

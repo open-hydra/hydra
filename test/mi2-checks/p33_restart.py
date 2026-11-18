@@ -1,18 +1,19 @@
 #!/usr/bin/env python3
 """MOSE + ICE restart inside hydra-MI2: the checks of p33_restart_check.sh.
 
-  p33_restart.py exact <one-go OUTPUT> <restarted OUTPUT> <part-1 OUTPUT>   PASS/FAIL lines, exit 1 on a FAIL
+  p33_restart.py exact <one-go OUTPUT> <restarted OUTPUT> <part-1 OUTPUT> <MOSE sol-diter> <ICE sol-diter>
+                                                                            PASS/FAIL lines, exit 1 on a FAIL
 
 The run in one go against part 1 + the restart. gas-field.tec, part-field.tec and part-coupling.tec (what ICE's last
-coupling step hands the gas and leaves for its next): every header line equal but each solver's output-number record,
-equal or one higher after the restart (one higher while MI2's final postprocess, an intermediate output, writes one
-output more than the run made), every value of every variable equal. One class of values is compared as zero instead:
+coupling step hands the gas and leaves for its next): every header line equal, the output numbers included, every value
+of every variable equal. One class of values is compared as zero instead:
 a variable below 1e-20 everywhere in both runs (a component ICE holds at zero, w on a 2-D mesh, and what ICE hands of
 it: ICE sets it to zero at every set-up, so a restart cannot carry the round-off its run leaves there); the variables
 so compared are named. Every line of gas-diagnostic.tec and part-residuals.tec equal, or the file absent from both
-runs (a time-accurate solver writes none). Each residual history equal to the one-go file once consecutive repeated rows are collapsed, with as
-many rows or one more (one more while that same postprocess writes the last row twice, and the restart keeps part 1's
-copy), a column below 1e-20 throughout both runs compared as zero (named). Non-vacuous: part 1's fields differ from the
+runs (a time-accurate solver writes none). Each residual history equal to the one-go file row for row, part 1's rows
+first, a column below 1e-20 throughout both runs compared as zero (named). The end of each run is its end-of-run output:
+in part 1, the run in one go and the restart, no residual history holds a row twice in a row, and each solver's output
+number is the outputs its iterations made, ITERATION // sol-diter (ITERATION and the number from the field file). Non-vacuous: part 1's fields differ from the
 end's, and the restart's counters are those of the whole run. A missing file is a FAIL.
 """
 import os
@@ -95,7 +96,7 @@ def field(rep, one, rst, f):
     cb = [(i, COUNTER.match(x)) for i, x in enumerate(hb) if COUNTER.match(x)]
     step = float(cb[0][1].group(2)) - float(ca[0][1].group(2)) if ca and cb else None
     head = len(ha) == len(hb) and all(x == y for x, y in zip(ha, hb) if not COUNTER.match(x))
-    ok_c = (len(ca) == 1 and len(cb) == 1 and ca[0][0] == cb[0][0] and step in (0.0, 1.0)) or (not ca and not cb)
+    ok_c = (len(ca) == 1 and len(cb) == 1 and ca[0][0] == cb[0][0] and step == 0.0) or (not ca and not cb)
     held, bad = [], []
     if [n for n, _ in va] != [n for n, _ in vb]:
         bad.append('the variables differ')
@@ -109,9 +110,8 @@ def field(rep, one, rst, f):
         scale = max(max(rng) - min(rng), 1e-12 * max(abs(v) for v in rng), 1e-300)
         d = max(abs(float(u) - float(v)) for u, v in zip(x, y)) / scale if len(x) == len(y) else float('inf')
         bad.append('%s by up to %.2e of its range' % (n, d))
-    how = {0.0: 'equal', 1.0: 'one higher after the restart: the extra output of the final postprocess'}
-    num = ('header equal but the output number, %s against %s (%s)' % (cb[0][1].group(2), ca[0][1].group(2),
-                                                                        how.get(step, 'off by %s' % step))
+    num = ('header equal, the output number %s against %s%s' % (cb[0][1].group(2), ca[0][1].group(2),
+                                                                 '' if step == 0.0 else ' (off by %s)' % step)
            if ca and cb else 'header equal' if not ca and not cb else 'an output number in one file only')
     rep.check(head and ok_c and not bad, '%s: %d variables, %s%s; %s%s' % (
         f, len(va), 'every value equal' if not bad else 'values differ',
@@ -125,24 +125,45 @@ def rows(ls):
 
 def history(rep, one, rst, part1, f):
     a, b, p1 = rows(lines(one, f)), rows(lines(rst, f)), rows(lines(part1, f))
-    ua, ub = collapse(a), collapse(b)
     zero = [c for c in range(len(a[0]) if a else 0)
             if all(abs(float(r[c])) < ZERO for r in a + b if c < len(r))]
     def same(r, s):
         return len(r) == len(s) and all(x == y or (c in zero and abs(float(x)) < ZERO and abs(float(y)) < ZERO)
                                         for c, (x, y) in enumerate(zip(r, s)))
-    used = [c for c in zero if any(len(r) > c and len(s) > c and r[c] != s[c] for r, s in zip(ua, ub))]
-    extra = len(b) - len(a)
-    ok = (len(ua) == len(ub) and all(same(r, s) for r, s in zip(ua, ub)) and extra in (0, 1) and len(a) > 1
+    used = [c for c in zero if any(len(r) > c and len(s) > c and r[c] != s[c] for r, s in zip(a, b))]
+    ok = (len(a) == len(b) and len(a) > 1 and all(same(r, s) for r, s in zip(a, b))
           and len(b) >= len(p1) and all(same(r, s) for r, s in zip(b, p1)))
-    how = {0: 'as many rows', 1: 'one row more: the last row of part 1 written twice by the final postprocess'}
-    rep.check(ok, '%s: %d rows against the run in one go\'s %d, equal once repeated rows are collapsed (%d against %d)%s, '
-              'part 1\'s %d rows first (%s)' % (f, len(b), len(a), len(ub), len(ua),
-                                               ', column(s) %s compared as zero (below %g in both runs)'
-                                               % (','.join(str(c + 1) for c in used), ZERO) if used else '', len(p1), how.get(extra, '%+d rows' % extra)))
+    rep.check(ok, '%s: %d rows against the run in one go\'s %d, row for row equal%s, part 1\'s %d rows first' % (
+        f, len(b), len(a), ', column(s) %s compared as zero (below %g in both runs)'
+        % (','.join(str(c + 1) for c in used), ZERO) if used else '', len(p1)))
 
 
-def exact(one, rst, part1):
+def once(rep, runs, f):
+    """The end of a run writes its last row once: no history holds a row twice in a row."""
+    out, n = [], 0
+    for name, d in runs:
+        r = rows(lines(d, f))
+        dup = [x[0] for x, y in zip(r, r[1:]) if x == y]
+        n += len(dup) + (0 if len(r) > 1 else 1)
+        out.append('%s %d of %d%s' % (name, len(dup), len(r), ' (iteration %s)' % ', '.join(dup[:3]) if dup else ''))
+    rep.check(n == 0, '%s: no row written twice in a row (rows repeated: %s)' % (f, '; '.join(out)))
+
+
+def counters(rep, runs, sd):
+    """Each solver's output number is the outputs its iterations made: ITERATION // sol-diter."""
+    for f, key, n in (('gas-field.tec', 'MOSE', sd[0]), ('part-field.tec', 'ICE', sd[1])):
+        out, ok = [], True
+        for name, d in runs:
+            it, num = aux(d, f, key + '_ITERATION'), aux(d, f, key + '_OUTPUT_NUMBER')
+            good = it is not None and num is not None and int(float(num)) == int(float(it)) // n
+            ok = ok and good
+            out.append('%s %s at iteration %s' % (name, '-' if num is None else int(float(num)),
+                                                   '-' if it is None else int(float(it))))
+        rep.check(ok, '%s: the %s output number is the outputs written, iterations // sol-diter %d (%s)'
+                  % (f, key, n, '; '.join(out)))
+
+
+def exact(one, rst, part1, sdm, sdk):
     rep = Rep()
     for f in FIELDS:
         field(rep, one, rst, f)
@@ -155,6 +176,10 @@ def exact(one, rst, part1):
             f, len(a), '' if a == b else ' -- first difference at line %d: %s | %s' % first_diff(a, b)))
     for f in HISTORIES:
         history(rep, one, rst, part1, f)
+    runs = (('part 1', part1), ('one go', one), ('restart', rst))
+    for f in HISTORIES:
+        once(rep, runs, f)
+    counters(rep, runs, (int(sdm), int(sdk)))
     # non-vacuous: the restart went on from part 1 and made the whole run's iterations
     moved = all(lines(part1, f) != lines(rst, f) for f in FIELDS[:2])
     cyc = [(aux(one, f, 'CYCLE'), aux(rst, f, 'CYCLE'), aux(part1, f, 'CYCLE')) for f in FIELDS[:2]]
@@ -165,13 +190,8 @@ def exact(one, rst, part1):
     return rep
 
 
-def collapse(rows_):
-    """The rows with consecutive repeats removed."""
-    return [r for i, r in enumerate(rows_) if i == 0 or r != rows_[i - 1]]
-
-
 def main():
-    if len(sys.argv) == 5 and sys.argv[1] == 'exact':
+    if len(sys.argv) == 7 and sys.argv[1] == 'exact':
         rep = exact(*sys.argv[2:])
         print('  exact: %d passed, %d failed' % (rep.npass, rep.nfail))
         return 1 if rep.nfail else 0

@@ -3,8 +3,8 @@
 # run in one go, every value equal (1 thread). ICE's field file does not hold what its last coupling step hands the
 # gas (the source of its last step's stages) nor what its next step starts from (the relaxation times that bound its
 # steps, a smoke family's birth rate): MI2 ends a run with ICE by writing them, OUTPUT/<ICE prefix>coupling.tec, and an
-# ICE restart reads them back. Three cases on short schedules, part 1 and its restart for as many coupling steps again
-# against the run in one go:
+# ICE restart reads them back. Three cases on short schedules, four legs, part 1 and its restart for as many coupling steps
+# again against the run in one go:
 #  jpl     : test/JPL-Eulerian-20micron, MOSE and ICE steady, coupling steps of 100 and 50 iterations (2 + 2 against 4):
 #            ICE's source alone;
 #  smoke   : test/steady-ice-smoke on the same schedule: a burning family whose smoke ICE births as a rate (srate) and
@@ -12,12 +12,14 @@
 #  removal : test/steady-ice-burnout with MOSE steady and ICE time-accurate (first order, cfl 0.4, K-burn x100) in
 #            alternate cycles, MOSE-iter 100 0, ICE-iter 0 50 (4 cycles + 4 against 8): the removals ICE stores and the
 #            time they were made over (goneRate), ICE's source averaged over its block.
-# p33_restart.py judges each restart against its run in one go: every value of gas-field.tec and part-field.tec equal
-# (a variable below 1e-20 in both runs compared as zero: w on a 2-D mesh, which ICE zeroes at every set-up), each
-# solver's output number equal or one higher (one higher while MI2's final postprocess is an intermediate output);
-# gas-diagnostic.tec, part-residuals.tec and part-coupling.tec equal; each residual history equal once repeated rows are
-# collapsed; part 1's fields moved, the restarted counters those of the whole run. sol-diter divides the iterations of
-# each part, so that part 1 writes its last state. Every run: GAME OVER, no error line, exit 0.
+#  odd     : the jpl leg with sol-diter 300 (MOSE) and 150 (ICE), which divide neither part's iterations: the end of
+#            part 1 is no output iteration, and its final fields are still written and restarted from.
+# p33_restart.py judges each restart against its run in one go: every value of gas-field.tec, part-field.tec and
+# part-coupling.tec equal, the output numbers included (a variable below 1e-20 in both runs compared as zero: w on a
+# 2-D mesh, which ICE zeroes at every set-up); gas-diagnostic.tec and part-residuals.tec equal; each residual history
+# equal row for row; part 1's fields moved, the restarted counters those of the whole run. And the end of each run is
+# its end-of-run output: no history holds a row twice in a row, each solver's output number is its iterations //
+# sol-diter. Every run: GAME OVER, no error line, exit 0.
 # Two refusals, each judged on its message and on the run not ending:
 #  missing : the jpl restart without part-coupling.tec stops and names the file;
 #  igloo   : test/evap-box-ta (MOSE + IGLOO) restarted with [MOSE-Parameters] newrun = false stops: IGLOO has no
@@ -69,21 +71,22 @@ judge() {  # judge <mode> <args...>: the .py's lines counted; a crash counts as 
 
 leg() {  # leg <tag> <case> <part-1 N-coupling> <MOSE-iter> <ICE-iter> <one-go N-coupling> <MOSE-iter> <ICE-iter>
         #     [ini sed] [models sed]: part 1, the run in one go, part 1 restarted on part 1's schedule; judged
-  local d t=$1 c=$2
-  d=$(mk "$c" "$t-part1" "$3" "$4" "$5" $M $K "${9:-}" "${10:-}"); "$RUN" "$d" "$d/run" 1 "$T/$t-part1.log" "$EXE" > /dev/null 2>&1
+  local d t=$1 c=$2 sm=${SDM:-$M} sk=${SDK:-$K}
+  d=$(mk "$c" "$t-part1" "$3" "$4" "$5" $sm $sk "${9:-}" "${10:-}"); "$RUN" "$d" "$d/run" 1 "$T/$t-part1.log" "$EXE" > /dev/null 2>&1
   clean "$t-part1" "$T/$t-part1.log" $?
-  d=$(mk "$c" "$t-one-go" "$6" "$7" "$8" $M $K "${9:-}" "${10:-}"); "$RUN" "$d" "$d/run" 1 "$T/$t-one-go.log" "$EXE" > /dev/null 2>&1
+  d=$(mk "$c" "$t-one-go" "$6" "$7" "$8" $sm $sk "${9:-}" "${10:-}"); "$RUN" "$d" "$d/run" 1 "$T/$t-one-go.log" "$EXE" > /dev/null 2>&1
   clean "$t-one-go" "$T/$t-one-go.log" $?
   restart "$T/$t-part1/run" "$T/$t-part2" "$3" "$4" "$5"; clean "$t-part2" "$T/$t-part2.log" $?
   if grep -q 'Initial conditions file *OUTPUT/gas-field.tec' "$T/$t-part2.log" && \
      grep -q 'ICE restarts with what its last coupling step handed the gas, from OUTPUT/part-coupling.tec' "$T/$t-part2.log"
   then ok "$t-part2: MOSE reads OUTPUT/gas-field.tec, MI2 reads ICE's hand-off from OUTPUT/part-coupling.tec"
   else ko "$t-part2: the restart does not name OUTPUT/gas-field.tec and OUTPUT/part-coupling.tec as what it reads"; fi
-  judge exact "$T/$t-one-go/run/OUTPUT" "$T/$t-part2/OUTPUT" "$T/$t-part1/run/OUTPUT"; }
+  judge exact "$T/$t-one-go/run/OUTPUT" "$T/$t-part2/OUTPUT" "$T/$t-part1/run/OUTPUT" $sm $sk; }
 
 FO='s/^time-scheme          = RK3$/time-scheme          = euler/; s/^space-reconstruction = MUSCL$/space-reconstruction = first-order/; /^flux-limiter         = vanleer$/d'
 TA='s/^time-accurate        = false$/time-accurate        = true/; s/^cfl                  = 0.2$/cfl                  = 0.4/'
 leg jpl     "$H/test/JPL-Eulerian-20micron" 2 $M $K 4 $M $K
+SDM=300 SDK=150 leg odd "$H/test/JPL-Eulerian-20micron" 2 $M $K 4 $M $K
 leg smoke   "$H/test/steady-ice-smoke"      2 $M $K 4 $M $K
 leg removal "$H/test/steady-ice-burnout"    "1 1 1 1" "$M 0 $M 0" "0 $K 0 $K" \
             "1 1 1 1 1 1 1 1" "$M 0 $M 0 $M 0 $M 0" "0 $K 0 $K 0 $K 0 $K" "$TA; $FO" 's/ K-burn=1.39e-06 / K-burn=1.39e-04 /'
