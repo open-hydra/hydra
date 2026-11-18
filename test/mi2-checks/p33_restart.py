@@ -2,19 +2,23 @@
 """MOSE + ICE restart inside hydra-MI2: the checks of p33_restart_check.sh.
 
   p33_restart.py exact <one-go OUTPUT> <restarted OUTPUT> <part-1 OUTPUT> <MOSE sol-diter> <ICE sol-diter>
+                [<MOSE restart iteration> <ICE restart iteration>]   (a killed part 1)
                                                                             PASS/FAIL lines, exit 1 on a FAIL
 
 The run in one go against part 1 + the restart. gas-field.tec, part-field.tec and part-coupling.tec (what ICE's last
 coupling step hands the gas and leaves for its next): every header line equal, the output numbers included, every value
-of every variable equal. One class of values is compared as zero instead:
-a variable below 1e-20 everywhere in both runs (a component ICE holds at zero, w on a 2-D mesh, and what ICE hands of
-it: ICE sets it to zero at every set-up, so a restart cannot carry the round-off its run leaves there); the variables
-so compared are named. Every line of gas-diagnostic.tec and part-residuals.tec equal, or the file absent from both
-runs (a time-accurate solver writes none). Each residual history equal to the one-go file row for row, part 1's rows
-first, a column below 1e-20 throughout both runs compared as zero (named). The end of each run is its end-of-run output:
-in part 1, the run in one go and the restart, no residual history holds a row twice in a row, and each solver's output
-number is the outputs its iterations made, ITERATION // sol-diter (ITERATION and the number from the field file). Non-vacuous: part 1's fields differ from the
-end's, and the restart's counters are those of the whole run. A missing file is a FAIL.
+of every variable of every zone equal. One quantity is compared as zero instead, where it is below 1e-20 everywhere in
+both runs: the component ICE holds at zero on a 2-D mesh, w (part-field `w_p<g>`), what ICE hands of it (the
+z-momentum entries `S4`, `B4`, `G4`, `GA4`, `R4` of part-coupling) and its residual columns (the 4th norm of the domain
+and of each family in part-residual-history). ICE sets it to zero at every set-up, so a restart cannot carry the
+round-off its run leaves there; the variables and columns so compared are named. Every line of gas-diagnostic.tec and
+part-residuals.tec equal; a file absent from both runs (a time-accurate solver writes no residual field) is noted, not
+passed. Each residual history equal to the one-go file row for row, part 1's rows first (of a killed part 1, its rows up
+to the restart iteration: each solver drops the later ones on a restart). The end of each run is its end-of-run
+output: in part 1, the run in one go and the restart, no residual history holds an iteration twice in a row, and each
+solver's output number is the outputs its iterations made, ITERATION // sol-diter (ITERATION and the number from the
+field file). Non-vacuous: part 1's fields differ from the end's, and the restart's counters are those of the whole run.
+A missing file is a FAIL.
 """
 import os
 import re
@@ -65,24 +69,37 @@ def first_diff(a, b):
 
 
 def tec(ls):
-    """A one-zone Tecplot BLOCK file as (header and auxiliary lines, [(name, [value strings])]), coordinates included."""
+    """A Tecplot BLOCK file as (header and auxiliary lines, [(name, [value strings of every zone, zone after zone])],
+    number of zones), coordinates included; None when the values do not fill the zones exactly."""
     names = [t.strip('"') for t in re.findall(r'"[^"]+"|[^\s,]+', re.search(r'VARIABLES\s*=\s*(.*)', ls[0]).group(1))]
-    z = next(i for i, x in enumerate(ls) if x.lstrip().startswith('ZONE'))
-    I, J, K = (int(g) for g in re.search(r'I\s*=\s*(\d+).*?J\s*=\s*(\d+).*?K\s*=\s*(\d+)', ls[z]).groups())
     num = re.compile(r'^\s*[-+]?(\d|\.\d|inf|nan)', re.I)
     head = [x for x in ls if x.strip() and not num.match(x)]
-    vals = ' '.join(x for x in ls[z + 1:] if num.match(x)).split()
-    nn, nc = I * J * K, (I - 1) * (J - 1) * max(1, K - 1)
-    out, p = [], 0
-    for n in names:
-        cnt = nn if n.lower() in ('x', 'y', 'z') else nc
-        out.append((n, vals[p:p + cnt]))
-        p += cnt
-    return head, out
+    zones = []
+    for x in ls:
+        if x.lstrip().startswith('ZONE'):
+            I, J, K = (int(g) for g in re.search(r'I\s*=\s*(\d+).*?J\s*=\s*(\d+).*?K\s*=\s*(\d+)', x).groups())
+            zones.append((I, J, K, []))
+        elif zones and num.match(x):
+            zones[-1][3].extend(x.split())
+    per = dict((n, []) for n in names)
+    for I, J, K, tok in zones:
+        nn, nc = I * J * K, (I - 1) * (J - 1) * max(1, K - 1)
+        p = 0
+        for n in names:
+            cnt = nn if n.lower() in ('x', 'y', 'z') else nc
+            per[n].extend(tok[p:p + cnt])
+            p += cnt
+        if p != len(tok):
+            return None
+    return head, [(n, per[n]) for n in names], len(zones)
 
 
 def small(v):
     return all(abs(float(x)) < ZERO for x in v)
+
+
+# ICE's zeroed component on a 2-D mesh and what ICE hands of it: the only quantity compared as zero
+HELD = re.compile(r'^(w|S4|B4|G4|GA4|R4)_p\d+$')
 
 
 def field(rep, one, rst, f):
@@ -90,20 +107,23 @@ def field(rep, one, rst, f):
     if len(a) < 2 or len(b) < 2:
         rep.check(False, '%s: missing' % f)
         return
-    ha, va = tec(a)
-    hb, vb = tec(b)
+    ta, tb = tec(a), tec(b)
+    if ta is None or tb is None:
+        rep.check(False, '%s: the values do not fill its zones (%s)' % (f, 'one go' if ta is None else 'restart'))
+        return
+    (ha, va, za), (hb, vb, zb) = ta, tb
     ca = [(i, COUNTER.match(x)) for i, x in enumerate(ha) if COUNTER.match(x)]
     cb = [(i, COUNTER.match(x)) for i, x in enumerate(hb) if COUNTER.match(x)]
     step = float(cb[0][1].group(2)) - float(ca[0][1].group(2)) if ca and cb else None
     head = len(ha) == len(hb) and all(x == y for x, y in zip(ha, hb) if not COUNTER.match(x))
     ok_c = (len(ca) == 1 and len(cb) == 1 and ca[0][0] == cb[0][0] and step == 0.0) or (not ca and not cb)
     held, bad = [], []
-    if [n for n, _ in va] != [n for n, _ in vb]:
-        bad.append('the variables differ')
+    if [n for n, _ in va] != [n for n, _ in vb] or za != zb:
+        bad.append('the variables or zones differ')
     for (n, x), (_, y) in zip(va, vb):
         if x == y:
             continue
-        if len(x) == len(y) and small(x) and small(y):
+        if HELD.match(n) and len(x) == len(y) and small(x) and small(y):
             held.append(n)
             continue
         rng = [float(v) for v in x]
@@ -113,28 +133,44 @@ def field(rep, one, rst, f):
     num = ('header equal, the output number %s against %s%s' % (cb[0][1].group(2), ca[0][1].group(2),
                                                                  '' if step == 0.0 else ' (off by %s)' % step)
            if ca and cb else 'header equal' if not ca and not cb else 'an output number in one file only')
-    rep.check(head and ok_c and not bad, '%s: %d variables, %s%s; %s%s' % (
-        f, len(va), 'every value equal' if not bad else 'values differ',
-        ' (compared as zero, below %g everywhere in both runs: %s)' % (ZERO, ', '.join(held)) if held else '',
-        num if head else 'header differs', '' if not bad else ' -- ' + '; '.join(bad[:4])))
+    rep.check(head and ok_c and not bad, '%s: %d variables, %d zone(s), %s%s; %s%s' % (
+        f, len(va), za, 'every value equal' if not bad else 'values differ',
+        ' (ICE\'s zeroed component compared as zero, below %g everywhere in both runs: %s)' % (ZERO, ', '.join(held))
+        if held else '', num if head else 'header differs', '' if not bad else ' -- ' + '; '.join(bad[:4])))
 
 
 def rows(ls):
     return [x.split() for x in ls if x.strip()]
 
 
-def history(rep, one, rst, part1, f):
+def held_columns(one, ncol):
+    """The 1-based columns of part-residual-history.dat that hold ICE's w norm: the 4th norm of the domain and, with
+    several families, of each family (iteration, time, then nres norms per block of columns)."""
+    names = [n for n, _ in (tec(lines(one, 'part-field.tec')) or ((), [], 0))[1]]
+    fam = len(set(int(m.group(1)) for m in (re.match(r'^rho_p(\d+)$', n) for n in names) if m))
+    if fam < 1:
+        return []
+    nres = (ncol - 2) // (1 + fam) if fam > 1 else ncol - 2
+    return [6 + nres * k for k in range(1 + fam if fam > 1 else 1)]
+
+
+def history(rep, one, rst, part1, f, cut=None):
     a, b, p1 = rows(lines(one, f)), rows(lines(rst, f)), rows(lines(part1, f))
-    zero = [c for c in range(len(a[0]) if a else 0)
-            if all(abs(float(r[c])) < ZERO for r in a + b if c < len(r))]
+    if cut is not None:
+        p1 = [r for r in p1 if int(r[0]) <= cut]          # a killed part 1: its rows up to the restart iteration
+    zero = []
+    if f.startswith('part') and a:
+        zero = [c - 1 for c in held_columns(one, len(a[0]))
+                if all(abs(float(r[c - 1])) < ZERO for r in a + b if c - 1 < len(r))]
     def same(r, s):
         return len(r) == len(s) and all(x == y or (c in zero and abs(float(x)) < ZERO and abs(float(y)) < ZERO)
                                         for c, (x, y) in enumerate(zip(r, s)))
     used = [c for c in zero if any(len(r) > c and len(s) > c and r[c] != s[c] for r, s in zip(a, b))]
     ok = (len(a) == len(b) and len(a) > 1 and all(same(r, s) for r, s in zip(a, b))
           and len(b) >= len(p1) and all(same(r, s) for r, s in zip(b, p1)))
-    rep.check(ok, '%s: %d rows against the run in one go\'s %d, row for row equal%s, part 1\'s %d rows first' % (
-        f, len(b), len(a), ', column(s) %s compared as zero (below %g in both runs)'
+    rep.check(ok, '%s: %d rows against the run in one go\'s %d, %s%s, part 1\'s %d rows first' % (
+        f, len(b), len(a), 'row for row equal' if ok else 'rows differ',
+        ', column(s) %s (ICE\'s w norm) compared as zero (below %g in both runs)'
         % (','.join(str(c + 1) for c in used), ZERO) if used else '', len(p1)))
 
 
@@ -143,10 +179,11 @@ def once(rep, runs, f):
     out, n = [], 0
     for name, d in runs:
         r = rows(lines(d, f))
-        dup = [x[0] for x, y in zip(r, r[1:]) if x == y]
+        dup = [x[0] for x, y in zip(r, r[1:]) if x[0] == y[0]]
         n += len(dup) + (0 if len(r) > 1 else 1)
-        out.append('%s %d of %d%s' % (name, len(dup), len(r), ' (iteration %s)' % ', '.join(dup[:3]) if dup else ''))
-    rep.check(n == 0, '%s: no row written twice in a row (rows repeated: %s)' % (f, '; '.join(out)))
+        out.append('%s %d of %d%s%s' % (name, len(dup), len(r), ' (iteration %s)' % ', '.join(dup[:3]) if dup else '',
+                                        '' if len(r) > 1 else ' (fewer than 2 rows)'))
+    rep.check(n == 0, '%s: no iteration written twice in a row (repeated: %s)' % (f, '; '.join(out)))
 
 
 def counters(rep, runs, sd):
@@ -163,19 +200,20 @@ def counters(rep, runs, sd):
                   % (f, key, n, '; '.join(out)))
 
 
-def exact(one, rst, part1, sdm, sdk):
+def exact(one, rst, part1, sdm, sdk, cuts=(None, None)):
     rep = Rep()
     for f in FIELDS:
         field(rep, one, rst, f)
     for f in EXACT:
         if not os.path.isfile(os.path.join(one, f)) and not os.path.isfile(os.path.join(rst, f)):
-            rep.check(True, '%s: absent from both runs' % f)
+            print('  note: %s absent from both runs (not judged)' % f)
             continue
         a, b = lines(one, f), lines(rst, f)
-        rep.check(a == b and len(a) > 1, '%s: %d lines, byte for byte equal%s' % (
-            f, len(a), '' if a == b else ' -- first difference at line %d: %s | %s' % first_diff(a, b)))
+        rep.check(a == b and len(a) > 1, '%s: %d lines, %s%s' % (
+            f, len(a), 'byte for byte equal' if a == b else 'differ',
+            '' if a == b else ' -- first difference at line %d: %s | %s' % first_diff(a, b)))
     for f in HISTORIES:
-        history(rep, one, rst, part1, f)
+        history(rep, one, rst, part1, f, cuts[0] if f.startswith('gas') else cuts[1])
     runs = (('part 1', part1), ('one go', one), ('restart', rst))
     for f in HISTORIES:
         once(rep, runs, f)
@@ -191,8 +229,8 @@ def exact(one, rst, part1, sdm, sdk):
 
 
 def main():
-    if len(sys.argv) == 7 and sys.argv[1] == 'exact':
-        rep = exact(*sys.argv[2:])
+    if len(sys.argv) in (7, 9) and sys.argv[1] == 'exact':
+        rep = exact(*sys.argv[2:7], cuts=(int(sys.argv[7]), int(sys.argv[8])) if len(sys.argv) == 9 else (None, None))
         print('  exact: %d passed, %d failed' % (rep.npass, rep.nfail))
         return 1 if rep.nfail else 0
     sys.exit(__doc__)
