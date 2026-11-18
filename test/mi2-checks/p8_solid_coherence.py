@@ -29,16 +29,33 @@ ICE runs steady twice: o1 first order, o2 MUSCL with van Leer. Checks, per ICE r
         source.tec E over the 25 cells of the slab per unit mass flow, to 1e-6
   (iv)  the total heat per unit mass flow, e_in - e_out (ICE) against h(T_0) - h(T_exit) (IGLOO), within
         the first-order front error c (T_exit - T_g)/L 2 dx (c, L those of the exit phase, T_exit ICE's o1)
-Leg C only (the energies on the table's chords, as both solvers interpolate it between its integer kelvins):
+Leg C also (the energies on the table's chords, as both solvers interpolate it between its integer kelvins):
   (v)   the liquid upstream of nucleation, the cells up to 3 (o1) or 4 (o2) before nucleation's cell: o1 equals its
-        backward-Euler march of the table (ICE's steady first-order cell i is that march at the cell's outflow face)
-        to 1e-9 K, and differs from IGLOO's trajectory there by no more than the march's own error against the
-        closed form plus IGLOO's row budget; o2 against IGLOO at the cell centres within IGLOO's budget plus twice
-        the cell average's dx^2 |T''|/24. IGLOO's budget is that of its solid-box-varcp check: 4 x (5e-7 (2 + 2
-        |T - T_g|/L(T)) + 1e-8), L(T) = u m c_l(T)/(Nu k pi d) (the F12.6 prints of x and T; 4 for the integrator's
-        one-signed drift over the per-kelvin cp seams)
+        backward-Euler march of the table (ICE's steady first-order cell i is that march at its outflow face) to
+        1e-9 K and differs from IGLOO's trajectory there by at most the march's own error against the closed form
+        plus IGLOO's row budget; o2 against IGLOO at the cell centres within IGLOO's budget plus the second-order
+        scale (dx/L)^2 |T_0 - T_g|. IGLOO's budget is its solid-box-varcp check's: 4 x (5e-7 (2 + 2 |T - T_g|/L(T))
+        + 1e-8), L(T) = u m c_l(T)/(Nu k pi d) (the F12.6 prints of x and T; 4 for the integrator's one-signed
+        drift over the per-kelvin cp seams)
   and IGLOO against the closed form: every liquid row upstream of nucleation within that budget, the first plateau
   and first solid rows in the closed form's cells, the exit temperature within the budget at L_s.
+
+Legs D and E, the drop's internal heating and boiling: a uniform gas at 600 K, rho 1.2, its pressure rho R T in
+both (IGLOO reads the P column, ICE computes it), the vapour data of IGLOO's evaporation cases (L_v 2.26e6, M_v 18,
+c_p,v 1900, Le 1), the models on the material line in both. ICE's cells from one probe per cell (T, rho, n, Ts).
+  D  P2T without mass transfer (Y_inf = 1), IGLOO's temp-relax-p2t drop, zeta = Nu k_g/(2 k_l) = 1: IGLOO's rows
+     against T - T_g = (T_0 - T_g) exp(-x/L), L = u 1.2 tau_ITC, within its budget, T_s = (5 T + T_g)/6 to 1e-6;
+     ICE: T_s = (5 T + T_g)/6 to 1e-12, o1 its backward-Euler march y_i = y_i-1/(1 + dx/L) to 1e-9 K and IGLOO
+     within the march's error plus IGLOO's budget, o2 against IGLOO within IGLOO's budget plus (dx/L)^2 |T_0 - T_g|.
+  E  ZGR through the boiling limit (IGLOO's boiling-zgr-switch gas and drop, here 4 K above T_B so that the flash is
+     resolved by the stream's cells): above T_B the adiabatic flash keeps m (L_v - c (T - T_B)) constant (T_g - T_B =
+     4e-8 K: the heat the gas feeds moves it by 8e-10 over the flash), in IGLOO within the E13.6 print of m, in ICE
+     o1 to 1e-8, o2 to 1e-6 (its limiter reconstructs rho and rho e apart: 2.6e-8 measured); ICE's T_s = T_B above,
+     T below; the first cell below T_B against IGLOO's switch, o2 within one cell, o1 within 6 cells late (its
+     first-order lag: 2 cells at 4 K, 4 cells at 10 and 40 K superheat, halving with dx); the flash's T in o2 against
+     IGLOO to 1e-2 K (1.2e-3 measured); the exit temperature against CEM's wet bulb, c_p,g (T_g - T) = L_v ln(1 + B_M),
+     to 1e-5 K in both (4.2e-7 measured); the drop mass at the exit, o2 against IGLOO, to 1e-2 of m0 (2.4e-3
+     measured; o1 printed, its switch being late).
 """
 import math
 import os
@@ -61,7 +78,10 @@ LEGS = {'A': dict(T_g=600.0, T_0=2400.0, h_fus=1.07e6),
         'C': dict(T_g=600.0, T_0=2400.0, h_fus=1.07e6, cp=(50.0, 0.5))}
 PLAN_TOL = {'A': 4561.8, 'B': 5726.4}          # the plan's total-heat bounds at nx = 240
 TOL_T, TOL_Q = 1.0e-9, 1.0e-6
-HALF_ULP, INT_FLOOR, SEAM_IG, TOL_MARCH = 0.5e-6, 1.0e-8, 4.0, 1.0e-9     # leg C: IGLOO's row budget, ICE's march
+HALF_ULP, INT_FLOOR, SEAM_IG, TOL_MARCH = 0.5e-6, 1.0e-8, 4.0, 1.0e-9     # IGLOO's row budget, ICE's march
+TOL_M_PRINT = 1.0e-6                           # IGLOO's m/m0 on E13.6 prints
+TOL_FLASH_ICE = {'o1': 1.0e-8, 'o2': 1.0e-6}  # leg E, from the measurement (see check_zgr)
+TOL_WB_IG, TOL_WB_ICE, TOL_FLASH_T, TOL_MEXIT, SWITCH_LAG_O1 = 1.0e-5, 1.0e-5, 1.0e-2, 1.0e-2, 6
 
 
 # ---------------------------------------------------------------------------------------------------
@@ -109,7 +129,8 @@ def h_chord(T, leg):
 
 
 def x_liquid(T, leg):
-    """Distance at which the liquid reaches T: x = (u m/(Nu k pi d)) [b (T_0 - T) + (a + b T_g) ln((T_0 - T_g)/(T - T_g))]."""
+    """Distance at which the liquid reaches T:
+    x = (u m/(Nu k pi d)) [b (T_0 - T) + (a + b T_g) ln((T_0 - T_g)/(T - T_g))]."""
     a, b = LEGS[leg]['cp']
     Tg, T0 = LEGS[leg]['T_g'], LEGS[leg]['T_0']
     return U_G * M_P / A_P * (b * (T0 - T) + (a + b * Tg) * math.log((T0 - Tg) / (T - Tg)))
@@ -519,11 +540,12 @@ def L_liquid(T, leg):
     return U_G * M_P * (a + b * T) / A_P
 
 
-def budget_iglo(T, L):
-    """IGLOO's row budget on a varying-cp stream (its solid-box-varcp check.py): SEAM x (the F12.6 prints of x and T,
-    5e-7 (2 + 2 |T - T_g|/L), plus its integrator floor 1e-8); SEAM = 4 covers the one-signed drift of the integrator
-    stepping over the per-kelvin cp seams (IGLOO measured 1.12-1.16 of the bare budget)."""
-    return SEAM_IG * (HALF_ULP * (2.0 + 2.0 * abs(T - LEGS['C']['T_g']) / L) + INT_FLOOR)
+def budget_iglo(T, L, Tg=600.0, seam=None):
+    """IGLOO's row budget (its temp-relax-p2t and solid-box checks): the F12.6 prints of x and T,
+    5e-7 (2 + 2 |T - T_g|/L), plus its integrator floor 1e-8; on leg C's varying cp times SEAM = 4, the one-signed
+    drift of the integrator stepping over the per-kelvin cp seams (IGLOO's solid-box-varcp check: measured 1.12-1.16
+    of the bare budget)."""
+    return (SEAM_IG if seam is None else seam) * (HALF_ULP * (2.0 + 2.0 * abs(T - Tg) / L) + INT_FLOOR)
 
 
 def check_closed_form(rep, ig, leg, home1, home2):
@@ -546,10 +568,11 @@ def check_closed_form(rep, ig, leg, home1, home2):
 
 def check_liquid(rep, tag, order, T, ig, leg, home1):
     """Leg C, the liquid upstream of nucleation, ICE against IGLOO's trajectory (cubic through its rows). First order:
-    ICE's steady march is backward Euler in x on the table's chords (be_liquid), so cell i sits at its outflow face and
-    |ICE - IGLOO| <= |march - closed form| + IGLOO's budget; the march itself to 1e-6 K. MUSCL: at the cell centres, within
-    IGLOO's budget plus twice the cell average's own term dx^2 |T''|/24. Excluded: the cells within 2 (first order) or 3
-    (MUSCL) of nucleation's cell, where the reconstruction sees the recalescence."""
+    ICE's steady march is backward Euler in x on the table's chords (be_liquid), so cell i sits at its outflow face
+    and |ICE - IGLOO| <= |march - closed form| + IGLOO's budget; the march itself to 1e-9 K. MUSCL: at the cell
+    centres, within IGLOO's budget plus the second-order scale (dx/L)^2 |T_0 - T_g|, L the shortest relaxation length
+    (at T_n). Excluded: the cells within 2 (first order) or 3 (MUSCL) of nucleation's cell, where the reconstruction
+    sees the recalescence."""
     xs = [r[0] for r in ig['rows']]
     ts = [r[1] for r in ig['rows']]
     if order == 'o1':
@@ -569,29 +592,405 @@ def check_liquid(rep, tag, order, T, ig, leg, home1):
                                                           res[w][0] / res[w][1]))
     else:
         n = home1 - 4
+        s2 = (DX / L_liquid(T_N, leg)) ** 2 * abs(LEGS[leg]['T_0'] - LEGS[leg]['T_g'])
         res = []
         for i in range(n):
             xc = (i + 0.5) * DX
-            Tc = T_liquid(xc, leg)
-            curv = (T_liquid(xc + DX, leg) - 2.0 * Tc + T_liquid(xc - DX, leg)) / DX ** 2 if i > 0 else \
-                (T_liquid(xc + 2 * DX, leg) - 2.0 * T_liquid(xc + DX, leg) + Tc) / DX ** 2
-            b = budget_iglo(T[i], L_liquid(T[i], leg)) + 2.0 * DX ** 2 * abs(curv) / 24.0
-            res.append((abs(T[i] - interp4(xs, ts, xc)), b))
+            res.append((abs(T[i] - interp4(xs, ts, xc)), budget_iglo(T[i], L_liquid(T[i], leg)) + s2))
         w = max(range(n), key=lambda i: res[i][0] / res[i][1])
         rep.check(all(v[0] <= v[1] for v in res), '%s (v): liquid temperature in cells 1-%d against IGLOO at their '
-                  'centres, worst %.2e K in cell %d = %.3f of its bound' % (tag, n, res[w][0], w + 1, res[w][0] / res[w][1]))
+                  'centres, worst %.2e K in cell %d = %.3f of its bound'
+                  % (tag, n, res[w][0], w + 1, res[w][0] / res[w][1]))
+
+
+# ---------------------------------------------------------------------------------------------------
+#  legs D, E: the drop's internal heating (liquid-conduction = P2T) and boiling (boiling = ZGR)
+# ---------------------------------------------------------------------------------------------------
+
+LV, MV, CPV, LE, RU, PATM = 2.26e6, 18.0, 1900.0, 1.0, 8314.46, 101325.0
+EV = {'D': dict(u=10.0, lx=0.15, nx=240, rho_l=2950.0, c=1250.0, d=11.89e-6, T_0=300.0, T_g=600.0, tboil=373.15,
+                yinf=1.0, atol=1.0e-11, tokens='evaporation=d2-law liquid-conduction=P2T k-liq=0.026 mu-liq=1.0e-3'),
+      'E': dict(u=1.0, lx=0.075, nx=120, rho_l=958.0, c=4186.0, d=20.0e-6, T_0=604.002, T_g=600.0, tboil=551.7783324,
+                yinf=0.0, atol=1.0e-22, dtmax=1.0e-5,
+                tokens='evaporation=CEM boiling=ZGR')}
+
+
+def ev_geom(leg):
+    q = EV[leg]
+    return q['lx'], q['nx'], q['lx'] / q['nx']
+
+
+def write_iglo_ev(d, leg):
+    q = EV[leg]
+    lx, nx, dx = ev_geom(leg)
+    os.makedirs(os.path.join(d, 'INPUT'))
+    os.makedirs(os.path.join(d, 'OUTPUT'))
+    gas = [('Roi( 1 )', RHO_G), ('U', q['u']), ('V', 0.0), ('W', 0.0), ('P', RHO_G * R_G * q['T_g']), ('T', q['T_g']),
+           ('MIL', MU_G), ('KL', K_G), ('GAM', GAM), ('R', R_G), ('MIT', MU_G),
+           ('r_p', 0.0), ('u_p', 0.0), ('v_p', 0.0), ('T_p', 0.0), ('n_p', 0.0), ('R_p', 0.0), ('odot', 0.0)]
+    xs, ys, zs = linspace(0.0, lx, nx + 1), linspace(0.0, LY, NY + 1), linspace(0.0, LZ, NZ + 1)
+    ncell = nx * NY * NZ
+    with open(os.path.join(d, 'INPUT/solfile.tec'), 'w') as f:
+        f.write(' TITLE="p8 coherence: uniform-gas box"\n')
+        f.write(' VARIABLES = "X", "Y", "Z",' + ','.join('"%s"' % n for n, _ in gas) + '\n')
+        f.write(' Zone T="block: 1",I=%d,J=%d,K=%d\n' % (nx + 1, NY + 1, NZ + 1))
+        f.write(' ,DATAPACKING=BLOCK,  VARLOCATION=([4-21]=CELLCENTERED)\n')
+        for comp in range(3):
+            f.writelines('  %.15E\n' % (x, y, z)[comp] for z in zs for y in ys for x in xs)
+        for _, v in gas:
+            f.writelines(['  %.15E\n' % v] * ncell)
+    ranges = {1: (NY, NZ), 2: (NY, NZ), 3: (nx, NZ), 4: (nx, NZ), 5: (nx, NY), 6: (nx, NY)}
+    inlet = '   %.16E   %.5E   normal,   normal,   %.5E   %.5E   %.5E   Dirac   %.5E   %.5E\n' \
+            % (KRHO / (1.0 - KRHO), 1.0, q['T_0'] / q['T_g'], 0.5 * q['d'], 0.0, 0.0, 0.0)
+    with open(os.path.join(d, 'INPUT/bc.txt'), 'w') as f:
+        for face in range(1, 7):
+            mend, nend = ranges[face]
+            code = 401 if face == 1 else 100
+            for n in range(1, nend + 1):
+                for m in range(1, mend + 1):
+                    f.write('   %6d%6d%6d%6d%6d%6d\n' % (1, face, m, n, 1, code))
+                    if code == 401:
+                        f.write(inlet)
+    with open(os.path.join(d, 'INPUT/phase.txt'), 'w') as f:
+        f.write('condensed-dispersed\nA 1 %s\n' % q['tokens'])
+    rows = ['%.1f %.6f %.6f %.6f' % (T, q['c'], q['rho_l'], q['c'] * T) for T in range(1, 5001)]
+    with open(os.path.join(d, 'INPUT/properties.dat'), 'w') as f:
+        f.write('TITLE = "Mass Thermodynamic Properties"\n'
+                'VARIABLES = "Temperature", "Cp", "Density", "Enthalpy"\nZONE T="A"\nI=5000, F=POINT\n')
+        f.write('\n'.join(rows) + '\n')
+    with open(os.path.join(d, 'input.ini'), 'w') as f:
+        f.write("""; p8 coherence stream, IGLOO side: one parcel per inlet cell at the gas velocity (Re 0, Nu 2).
+
+[IGLOO-General]
+gas-file    = INPUT/solfile.tec
+gas-order   = 1
+print-dcell = 1
+out-file    = ALL
+mollify     = off
+
+[IGLOO-ODE]
+ode-solver   = H-sdirk4
+relative-tol = 1e-11
+absolute-tol = %g
+
+[IGLOO-Models]
+drag = Stokes
+heat = Ranz-Marshall
+
+[IGLOO-BC]
+ds = 10.0
+
+[IGLOO-Properties]
+Lv                  = %g
+Mv                  = %g
+boiling-temperature = %.10g
+cpv                 = %g
+Le                  = %g
+Yinf                = %g
+
+[GPB-Phase1]
+type = condensed-dispersed
+rho  = %g
+cp   = %g
+
+[BCB-Block1]
+face1 = in
+face2 = out
+face3 = wall
+face4 = wall
+face5 = wall
+face6 = wall
+
+[out]
+type = outlet
+
+[in]
+type = inlet
+krho = %g
+dp   = %g
+
+[wall]
+type = wall
+q    = 0.0
+""" % (q['atol'], LV, MV, q['tboil'], CPV, LE, q['yinf'], q['rho_l'], q['c'], KRHO, q['d']))
+
+
+def write_ice_ev(d, leg, order):
+    q = EV[leg]
+    lx, nx, dx = ev_geom(leg)
+    os.makedirs(os.path.join(d, 'INPUT'))
+    os.makedirs(os.path.join(d, 'OUTPUT'))
+    xn, yn, zn = linspace(0.0, lx, nx + 1), [0.0, dx], [0.0, dx]
+    rho0 = GP / q['u']
+    n0 = rho0 / (q['rho_l'] * math.pi / 6.0 * q['d'] ** 3)
+    tec_block(os.path.join(d, 'INPUT/part-ic.tec'), ['rp1', 'up1', 'vp1', 'wp1', 'Tp1', 'np1'], xn, yn, zn,
+              [[v] * nx for v in (rho0, q['u'], 0.0, 0.0, q['T_0'], n0)], 'B1-CD')
+    tec_block(os.path.join(d, 'INPUT/gas.tec'), ['rho', 'u', 'v', 'w', 'T', 'R', 'gam', 'k', 'mu', 'dt'],
+              xn, yn, zn, [[v] * nx for v in (RHO_G, q['u'], 0.0, 0.0, q['T_g'], R_G, GAM, K_G, MU_G, 0.0)], 'B1-GAS')
+    rec = lambda i, f, code: '%8d%8d%8d%8d%8d%8d' % (1, i, 1, 1, f, code)       # noqa: E731
+    rows = [rec(1, 1, 402), '   %.10e %.10e normal normal %.10e %.10e 0.0 Dirac 0.0'
+            % (GP, q['u'], q['T_0'], 0.5 * q['d']), rec(nx, 2, 400)]
+    rows += [rec(i, f, 400) for f in (3, 4) for i in range(1, nx + 1)]
+    rows += [rec(i, f, 0) for f in (5, 6) for i in range(1, nx + 1)]
+    with open(os.path.join(d, 'INPUT/part-bc.txt'), 'w') as f:
+        f.write('\n'.join(rows) + '\n')
+    with open(os.path.join(d, 'INPUT/part-phase.txt'), 'w') as f:
+        f.write('condensed-dispersed phase\nA 1 %s\n' % q['tokens'])
+    muscl = order == 'o2'
+    # a steady march; leg E's step held at dt-max (the evaporation just below T_B is otherwise not resolved by the
+    # pseudo-time step: ICE warns and floors densities on the way, though it settles on the same field), 3 transits
+    niter = int(round(3.0 * lx / q['u'] / q['dtmax'])) if 'dtmax' in q else 20 * nx
+    probes = ['probe%d = c%d' % (i, i) for i in range(1, nx + 1)]
+    secs = []
+    for i in range(1, nx + 1):
+        secs += ['', '[c%d]' % i, 'variables = T_p1 rho_p1 n_p1 Ts_p1', 'index-position = 1 %d 1 1' % i,
+                 'diter = %d' % niter]
+    with open(os.path.join(d, 'input.ini'), 'w') as f:
+        f.write('\n'.join([
+            '[ICE-Parameters]', 'iter-threshold = %d' % niter, 'time-threshold = 1e+30', 'res-threshold = 0.0', '',
+            '[ICE-Numerics]', 'time-scheme = RK2', 'cfl = 0.8', 'time-accurate = false'] +
+            (['dt-max = %g' % q['dtmax']] if 'dtmax' in q else []) + [
+            'space-reconstruction = %s' % ('MUSCL' if muscl else 'first-order'),
+            'flux-limiter = %s' % ('vanleer' if muscl else 'none'), '',
+            '[ICE-Family1]', 'closure = MK', '',
+            '[ICE-Physics]', 'drag = NoDrag', 'heat-transfer = Stokes', 'density = %g' % q['rho_l'],
+            'specific-heat = %g' % q['c'], 'emissivity = 0.0', 'latent-heat = %g' % LV, 'vapour-molar-mass = %g' % MV,
+            'boiling-temperature = %.10g' % q['tboil'], 'vapour-specific-heat = %g' % CPV, 'lewis-number = %g' % LE,
+            'vapour-mass-fraction = %g' % q['yinf'], '',
+            '[ICE-IO]', 'ic-format = tecplot ascii', 'sol-format = tecplot ascii', 'shell-diter = 1000000000',
+            'sol-diter = 1000000000', 'res-diter = 1000000000', '',
+            '[ICE-Probes]'] + probes + secs + ['']))
+
+
+def ice_probes(d, nx):
+    """{cell: (T, rho, n, Ts)} from the last row of each probe file OUTPUT/c<i>.txt (list-directed rows of five)."""
+    out = {}
+    for i in range(1, nx + 1):
+        v = [float(t) for t in open(os.path.join(d, 'OUTPUT/c%d.txt' % i)).read().split()]
+        out[i] = tuple(v[-4:])
+    return out
+
+
+def iglo_rows_ev(d):
+    """IGLOO's rows of one parcel (all parcels coincide): [(x, T, m, Ts)], the exits, the log."""
+    f = os.path.join(d, 'OUTPUT/trajectories-A.dat')
+    with open(f) as fh:
+        has_ts = '"T<sub>s"' in fh.readline()
+    traj = load_rows(f, 'X', 'T', 'm<sub>p', 'T<sub>s') if has_ts else load_rows(f, 'X', 'T', 'm<sub>p')
+    if not has_ts:
+        traj = {k: [r[:3] + [None] + r[3:] for r in v] for k, v in traj.items()}
+    exits = load_rows(os.path.join(d, 'OUTPUT/outloc-A.dat'), 'T', 'mdot')
+    rows = sorted(traj[min(traj)], key=lambda r: r[0]) if traj else []
+    log = open(os.path.join(d, 'run_out.txt'), errors='replace').read()
+    return dict(rows=[tuple(r[:4]) for r in rows], allrows=[r for v in traj.values() for r in v], nparc=len(traj),
+                nexit=len(exits), log=log)
+
+
+def T_boil_at(leg):
+    """The boiling temperature at the gas pressure rho R T_g (Clausius-Clapeyron from boiling-temperature at 1 atm)."""
+    q = EV[leg]
+    p = RHO_G * R_G * q['T_g']
+    return 1.0 / (1.0 / q['tboil'] - math.log(p / PATM) * RU / (LV * MV))
+
+
+def check_ev(root, leg):
+    """Legs D (P2T) and E (ZGR): IGLOO's trajectory, ICE's cells (probe rows: T, rho, n, Ts) and the closed forms."""
+    q = EV[leg]
+    lx, nx, dx = ev_geom(leg)
+    Tg, T0 = q['T_g'], q['T_0']
+    m0 = q['rho_l'] * math.pi / 6.0 * q['d'] ** 3
+    rep = Rep()
+    try:
+        ig = iglo_rows_ev(os.path.join(root, 'iglo'))
+    except (IOError, OSError, ValueError, IndexError, KeyError) as exc:
+        rep.check(False, 'leg %s IGLOO: no readable output (%s)' % (leg, exc))
+        ig = None
+    if ig is not None:
+        bad = [k for k in ('stuck in cell', 'no net progress', 'Inner loop', 'non-finite', 'Run_ODESolver err')
+               if k in ig['log']]
+        last = [max(r[0] for r in ig['allrows'] if r[4] == pid) for pid in set(r[4] for r in ig['allrows'])]
+        rep.check(ig['nparc'] == NY * NZ and ig['nexit'] == NY * NZ and not bad and min(last) >= lx - 1e-6,
+                  'leg %s IGLOO: %d parcels, %d exits at the outlet (last rows from x = %.6f m), no failure line%s'
+                  % (leg, ig['nparc'], ig['nexit'], min(last), (' (found: %s)' % ', '.join(bad)) if bad else ''))
+        xs, ts, ms = [r[0] for r in ig['rows']], [r[1] for r in ig['rows']], [r[2] for r in ig['rows']]
+    ice = {}
+    for order in ('o1', 'o2'):
+        d = os.path.join(root, 'ice-' + order)
+        tag = 'leg %s ICE %s' % (leg, 'first order' if order == 'o1' else 'MUSCL')
+        try:
+            ice[order] = ice_probes(d, nx)
+            log = open(os.path.join(d, 'log'), errors='replace').read()
+        except (IOError, OSError, ValueError, IndexError) as exc:
+            rep.check(False, '%s: no probe rows (%s)' % (tag, exc.__class__.__name__))
+            continue
+        warn = [w for w in ('[WARNING] boiling = ZGR', 'negative densit', 'ERROR') if w in log]
+        rep.check(not warn, '%s: no unresolved-step, floored-density or error line%s'
+                  % (tag, (' (found: %s)' % ', '.join(warn)) if warn else ''))
+    if leg == 'D':
+        check_p2t(rep, q, ig, ice, xs, ts, m0) if ig is not None else None
+    else:
+        check_zgr(rep, q, ig, ice, xs, ts, ms, m0) if ig is not None else None
+    return rep
+
+
+def check_p2t(rep, q, ig, ice, xs, ts, m0):
+    """Leg D: P2T without mass transfer (Yinf = 1), zeta = Nu k_g/(2 k_l) = 1: T_s = (5 T + T_g)/6 and
+    T - T_g = (T_0 - T_g) exp(-x/L), L = u 1.2 tau_ITC, tau_ITC = c rho d^2/(12 k_g) (IGLOO's temp-relax-p2t)."""
+    lx, nx, dx = ev_geom('D')
+    Tg, T0 = q['T_g'], q['T_0']
+    L = q['u'] * 1.2 * q['c'] * q['rho_l'] * q['d'] ** 2 / (12.0 * K_G)
+    cf = lambda x: Tg + (T0 - Tg) * math.exp(-x / L)                              # noqa: E731
+    res = [(abs(r[1] - cf(r[0])), budget_iglo(r[1], L, Tg, 1.0)) for r in ig['allrows']]
+    w = max(res, key=lambda v: v[0] / v[1])
+    wts = max(abs(r[3] - (5.0 * r[1] + Tg) / 6.0) for r in ig['allrows'])
+    wm = max(abs(r[2] / m0 - 1.0) for r in ig['allrows'])
+    rep.check(all(v[0] <= v[1] for v in res) and wts <= 1e-6 and wm <= TOL_M_PRINT,
+              'leg D IGLOO: on its %d rows T against the closed form %.1e K = %.2f of its budget, T_s against '
+              '(5 T + T_g)/6 %.1e K (1e-6), m/m0 - 1 %.1e' % (len(res), w[0], w[0] / w[1], wts, wm))
+    for order, pr in sorted(ice.items()):
+        tag = 'leg D ICE %s' % ('first order' if order == 'o1' else 'MUSCL')
+        T = [pr[i][0] for i in range(1, nx + 1)]
+        wts = max(abs(pr[i][3] / ((5.0 * pr[i][0] + Tg) / 6.0) - 1.0) for i in pr)
+        wm = max(abs(pr[i][1] / pr[i][2] / m0 - 1.0) for i in pr)
+        rep.check(wts <= 1e-12 and wm <= 1e-9, '%s: T_s = (5 T + T_g)/6 in every cell, %.1e relative (1e-12); m/m0 - 1 '
+                  '%.1e (1e-9)' % (tag, wts, wm))
+        if order == 'o1':
+            y, be = T0 - Tg, []
+            for _ in range(nx):
+                y = y / (1.0 + dx / L)
+                be.append(Tg + y)
+            res = []
+            for i in range(nx):
+                xf = (i + 1) * dx
+                res.append((abs(T[i] - interp4(xs, ts, xf)) - abs(be[i] - cf(xf)), budget_iglo(T[i], L, Tg, 1.0),
+                            abs(T[i] - be[i])))
+            w = max(range(nx), key=lambda i: res[i][0] / res[i][1])
+            wm = max(range(nx), key=lambda i: res[i][2])
+            rep.check(all(v[0] <= v[1] for v in res) and res[wm][2] <= TOL_MARCH,
+                      '%s: T in every cell against its backward-Euler march, y_i = y_i-1/(1 + dx/L), %.1e K (bound '
+                      '%.0e); against IGLOO at the outflow faces, beyond the march\'s own error, %.2e K (cell %d) = '
+                      '%.2f of IGLOO\'s budget' % (tag, res[wm][2], TOL_MARCH, res[w][0], w + 1, res[w][0] / res[w][1]))
+        else:
+            s2 = (dx / L) ** 2 * abs(T0 - Tg)
+            res = []
+            for i in range(nx):
+                xc = (i + 0.5) * dx
+                res.append((abs(T[i] - interp4(xs, ts, xc)), budget_iglo(T[i], L, Tg, 1.0) + s2))
+            w = max(range(nx), key=lambda i: res[i][0] / res[i][1])
+            rep.check(all(v[0] <= v[1] for v in res), '%s: T in every cell against IGLOO at the centres, worst %.2e K '
+                      'in '
+                      'cell %d = %.2f of its bound' % (tag, res[w][0], w + 1, res[w][0] / res[w][1]))
+
+
+def check_zgr(rep, q, ig, ice, xs, ts, ms, m0):
+    """Leg E: a superheated water drop in a gas at its boiling temperature T_B(p) = T_g = 600 K (IGLOO's
+    boiling-zgr-switch stream): ZGR's adiabatic flash down to T_B, then CEM to the wet bulb."""
+    lx, nx, dx = ev_geom('E')
+    Tg, T0, c = q['T_g'], q['T_0'], q['c']
+    TB = T_boil_at('E')
+    inv0 = LV - c * (T0 - TB)
+    flash = lambda T, m: m * (LV - c * (T - TB)) / (m0 * inv0) - 1.0              # noqa: E731
+    above = [r for r in ig['allrows'] if r[1] >= TB]
+    below = [r for r in ig['allrows'] if r[1] < TB]
+    pids = set(r[4] for r in ig['allrows'])
+    both = all(any(r[4] == k for r in above) and any(r[4] == k for r in below) for k in pids)
+    res = [(abs(flash(r[1], r[2])), e13_half_ulp(r[2]) / r[2] + 1e-8) for r in above]
+    w = max(res, key=lambda v: v[0] / v[1]) if res else (float('inf'), 1.0)
+    rep.check(both and all(v[0] <= v[1] for v in res), 'leg E IGLOO: every parcel has rows above and below T_B(p) = '
+              '%.6f K; the flash identity m (L_v - c (T - T_B)) = m0 (L_v - c (T_0 - T_B)) on its %d rows above, worst '
+              '%.1e = %.2f of the E13.6 print of m' % (TB, len(above), w[0], w[0] / w[1]))
+    rows = ig['rows']
+    k = next(j for j, r in enumerate(rows) if r[1] < TB)
+    xa, xb = rows[k - 1][0], rows[k][0]
+    Twb = T_wet_bulb('E')
+    Tx = rows[-1][1]
+    rep.check(abs(Tx - Twb) <= TOL_WB_IG, 'leg E IGLOO: exit temperature %.6f K against the wet bulb of CEM, '
+              'c_p,g (T_g - T) = L_v ln(1 + B_M(T)): %.6f K (%.1e, bound %.0e)' % (Tx, Twb, abs(Tx - Twb), TOL_WB_IG))
+    print('       leg E IGLOO: switch between its rows at x = %.6f and %.6f m; exit m/m0 = %.6f'
+          % (xa, xb, rows[-1][2] / m0))
+    for order, pr in sorted(ice.items()):
+        tag = 'leg E ICE %s' % ('first order' if order == 'o1' else 'MUSCL')
+        cells = range(1, nx + 1)
+        up = [i for i in cells if pr[i][0] >= TB]
+        lo = [i for i in cells if pr[i][0] < TB]
+        mI = {i: pr[i][1] / pr[i][2] for i in cells}
+        wf = max(abs(flash(pr[i][0], mI[i])) for i in up) if up else float('inf')
+        wts = max([abs(pr[i][3] / TB - 1.0) for i in up] + [abs(pr[i][3] / pr[i][0] - 1.0) for i in lo])
+        rep.check(bool(up) and bool(lo) and up == list(range(1, len(up) + 1)) and wf <= TOL_FLASH_ICE[order] and
+                  wts <= 1e-12, '%s: cells 1-%d above T_B, the rest below; flash identity there %.1e (%.0e); T_s = T_B '
+                  'above and T below, %.1e relative' % (tag, len(up), wf, TOL_FLASH_ICE[order], wts))
+        if not lo:
+            continue
+        sw = lo[0]
+        off = 1.0 if order == 'o1' else 0.5
+        xsw = (sw - 1 + off) * dx
+        lag = SWITCH_LAG_O1 if order == 'o1' else 1
+        rep.check(xa - (0 if order == 'o1' else dx) <= xsw <= xb + lag * dx + 1e-12,
+                  '%s: first cell below T_B %d (its %s at x = %.6f m), IGLOO\'s switch in (%.6f, %.6f], allowed '
+                  'up to %d '
+                  'cell(s) after' % (tag, sw, 'outflow face' if order == 'o1' else 'centre', xsw, xa, xb, lag))
+        Te = pr[nx][0]
+        rep.check(abs(Te - Twb) <= TOL_WB_ICE, '%s: exit temperature %.6f K against the wet bulb %.6f K (%.1e, '
+                  'bound %.0e)'
+                  % (tag, Te, Twb, abs(Te - Twb), TOL_WB_ICE))
+        dm = mI[nx] / m0 - rows[-1][2] / m0
+        if order == 'o2':
+            n = int(xa // dx) - 3
+            d = [abs(pr[i + 1][0] - interp4(xs, ts, (i + 0.5) * dx)) for i in range(n)]
+            w = max(range(n), key=lambda i: d[i])
+            rep.check(max(d) <= TOL_FLASH_T, '%s: T in the flash, cells 1-%d, against IGLOO at the centres, worst '
+                      '%.2e K '
+                      'in cell %d (bound %.0e)' % (tag, n, d[w], w + 1, TOL_FLASH_T))
+            rep.check(abs(dm) <= TOL_MEXIT, '%s: drop mass at the exit m/m0 = %.6f against IGLOO\'s %.6f (%+.1e, '
+                      'bound %.0e)'
+                      % (tag, mI[nx] / m0, rows[-1][2] / m0, dm, TOL_MEXIT))
+        else:
+            print('       %s: drop mass at the exit m/m0 = %.6f against IGLOO\'s %.6f (%+.1e; first order, the '
+                  'switch late)'
+                  % (tag, mI[nx] / m0, rows[-1][2] / m0, dm))
+
+
+def e13_half_ulp(v):
+    """Half a unit in the last place of v printed E13.6 (0.dddddd E+xx)."""
+    e = math.floor(math.log10(abs(v))) + 1
+    return 0.5e-6 * 10.0 ** e
+
+
+def T_wet_bulb(leg):
+    """CEM's wet bulb at Re = 0, Le = 1, Y_inf = 0: c_p,g (T_g - T) = L_v ln(1 + B_M(T)), B_M = Y_s/(1 - Y_s), Y_s from
+    Clausius-Clapeyron at the gas pressure, the surface fraction capped at 1 - 1e-12 (bisection)."""
+    q = EV[leg]
+    p, cpg = RHO_G * R_G * q['T_g'], GAM * R_G / (GAM - 1.0)
+
+    def f(T):
+        xs = min(PATM * math.exp(-(LV * MV / RU) * (1.0 / T - 1.0 / q['tboil'])) / p, 1.0 - 1e-12)
+        ys = xs * MV / (xs * MV + (1.0 - xs) * RU / R_G)
+        return cpg * (q['T_g'] - T) - LV * math.log(1.0 + (ys - q['yinf']) / (1.0 - ys))
+    lo, hi = 300.0, q['T_g'] - 1e-9
+    for _ in range(200):
+        mid = 0.5 * (lo + hi)
+        if f(mid) > 0.0:
+            lo = mid
+        else:
+            hi = mid
+    return 0.5 * (lo + hi)
 
 
 def main():
-    if len(sys.argv) != 4 or sys.argv[1] not in ('make', 'check') or sys.argv[3] not in LEGS:
+    if len(sys.argv) != 4 or sys.argv[1] not in ('make', 'check') or sys.argv[3] not in list(LEGS) + list(EV):
         sys.exit(__doc__)
     what, root, leg = sys.argv[1:]
     if what == 'make':
+        if leg in EV:
+            write_iglo_ev(os.path.join(root, 'iglo'), leg)
+            for order in ('o1', 'o2'):
+                write_ice_ev(os.path.join(root, 'ice-' + order), leg, order)
+            return 0
         write_iglo(os.path.join(root, 'iglo'), leg)
         for order in ('o1', 'o2'):
             write_ice(os.path.join(root, 'ice-' + order), leg, order)
         return 0
-    rep = check(root, leg)
+    rep = check_ev(root, leg) if leg in EV else check(root, leg)
     print('  leg %s: %d passed, %d failed' % (leg, rep.npass, rep.nfail))
     return 1 if rep.nfail else 0
 

@@ -179,7 +179,7 @@ ICE and IGLOO standalone; `p31_steady_check.sh` takes an optional list of legs.
 | `p4_ice_bc_check.sh` | ICE's boundary types 301 and 403 |
 | `p6_floor_guard_check.sh` | the consumed-species floor guard |
 | `p7_fpe_check.sh` | no floating-point exception on the coupling paths |
-| `p8_solid_coherence_check.sh` | ICE and IGLOO solidification on one stream: freezing, melting, freezing on a liquid heat capacity that varies |
+| `p8_solid_coherence_check.sh` | ICE and IGLOO on one stream: freezing, melting, freezing on a liquid heat capacity that varies; the drop's internal heating (`liquid-conduction = P2T`) and boiling through the boiling limit (`boiling = ZGR`) |
 | `p9_ini_reread_check.sh` | the hot re-read of `input.ini` |
 | `p10_ice_box_check.sh` | `ice-box`: ICE's frozen source against closed forms; the MOSE + ICE time-accurate refusal |
 | `p11_mass_flux_inlet_check.sh` | the gas inflow handed to IGLOO on mass-flux inlets |
