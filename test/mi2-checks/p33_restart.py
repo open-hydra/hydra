@@ -6,10 +6,11 @@
 
 exact: the run in one go against part 1 + the restart, both on the primed schedule (a coupling step with MOSE-iter 0
 at the restart point). Every line of gas-field.tec and part-field.tec equal but each solver's output-number record,
-which is one higher after the restart (MI2's final postprocess writes one output more than the run made); every line
-of gas-diagnostic.tec and part-residuals.tec equal; each residual history equal to the one-go file with one more copy
-of the row of part 1's last iteration (that same final postprocess writes it twice). Non-vacuous: part 1's fields
-differ from the end's, and the restart's counters are those of the whole run.
+equal or one higher after the restart (today one higher: MI2's final postprocess, an intermediate output, writes one
+output more than the run made); every line of gas-diagnostic.tec and part-residuals.tec equal; each residual history
+equal to the one-go file once consecutive repeated rows are collapsed, with as many rows or one more (today one more:
+that same postprocess writes the last row twice, and the restart keeps part 1's copy). Which of the two holds is
+printed. Non-vacuous: part 1's fields differ from the end's, and the restart's counters are those of the whole run.
 plain: the same without the priming step. The coupler's ICE source is not stored, so the first MOSE block after the
 restart runs without it: the fields must differ (XFAIL, the largest difference over each variable's range printed);
 equal fields mean the coupler now restores or primes its source, and the gate's priming step can go (FAIL).
@@ -64,14 +65,15 @@ def exact(one, rst, part1):
         ca = [(i, COUNTER.match(x)) for i, x in enumerate(a) if COUNTER.match(x)]
         cb = [(i, COUNTER.match(x)) for i, x in enumerate(b) if COUNTER.match(x)]
         same = len(a) == len(b) and all(x == y for x, y in zip(a, b) if not COUNTER.match(x))
-        ok_c = len(ca) == 1 and len(cb) == 1 and ca[0][0] == cb[0][0] and \
-            float(cb[0][1].group(2)) == float(ca[0][1].group(2)) + 1.0
+        step = float(cb[0][1].group(2)) - float(ca[0][1].group(2)) if ca and cb else None
+        ok_c = len(ca) == 1 and len(cb) == 1 and ca[0][0] == cb[0][0] and step in (0.0, 1.0)
         nd = sum(1 for x, y in zip(a, b) if x != y)
         where = '' if same else ', first difference at line %d: %s | %s' % first_diff(
             [x for x in a if not COUNTER.match(x)], [y for y in b if not COUNTER.match(y)])
-        rep.check(same and ok_c, '%s: %d lines, every one equal but the output number (%s against %s, one more after '
-                  'the restart): %d line(s) differ%s' % (f, len(a), cb[0][1].group(2) if cb else '-',
-                                                       ca[0][1].group(2) if ca else '-', nd, where))
+        how = {0.0: 'equal', 1.0: 'one higher after the restart: the extra output of the final postprocess'}
+        rep.check(same and ok_c, '%s: %d lines, every one equal but the output number, %s against %s (%s): %d '
+                  'line(s) differ%s' % (f, len(a), cb[0][1].group(2) if cb else '-', ca[0][1].group(2) if ca else '-',
+                                        how.get(step, 'off by %s' % step), nd, where))
     for f in EXACT:
         a, b = lines(one, f), lines(rst, f)
         rep.check(a == b, '%s: %d lines, byte for byte equal%s' % (f, len(a), '' if a == b else
@@ -80,11 +82,13 @@ def exact(one, rst, part1):
     for f in HISTORIES:
         a, b, p1 = lines(one, f), lines(rst, f), lines(part1, f)
         a, b, p1 = [x for x in a if x.strip()], [x for x in b if x.strip()], [x for x in p1 if x.strip()]
-        k = len(p1)      # part 1's file ends with its last row twice: the restart appends after the second
-        ok = len(b) == len(a) + 1 and k >= 2 and p1[-1] == p1[-2] and b[:k] == p1 and b[:k - 1] == a[:k - 1] \
-            and b[k:] == a[k - 1:]
-        rep.check(ok, '%s: %d rows, the run in one go\'s %d with the row of part 1\'s last iteration (%s) once more'
-                  % (f, len(b), len(a), p1[-1].split()[0] if p1 else '-'))
+        ua, ub = collapse(a), collapse(b)
+        extra = len(b) - len(a)
+        ok = ua == ub and extra in (0, 1) and len(a) > 1 and b[:len(p1)] == p1
+        how = {0: 'as many rows', 1: 'one row more: the last row of part 1 written twice by the final postprocess'}
+        rep.check(ok, '%s: %d rows against the run in one go\'s %d, equal once repeated rows are collapsed (%d against '
+                  '%d), part 1\'s %d rows first (%s)' % (f, len(b), len(a), len(ub), len(ua), len(p1),
+                                                       how.get(extra, '%+d rows' % extra)))
     # non-vacuous: the restart went on from part 1 and made the whole run's iterations
     moved = all(lines(part1, f) != lines(rst, f) for f in FIELDS)
     cyc = [(aux(one, f, 'CYCLE'), aux(rst, f, 'CYCLE'), aux(part1, f, 'CYCLE')) for f in FIELDS]
@@ -93,6 +97,11 @@ def exact(one, rst, part1):
               'files equal the run in one go\'s (MOSE %s, ICE %s; part 1 %s, %s)'
               % (cyc[0][1], cyc[1][1], cyc[0][2], cyc[1][2]))
     return rep
+
+
+def collapse(rows):
+    """The rows with consecutive repeats removed."""
+    return [r for i, r in enumerate(rows) if i == 0 or r != rows[i - 1]]
 
 
 def read_tec(path):

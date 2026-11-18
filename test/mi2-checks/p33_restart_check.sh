@@ -10,10 +10,10 @@
 # The coupling step with MOSE-iter 0 primes the restart: the coupler's ICE source is in neither field file (the
 # first MOSE block after a restart would run without it), so ICE recomputes it from its restored state before MOSE
 # needs it. p33_restart.py then asserts the files of part 2 against those of the run in one go: every value of
-# gas-field.tec and part-field.tec equal, each solver's output number one higher (MI2's final postprocess writes an
-# output more than the run made, hydra_MI2.f90 TODO = 2); gas-diagnostic.tec and part-residuals.tec equal; each
-# residual history the one-go file with the row of part 1's last iteration once more (the same postprocess writes
-# it twice); part 1's fields moved, the restarted counters those of the whole run. sol-diter is the iterations of
+# gas-field.tec and part-field.tec equal, each solver's output number equal or one higher (today one higher: MI2's
+# final postprocess, TODO = 2, writes an output more than the run made); gas-diagnostic.tec and part-residuals.tec
+# equal; each residual history equal once repeated rows are collapsed, as many rows or one more (today one more: the
+# same postprocess writes the last row twice); part 1's fields moved, the restarted counters those of the whole run. sol-diter is the iterations of
 # one coupling step, so that part 1 writes its last state (the final postprocess writes a field only on a multiple of
 # sol-diter). Every run: GAME OVER, no error line, exit 0.
 #  plain  : the restart without the priming step (one-go N-coupling 4, part 2 N-coupling 2) must differ from its run
@@ -48,7 +48,8 @@ restart() {  # restart <part-1 run dir> <dir> <N-coupling> <MOSE-iter> <ICE-iter
   sed -i -e '/^\[MOSE-Parameters\]/a newrun = false' -e '/^\[ICE-Parameters\]/a newrun = false' "$2/input.ini"
   ( cd "$2" && ulimit -s unlimited && export KMP_STACKSIZE=100M OMP_NUM_THREADS=1 &&
     echo "# exe=$EXE restart threads=1 start=$(date -Is)" > ../$(basename "$2").log &&
-    /usr/bin/time -f "# wall=%e s  maxrss=%M kB" "$EXE" >> ../$(basename "$2").log 2>&1 )
+    if [ -x /usr/bin/time ]; then /usr/bin/time -f "# wall=%e s  maxrss=%M kB" "$EXE" >> ../$(basename "$2").log 2>&1
+    else "$EXE" >> ../$(basename "$2").log 2>&1; fi )
   local rc=$?; echo "# exit=$rc end=$(date -Is)" >> "$(dirname "$2")/$(basename "$2").log"; return $rc; }
 clean() {  # clean <name> <log> <exit>
   local bad; bad=$(grep -c -e '\[ERROR\]' -e 'STOP' -e 'p<0 detected' -e 'NaN' -e 'ABORT:' "$2")
