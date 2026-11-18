@@ -13,7 +13,9 @@ stops within about half a millimetre and evaporates in place to burnout. Per str
 
 with its own adaptive Dormand-Prince 5(4) integrator (rtol 1e-11) and an exact solve of the LK fixed point,
 in the gas IGLOO sampled: the initial condition for sweep 0 (uniform), OUTPUT/gas-field.tec for the last
-sweep (cell-wise constant, gas-order 1, faces crossed as IGLOO crosses them). Gas transport and
+sweep, sampled as [IGLOO-General] gas-order says: cell-wise constant at 1, faces crossed as IGLOO crosses them;
+at 2 (IGLOO's default) bilinear on the dual cells whose corners are the cell centres, at the drop's position on
+every right-hand side, inside the outermost centres only. Gas transport and
 thermodynamics are rebuilt from INPUT/gas-*.dat as the gas solver builds them (integer-kelvin tables, Wilke
 mixing). Then, per sweep:
 
@@ -67,7 +69,7 @@ PHI = 0.6180339887498949  # scatter phase offset per ID
 
 # ------------------------------------------------------------------ tolerances (measured floors, REFERENCE.md)
 TOL = {
-    "ratio": 2.0,          # S: residual / print budget, every sample and column (measured 0.99)
+    "ratio": 2.0,          # S: residual / print budget, every sample and column (measured 0.99); a continuous gas
     "ratio_cells": 10.0,   # S on a cell-wise gas: plus the face-crossing switch time (measured 5.1)
     "T_qs": 1.0e-3,        # Q: K beyond the reference's own quasi-steady lag
     "t_lead": 1.0e-6,      # C: s a sample may precede its quantum time
@@ -368,6 +370,7 @@ class Droplet:
 
     def rhs(self, s, gas):
         x, y, u, v, T, m = s
+        gas = local(gas, x, y)
         rho_g, ug, vg, _, Tg, mu, k, gam, R = gas
         d = self.diameter(m)
         du, dv = ug - u, vg - v
@@ -446,6 +449,49 @@ class CellGas:
     def bounds(self, cell):
         i, j = cell
         return (self.xn[i], self.xn[i + 1], self.yn[j], self.yn[j + 1])
+
+
+class DualGas:
+    """The gas IGLOO samples at gas-order 2 on a planar mesh: the dual cells whose corners are the cell centres
+    (fill_dual_nodes), each corner carrying its cell's state, and at the drop's position, on every right-hand side,
+    each of rho, u, v, w, T, mu, k, gamma, R interpolated bilinearly from the four corners, (u, v) clamped to the
+    cell (interp2ndOrder2D, sampleGas2D); p and c_p follow from the interpolated rho, R, T and gamma, R. Interior
+    dual cells only: the ring IGLOO extrapolates beyond the outermost centres is not rebuilt, so a drop that reaches
+    it stops the check."""
+
+    def __init__(self, tables, path):
+        cg = CellGas(tables, path)
+        self.xn, self.yn = 0.5 * (cg.xn[:-1] + cg.xn[1:]), 0.5 * (cg.yn[:-1] + cg.yn[1:])   # the dual nodes
+        self.node = {c: np.array(st) for c, st in cg.states.items()}
+        self.ni, self.nj = len(self.xn) - 1, len(self.yn) - 1
+
+    def cell_of(self, x, y, u=0.0, v=0.0):
+        i = int(np.searchsorted(self.xn, x, side="left")) - 1
+        j = int(np.searchsorted(self.yn, y, side="left")) - 1
+        return (min(max(i, -1), self.ni), min(max(j, -1), self.nj))
+
+    def gas(self, cell):
+        i, j = cell
+        if not (0 <= i < self.ni and 0 <= j < self.nj):
+            raise SystemExit("[FAIL] gas-order 2: the drop reaches the dual cell %s, beyond the cell centres "
+                             "(IGLOO's extrapolated ring, which this reference does not rebuild)" % (cell,))
+        x0, x1, y0, y1 = self.bounds(cell)
+        g00, g10, g11, g01 = (self.node[c] for c in ((i, j), (i + 1, j), (i + 1, j + 1), (i, j + 1)))
+
+        def at(x, y):
+            a = min(max((x - x0) / (x1 - x0), 0.0), 1.0)
+            b = min(max((y - y0) / (y1 - y0), 0.0), 1.0)
+            return (1.0 - a) * (1.0 - b) * g00 + a * (1.0 - b) * g10 + a * b * g11 + (1.0 - a) * b * g01
+        return at
+
+    def bounds(self, cell):
+        i, j = cell
+        return (self.xn[i], self.xn[i + 1], self.yn[j], self.yn[j + 1])
+
+
+def local(gas, x, y):
+    """The gas tuple at (x, y): a gas-order-2 field is sampled there, any other is the same over its cell."""
+    return gas(x, y) if callable(gas) else gas
 
 
 # ------------------------------------------------------------------ Dormand-Prince 5(4)
@@ -606,7 +652,7 @@ def node_windows(drop, field, traj, m_b):
         if abs(n1 - n0) != 1 or not lo < node < hi:
             continue
         gas = field.gas(cell)
-        if abs(s[4] - drop.t_quasi_steady(gas, drop.diameter(s[5]), s[2], s[3])) >= 0.02:
+        if abs(s[4] - drop.t_quasi_steady(local(gas, s[0], s[1]), drop.diameter(s[5]), s[2], s[3])) >= 0.02:
             continue                                           # not on the plateau: the steps are short there
         rising = n1 > n0
         dT = -1.0e-4 if rising else 1.0e-4                     # the relaxation rate, inside the interval it leaves
@@ -710,9 +756,9 @@ def check_sweep(rep, run, drop, field, sweep_tag, streams, dt_q, gated, label, n
             w["lead"] = max(w["lead"], tk - tt)
             w["lag"] = max(w["lag"], tt - tk)
             d_meas = drop.diameter(mm)
-            tqs_ref = drop.t_quasi_steady(gas, drop.diameter(st[5]), st[2], st[3])
+            tqs_ref = drop.t_quasi_steady(local(gas, st[0], st[1]), drop.diameter(st[5]), st[2], st[3])
             if abs(st[4] - tqs_ref) < 0.02:                     # the plateau: the reference sits on its QS balance
-                tqs = drop.t_quasi_steady(gas, d_meas, meas["u"], meas["v"])
+                tqs = drop.t_quasi_steady(local(gas, meas["x"], meas["y"]), d_meas, meas["u"], meas["v"])
                 w["qs"] = max(w["qs"], abs(meas["T"] - tqs) - abs(st[4] - tqs_ref))
                 tplat.append(meas["T"])
                 dmin_plat, dmax_plat = min(dmin_plat, d_meas), max(dmax_plat, d_meas)
@@ -763,7 +809,7 @@ def check_sweep(rep, run, drop, field, sweep_tag, streams, dt_q, gated, label, n
         if tplat:
             print("        plateau: T %.4f..%.4f K over d %.2f..%.2f um; reference lifetime %.8e s, x-stop %.6f m"
                   % (min(tplat), max(tplat), dmin_plat * 1e6, dmax_plat * 1e6, t_life, s_end[0]))
-    rtol_s = TOL["ratio"] if isinstance(field, UniformGas) else TOL["ratio_cells"]
+    rtol_s = TOL["ratio"] if isinstance(field, (UniformGas, DualGas)) else TOL["ratio_cells"]
     rep.check("S", w["ratio"] <= rtol_s,
               "%d samples paired by mass: worst residual/budget %.3f (tol %.1f) -- %s; %d just after a node of the "
               "Psat column" % (w["n"], w["ratio"], rtol_s, w["arg"], w["node"]), gated)
@@ -948,6 +994,10 @@ def main():
         m0 = math.pi / 6.0 * drop.rho_l * ds[i] ** 3
         streams.append((i + 1, np.array([xs[i], ys[i], ups[i], vps[i], t0s[i], m0]), mds[i]))
     ncoup = int(ini.get("HYDRA-Parameters", {}).get("N-coupling", "1"))
+    # the gas IGLOO samples: cell-wise (1) or bilinear on the dual cells (2, IGLOO's default)
+    gas_order = int(ini.get("IGLOO-General", {}).get("gas-order", "2"))
+    if gas_order not in (1, 2):
+        raise SystemExit("[FAIL] [IGLOO-General] gas-order = %d: IGLOO takes 1 or 2" % gas_order)
     vref = sum(math.sqrt(s[1][2] ** 2 + s[1][3] ** 2) for s in streams) / n
     # the scatter quantum: fsample-traj of the INI the run read, IGLOO's default when it is absent
     run_ini = os.path.join(run, "input.ini")
@@ -975,7 +1025,7 @@ def main():
             gated = True
         elif k == ncoup - 1:
             gf = os.path.join(run, "OUTPUT", "gas-field.tec")
-            field = CellGas(tables, gf)
+            field = DualGas(tables, gf) if gas_order == 2 else CellGas(tables, gf)
             # a coupling step runs MOSE, then IGLOO: the last sweep sampled the gas after the run's last MOSE iteration
             it_file = mose_iteration(gf)
             it_last = last_history_iteration(os.path.join(run, "OUTPUT", "gas-residual-history.dat"))
