@@ -151,22 +151,25 @@ program hydra_MI2_program
     else
       block
         logical :: iceResumed, moseRestarts, moseResumed, used
+        character(len=:), allocatable :: why
         ! the counters each solver resumes with its field (not on a change of kind, steady <-> time-accurate, nor from
         ! a field without them): the hand-off is of a coupling step of the run the fields come from only then
         iceResumed   = ICE_obj_io%restart%found .and. ICE_obj_sim_param%iter_general == ICE_obj_io%restart%cycle
         moseRestarts = .not. MOSE_obj_sim_param%newrun
         moseResumed  = MOSE_obj_io%restart%found .and. MOSE_obj_sim_param%iter_general == MOSE_obj_io%restart%cycle
+        used = .false.
         if ( .not. iceResumed .or. ( moseRestarts .and. .not. moseResumed ) ) then
-          write(*,'(A)') ' [WARNING] MI2: '//trim(merge('ICE ', 'MOSE', .not. iceResumed))//' restarts without the '// &
-            'counters of the run it continues (a run of the other kind, steady or time-accurate, or a field without '// &
-            'them): '//ICE_Exchange_File()//' is not used. This is a new coupled run from the restored fields: its '// &
-            'first MOSE block runs without ICE''s source'
+          why = trim(merge('ICE ', 'MOSE', .not. iceResumed))//' restarts without the counters of the run it '// &
+            'continues (a run of the other kind, steady or time-accurate, or a field without them)'
         else
-          call Read_ICE_Exchange( ICE_simulation, MOSE_obj_sim_param%iter_general, moseRestarts, used, ICE_has_sources )
+          call Read_ICE_Exchange( ICE_simulation, MOSE_obj_sim_param%iter_general, moseRestarts, used, &
+                                  ICE_has_sources, why )
           if ( used ) write(*,'(A,I0,A,I0,A)') ' [MI2] ICE restarts with what its last coupling step handed the '// &
             'gas, from '//ICE_Exchange_File()//' (ICE iteration ', ICE_obj_sim_param%iter_general, ', MOSE iteration ', &
             MOSE_obj_sim_param%iter_general, ')'
         endif
+        ! without the hand-off the first MOSE block runs without ICE's source: stopped when that ends a continuation
+        if ( .not. used ) call ICE_Handoff_Unused( why )
       end block
     endif
   endif
@@ -936,11 +939,8 @@ contains
   !  next, so it starts empty on the restored fields. Stop when a cycle in which IGLOO iterates is time-accurate (a cold
   !  IGLOO start does not continue it); one warning when every such cycle is steady; nothing when IGLOO never iterates.
   subroutine Check_IGLOO_Restart()
-    use MOSE_Global_m,   only: MOSE_phase_prefix
-    use ICE_Global_m,    only: ICE_phase_prefix
-    use ICE_IO_Solution, only: ICE_condinit => condinit
     implicit none
-    character(len=:), allocatable :: why, files, keys
+    character(len=:), allocatable :: why
     logical :: moseRe, iceRe
     integer :: c
 
@@ -951,23 +951,12 @@ contains
 
     do c = 1, size( hydra_MI2_obj%IGLOO_iter )
       if ( hydra_MI2_obj%IGLOO_iter(c) == 0 ) cycle
-      why = Cycle_Clock( c )
+      why = Cycle_Clock( c, 'IGLOO' )
       if ( len(why) == 0 ) cycle
-      files = ''
-      keys  = ''
-      if ( moseRe ) then
-        files = As_IC( trim(MOSE_obj_io%nameinit), MOSE_phase_prefix )
-        keys  = '[MOSE-Parameters]'
-      endif
-      if ( iceRe ) then
-        files = files//trim(merge(' and ', '     ', moseRe))//' '//As_IC( trim(ICE_condinit), ICE_phase_prefix )
-        keys  = keys//trim(merge(' and ', '     ', moseRe))//' [ICE-Parameters]'
-      endif
       write(*,'(A,I0,A)') ' [ERROR] MI2: newrun = false with IGLOO, and IGLOO iterates in cycle ', c, ', a time-'// &
         'accurate cycle: '//why//'. IGLOO keeps no parcels and no sources from one run to the next, so it would start '// &
         'empty on the restored fields, and a cold IGLOO start does not continue a time-accurate run. To go on from '// &
-        'these fields, start a new run from them: copy '//trim(adjustl(files))//' (ic-format: the format of the field), '// &
-        'and set newrun = true in '//trim(adjustl(keys))
+        'these fields, start a new run from them: '//Way_Out()
       error stop 1
     enddo
 
@@ -980,20 +969,81 @@ contains
   end subroutine Check_IGLOO_Restart
 
 
-  !> Why cycle c, in which IGLOO iterates, is time-accurate ('' if it is not): the gas IGLOO hands its sources to
-  !  steps in physical time (they stay in force until IGLOO's next solve, whichever cycle MOSE iterates in), or ICE
+  !> ICE restarts and its hand-off cannot be used (why): the first MOSE block runs without ICE's source. Stop when a
+  !  cycle in which ICE iterates is time-accurate (the run would not continue the one it restarts) or when ICE iterates
+  !  in no cycle (the hand-off would be the only source of ICE the gas gets: another end state); one warning otherwise.
+  subroutine ICE_Handoff_Unused( why )
+    implicit none
+    character(len=*), intent(in) :: why
+    character(len=*), parameter :: E = ' [ERROR] MI2: ICE restarts ([ICE-Parameters] newrun = false) and its hand-off '// &
+                                       'cannot be used: '
+    character(len=:), allocatable :: clock
+    integer :: c
+
+    if ( .not. any( hydra_MI2_obj%ICE_iter > 0 ) ) then
+      write(*,'(A)') E//why//'. ICE iterates in no cycle of this run, so the hand-off would be the only source of ICE '// &
+        'the gas gets, and the run would end on another state. Let ICE iterate in a cycle, or start a new run from '// &
+        'these fields: '//Way_Out()
+      error stop 1
+    endif
+    do c = 1, size( hydra_MI2_obj%ICE_iter )
+      if ( hydra_MI2_obj%ICE_iter(c) == 0 ) cycle
+      clock = Cycle_Clock( c, 'ICE' )
+      if ( len(clock) == 0 ) cycle
+      write(*,'(A,I0,A)') E//why//'. ICE iterates in cycle ', c, ', a time-accurate cycle: '//clock//'. Without the '// &
+        'hand-off the first MOSE block would run without ICE''s source, and the run would not continue the one it '// &
+        'restarts. To go on from these fields, start a new run from them: '//Way_Out()
+      error stop 1
+    enddo
+    write(*,*)
+    write(*,'(A)') ' [WARNING] MI2: ICE''s hand-off is not used: '//why//'. The first MOSE block runs without ICE''s '// &
+      'source; no cycle in which ICE iterates is time-accurate, and the run converges again'
+    write(*,*)
+
+  end subroutine ICE_Handoff_Unused
+
+
+  !> Why cycle c, in which IGLOO or ICE (who) iterates, is time-accurate ('' if it is not): the gas it hands its sources
+  !  to steps in physical time (they stay in force until its next solve, whichever cycle MOSE iterates in), or ICE
   !  iterates in it in physical time
-  function Cycle_Clock( c ) result( why )
-    integer, intent(in) :: c
+  function Cycle_Clock( c, who ) result( why )
+    integer,          intent(in) :: c
+    character(len=*), intent(in) :: who
     character(len=:), allocatable :: why
     why = ''
     if ( MOSE_obj_time_scheme%time_accurate .and. any( hydra_obj_sim_param%MOSE_iter > 0 ) ) then
-      why = 'the gas IGLOO hands its sources to steps in physical time ([MOSE-Numerics] time-accurate = true)'
+      why = 'the gas '//who//' hands its sources to steps in physical time ([MOSE-Numerics] time-accurate = true)'
     elseif ( hydra_MI2_obj%run_ICE ) then
       if ( hydra_MI2_obj%ICE_iter(c) > 0 .and. ICE_obj_time_scheme%time_accurate ) &
         why = 'ICE iterates in it in physical time ([ICE-Numerics] time-accurate = true)'
     endif
   end function Cycle_Clock
+
+
+  !> The way out of a restart that cannot continue: a new run from the restored fields, each copied as the initial
+  !  condition, newrun = true in the sections of the solvers that restart
+  function Way_Out() result( s )
+    use MOSE_Global_m,   only: MOSE_phase_prefix
+    use ICE_Global_m,    only: ICE_phase_prefix
+    use ICE_IO_Solution, only: ICE_condinit => condinit
+    character(len=:), allocatable :: s, files, keys
+    logical :: moseRe, iceRe
+    moseRe = .not. MOSE_obj_sim_param%newrun
+    iceRe  = .false.
+    if ( hydra_MI2_obj%run_ICE ) iceRe = .not. ICE_obj_sim_param%newrun
+    files = ''
+    keys  = ''
+    if ( moseRe ) then
+      files = As_IC( trim(MOSE_obj_io%nameinit), MOSE_phase_prefix )
+      keys  = '[MOSE-Parameters]'
+    endif
+    if ( iceRe ) then
+      files = files//trim(merge(' and ', '     ', moseRe))//' '//As_IC( trim(ICE_condinit), ICE_phase_prefix )
+      keys  = keys//trim(merge(' and ', '     ', moseRe))//' [ICE-Parameters]'
+    endif
+    s = 'copy '//trim(adjustl(files))//' (ic-format: the format of the field), and set newrun = true in '// &
+        trim(adjustl(keys))
+  end function Way_Out
 
 
   !> 'OUTPUT/<field> to INPUT/<prefix>ic.<the field''s extension>': a field read back as an initial condition

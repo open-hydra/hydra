@@ -1826,10 +1826,10 @@ contains
 
   !> An ICE restart whose solvers resumed their counters: the arrays of Write_ICE_Exchange read back from
   !  ICE_Exchange_File (used) when it was written at ICE's restored iteration and, when MOSE restarts too (checkMOSE), at
-  !  MOSE's (iterMOSE). Written at another iteration (the run stopped between its outputs), it is not used: a warning,
-  !  the first MOSE block then runs without ICE's source, as in a new coupled run. Without the file, or with another
-  !  layout or mesh, the run stops.
-  subroutine Read_ICE_Exchange ( ICE_sim, iterMOSE, checkMOSE, used, hasSources )
+  !  MOSE's (iterMOSE). Missing, or written at another iteration (the run stopped between its outputs), it is not used
+  !  and why says so: the caller decides from the schedule. A file MI2 did not write, or of another layout or mesh,
+  !  stops the run.
+  subroutine Read_ICE_Exchange ( ICE_sim, iterMOSE, checkMOSE, used, hasSources, why )
     use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_positive_inf
     use ICE_Advanced_Types_m, only: ICE_simulation_type
     use ICE_Global_m,         only: ngroups, ncond
@@ -1842,26 +1842,26 @@ contains
     logical,                   intent(in)    :: checkMOSE
     logical,                   intent(out)   :: used
     logical,                   intent(inout) :: hasSources
+    character(len=:), allocatable, intent(out) :: why
     type(orion_data)              :: io
     type(xvar_t),     allocatable :: xv(:)
     character(len=:), allocatable :: f
     integer,          allocatable :: col(:)
     character(len=32) :: nm
+    character(len=96) :: at
     integer(I4) :: cyc
     real(R8)    :: aux(2)
     logical     :: found(2), there, srate(ngroups), rate
     integer     :: b, g, v, i, j, k, err, nv, ndir
 
     used = .false.
+    why  = ''
     f = ICE_Exchange_File()
     inquire(file=f, exist=there)
     if (.not. there) then
-      write(*,'(A)') ' [ERROR] MI2: ICE restarts ([ICE-Parameters] newrun = false) and '//f//' is missing. MI2 writes '// &
-        'it with the fields at the end of each coupling step that leaves both solvers'' fields on disk, and at the end '// &
-        'of a run with ICE: what ICE''s last coupling step hands the gas, which ICE''s field file does not hold. Without '// &
-        'it the first MOSE block would run without ICE''s source. Restart from the OUTPUT/ of a run with ICE that '// &
-        'wrote it, or start ICE anew (newrun = true)'
-      error stop 1
+      why = f//' is missing (MI2 writes it with the fields at the end of each coupling step that leaves both solvers'' '// &
+        'fields on disk and at the end of a run with ICE; an older binary did not)'
+      return
     endif
     err = tec_read_structured_multiblock( orion=io, filename=f, cycle=cyc, fldnames=XAUX, fldvalues=aux, fldfound=found )
     if (err /= 0 .or. .not. all(found)) then
@@ -1870,15 +1870,15 @@ contains
       error stop 1
     endif
     if (cyc /= ice_sim_param%iter_general .or. (checkMOSE .and. nint(aux(2)) /= iterMOSE)) then
-      write(*,'(A,I0,A,I0,A,I0,A)',advance='no') ' [WARNING] MI2: '//f//' is of ICE iteration ', cyc, &
-        ' and MOSE iteration ', nint(aux(2)), ', the fields restored of ICE iteration ', ice_sim_param%iter_general
+      write(at,'(A,I0,A,I0,A,I0)') ' is of ICE iteration ', cyc, ' and MOSE iteration ', nint(aux(2)), &
+        ', the fields restored of ICE iteration ', ice_sim_param%iter_general
+      why = f//trim(at)
       if (checkMOSE) then
-        write(*,'(A,I0)',advance='no') ' and MOSE iteration ', iterMOSE
+        write(at,'(A,I0)') ' and MOSE iteration ', iterMOSE
       else
-        write(*,'(A)',advance='no') ' (MOSE starts anew)'
+        at = ' (MOSE starts anew)'
       endif
-      write(*,'(A)') ': the run that wrote them stopped between two of its outputs. The restart is not a continuation: '// &
-        'the file is not used, and the first MOSE block runs without ICE''s source, as in a new coupled run'
+      why = why//trim(at)//': the run that wrote them stopped between two of its outputs'
       return
     endif
     if (size(io%block) /= ICE_sim%domain(1)%nb) call Refuse( 'its number of blocks' )
