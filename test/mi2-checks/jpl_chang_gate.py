@@ -356,7 +356,7 @@ def probes(run):
         for line in open(f):
             t = line.split()
             if len(t) >= 2:
-                rows[int(float(t[0]))] = float(t[1])          # the last row is written twice: keyed on the iteration
+                rows[int(float(t[0]))] = float(t[1])          # keyed on the iteration: a row written twice counts once
         it = np.array(sorted(rows))
         m = np.array([rows[i] for i in it])
         last = m[it > it[-1] - blk]
