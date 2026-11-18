@@ -29,7 +29,7 @@ program hydra_MI2_program
                                      mdotHanded, nHanded, goneShare, Gone_Delivered, Gone_Stored, Gone_Clock, &
                                      Gone_To_Rate, Source_Clock, Source_Mean, &
                                      smokeIG, smokeIGOn, IGLOO_Smoke_Accumulate, IGLOO_Smoke_Deliver, nSmokeNoState, &
-                                     handRates
+                                     handRates, ICE_Exchange_File, Write_ICE_Exchange, Read_ICE_Exchange
   use hydraMI2_Build_Stamp,    only: Print_Build_Stamp
   use Lib_ORION_data,          only: orion_data
 
@@ -123,6 +123,39 @@ program hydra_MI2_program
 
   ! ICE and IGLOO ingest the gas field as ORION data; each is set up only when enabled
   if (hydra_MI2_obj%run_ICE)   call ICE%setup( ICE_simulation, MOSE_simulation%IOfield(1) )
+  ! IGLOO keeps neither its parcels nor the sources it hands the gas from one run to the next: a restart would begin
+  ! without them
+  if ( hydra_MI2_obj%run_IGLOO ) then
+    block
+      logical :: restarting
+      restarting = .not. MOSE_obj_sim_param%newrun
+      if ( hydra_MI2_obj%run_ICE ) restarting = restarting .or. .not. ICE_obj_sim_param%newrun
+      if ( restarting ) then
+        write(*,'(A)') ' [ERROR] MI2: newrun = false with IGLOO: IGLOO has no restart. It keeps neither its parcels '// &
+          'nor the sources it hands the gas from one run to the next, so the restarted run would begin without '// &
+          'IGLOO''s source and would not go on as the run in one go. Run a case with IGLOO from its start (newrun = '// &
+          'true in [MOSE-Parameters] and [ICE-Parameters])'
+        error stop 1
+      endif
+    end block
+  endif
+  ! an ICE restart takes back what ICE's last coupling step handed the gas and left for its next, not in its field file
+  if ( hydra_MI2_obj%run_ICE ) then
+    if ( .not. ICE_obj_sim_param%newrun ) then
+      block
+        integer :: iterM
+        call Read_ICE_Exchange( ICE_simulation, ICE_has_sources, iterM )
+        if ( .not. MOSE_obj_sim_param%newrun .and. iterM /= MOSE_obj_sim_param%iter_general ) then
+          write(*,'(A,I0,A,I0,A)') ' [ERROR] MI2: '//ICE_Exchange_File()//' was written at MOSE iteration ', iterM, &
+            ' and MOSE restarts from iteration ', MOSE_obj_sim_param%iter_general, ': the files are not of the same '// &
+            'end of a run'
+          error stop 1
+        endif
+        write(*,'(A,I0,A,I0,A)') ' [MI2] ICE restarts with what its last coupling step handed the gas, from '// &
+          ICE_Exchange_File()//' (ICE iteration ', ICE_obj_sim_param%iter_general, ', MOSE iteration ', iterM, ')'
+      end block
+    endif
+  endif
   ! what the coupler hands between ICE and the gas or IGLOO (the removals, IGLOO's smoke): rates when MOSE or ICE steps
   ! in pseudo-time, so that a converged steady field holds per unit time; amounts when both are time-accurate
   handRates = hydra_MI2_obj%run_ICE .and. &
@@ -462,6 +495,7 @@ program hydra_MI2_program
   if (hydra_MI2_obj%run_ICE) then
     ICE_obj_sim_param%TODO = 2
     call ICE%postprocess( ICE_simulation )
+    call Write_ICE_Exchange( ICE_simulation, ICE_has_sources, MOSE_obj_sim_param%iter_general )
   endif
   if (hydra_MI2_obj%run_IGLOO) call IGLOO%writeout()
 
@@ -623,10 +657,13 @@ contains
       ' [MI2] IGLOO source FROZEN this cycle (IGLOO-iter = 0): the gas keeps the sources produced in cycle ', &
       IGLOO_src_cycle, ', coupling step ', IGLOO_src_step, '  [cycle ', n_cycle, ', step ', n_couple, &
       ', MOSE iter ', iterNow, ']'
-    if ( iceFrozen ) write(*,'(A,I0,A,I0,A,I0,A,I0,A,I0,A)') &
+    if ( iceFrozen .and. ICE_src_cycle > 0 ) write(*,'(A,I0,A,I0,A,I0,A,I0,A,I0,A)') &
       ' [MI2] ICE source FROZEN this cycle (ICE-iter = 0): the gas keeps the sources produced in cycle ', &
       ICE_src_cycle, ', coupling step ', ICE_src_step, '  [cycle ', n_cycle, ', step ', n_couple, &
       ', MOSE iter ', iterNow, ']'
+    if ( iceFrozen .and. ICE_src_cycle == 0 ) write(*,'(A,I0,A,I0,A,I0,A)') &
+      ' [MI2] ICE source FROZEN this cycle (ICE-iter = 0): the gas keeps the sources read at the restart  [cycle ', &
+      n_cycle, ', step ', n_couple, ', MOSE iter ', iterNow, ']'
 
   end subroutine Report_Frozen_Sources
 
