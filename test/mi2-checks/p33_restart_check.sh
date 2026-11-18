@@ -19,14 +19,23 @@
 #            residual histories included (each solver drops the rows the killed run wrote past its restart iteration).
 # The end of each run is its end-of-run output: no history holds an iteration twice in a row, each solver's output
 # number is its iterations // sol-diter. Every run: GAME OVER, no error line, exit 0.
-# Restarts that cannot continue, each judged on its message and on how the run ends:
+# Restarts whose hand-off cannot be used (missing, out of step with the fields, counters not resumed), each judged on
+# its message and on how the run ends: the first MOSE block would run without ICE's source, so the run stops when a
+# cycle in which ICE iterates is time-accurate (the gas steps in physical time, or ICE does) or when ICE iterates in no
+# cycle (the hand-off would be the gas's only source of ICE); otherwise one warning and a completed run:
 #  midstep : the kill leg with MOSE outputs in the middle of a step (sol-diter 50), killed after a MOSE output in
-#            the middle of step 3 or later (250, 350, ...): the fields are not of one coupling step; a warning, the hand-off unused, the run completes;
+#            the middle of step 3 or later (250, 350, ...): the fields are not of one coupling step; steady: a warning,
+#            the hand-off unused, the run completes;
 #  kind    : steady-ice-burnout run steady (2 cycles), restarted with ICE time-accurate: ICE starts its counters anew;
-#            a warning, the hand-off unused, the run completes;
+#            ICE time-accurate: stops;
 #  stale   : a new run (newrun = true) in an OUTPUT/ holding jpl part 1's files removes their hand-off; killed after
-#            ICE's output of iteration 100 (the stale file's), its restart stops on the missing file, never reads it;
-#  missing : the jpl restart without part-coupling.tec stops and names the file;
+#            ICE's output of iteration 100 (the stale file's), its restart never reads it: steady, a warning, completes;
+#  missing : the jpl restart without part-coupling.tec: steady, a warning naming the file, the run completes;
+#  missing-ta, outofstep-ta: the removal leg's part 1 (ICE time-accurate) restarted without its hand-off, or with the
+#            hand-off's MOSE iteration changed: stops, names the way out; the way out followed runs clean
+#            (missing-ta-way-out);
+#  missing-gas-ta: test/ice-burn-box (MOSE and ICE time-accurate) without its hand-off: stops on the gas's clock;
+#  zero-missing: the jpl restart with ICE-iter 0 and no hand-off: stops (ICE iterates in no cycle);
 #  layout  : the jpl restart with a variable of part-coupling.tec renamed stops ("does not match");
 #  zero    : the jpl restart with ICE-iter 0: ICE writes no end-of-run output (its field and history as part 1 left
 #            them);
@@ -59,6 +68,8 @@ echo "  exe $EXE ($(md5sum < "$EXE" | cut -c1-8))"
 IGW='newrun = false with IGLOO: IGLOO keeps no parcels and no sources'
 IGS='newrun = false with IGLOO, and IGLOO iterates in cycle'
 READ='ICE restarts with what its last coupling step handed the gas, from OUTPUT/part-coupling.tec'
+HOW="ICE's hand-off is not used: "
+HOS='ICE restarts ([ICE-Parameters] newrun = false) and its hand-off cannot be used: '
 
 sched() {  # sched <input.ini> <N-coupling> <MOSE-iter> <ICE-iter>
   sed -i -e "s/^N-coupling *=.*/N-coupling    = $2/" -e "s/^MOSE-iter *=.*/MOSE-iter     = $3/" \
@@ -175,7 +186,10 @@ o=$d/run/OUTPUT
 if killed_run "$d/run" "$T/midstep-part1.log" aux_mid "$o/gas-field.tec" MOSE_ITERATION 250 $M; then
   ok "midstep-part1: killed after MOSE's output of iteration $(auxv "$o/gas-field.tec" MOSE_ITERATION) (ICE's field of iteration $(inum "$(auxv "$o/part-field.tec" ICE_ITERATION)"))"
   restart "$d/run" "$T/midstep" 3 $M $K
-  warned midstep "$T/midstep.log" $? 'the run that wrote them stopped between two of its outputs' "$READ"
+  warned midstep "$T/midstep.log" $? "${HOW}OUTPUT/part-coupling.tec is of ICE iteration" "$READ"
+  grep -qF 'the run that wrote them stopped between two of its outputs. The first MOSE block runs without ICE' "$T/midstep.log" \
+    && ok "midstep: the warning says why (stopped between two outputs) and what follows (no ICE source in the first MOSE block)" \
+    || ko "midstep: the warning does not say why and what follows"
 else ko "midstep-part1: the run ended before MOSE's output of iteration 250 (nothing killed)"; fi
 
 # --- kind: a steady run restarted with ICE time-accurate ---
@@ -183,7 +197,7 @@ d=$(mk "$H/test/steady-ice-burnout" kind-part1 "1 1" "$M 0" "0 $K" $M $K "$FO" '
 "$RUN" "$d" "$d/run" 1 "$T/kind-part1.log" "$EXE" > /dev/null 2>&1; clean kind-part1 "$T/kind-part1.log" $?
 rm -rf "$T/kind"; cp -rp "$d/run" "$T/kind-src"; sed -i "$TA" "$T/kind-src/input.ini"
 restart "$T/kind-src" "$T/kind" "1 1" "$M 0" "0 $K"; rc=$?; rm -rf "$T/kind-src"
-warned kind "$T/kind.log" $rc 'ICE restarts without the counters of the run it continues' "$READ"
+refused kind "$T/kind.log" $rc "${HOS}ICE restarts without the counters of the run it continues (a run of the other kind, steady or time-accurate, or a field without them). ICE iterates in cycle 2, a time-accurate cycle: ICE iterates in it in physical time"
 
 # --- stale: a new run removes the hand-off an earlier run left; killed after ICE's output of iteration 100 ---
 d=$(mk "$JPL" stale-part1 3 200 200 200 $M); mkdir -p "$d/run"; cp -rp "$d/INPUT" "$d/MESH" "$d/input.ini" "$d/run/"
@@ -194,12 +208,31 @@ if killed_run "$d/run" "$T/stale-part1.log" aux_eq "$o/part-field.tec" ICE_ITERA
   then ok "stale-part1: the new run removed the earlier hand-off; killed with its fields of MOSE $(auxv "$o/gas-field.tec" MOSE_ITERATION), ICE $(auxv "$o/part-field.tec" ICE_ITERATION)"
   else ko "stale-part1: the earlier hand-off was not removed ($(ls "$o" | grep -c coupling) file(s) left)"; fi
   restart "$d/run" "$T/stale" 1 200 200
-  refused stale "$T/stale.log" $? 'ICE restarts ([ICE-Parameters] newrun = false) and OUTPUT/part-coupling.tec is missing'
+  warned stale "$T/stale.log" $? "${HOW}OUTPUT/part-coupling.tec is missing" "$READ"
 else ko "stale-part1: the run ended before ICE's output of iteration 100 (nothing killed)"; fi
 
 # --- missing, layout: the jpl restart without its hand-off, with a renamed variable ---
 restart "$T/jpl-part1/run" "$T/missing" 2 $M $K OUTPUT/part-coupling.tec
-refused missing "$T/missing.log" $? 'ICE restarts ([ICE-Parameters] newrun = false) and OUTPUT/part-coupling.tec is missing'
+warned missing "$T/missing.log" $? "${HOW}OUTPUT/part-coupling.tec is missing" "$READ"
+restart "$T/jpl-part1/run" "$T/zero-missing" 2 $M 0 OUTPUT/part-coupling.tec
+refused zero-missing "$T/zero-missing.log" $? "${HOS}OUTPUT/part-coupling.tec is missing (MI2 writes it with the fields at the end of each coupling step that leaves both solvers' fields on disk and at the end of a run with ICE; an older binary did not). ICE iterates in no cycle of this run"
+
+# --- missing-ta, outofstep-ta, missing-gas-ta: a hand-off that cannot be used in a time-accurate schedule stops ---
+restart "$T/removal-part1/run" "$T/missing-ta" "1 1 1 1" "$M 0 $M 0" "0 $K 0 $K" OUTPUT/part-coupling.tec
+refused missing-ta "$T/missing-ta.log" $? "${HOS}OUTPUT/part-coupling.tec is missing"
+grep -qF 'ICE iterates in cycle 2, a time-accurate cycle: ICE iterates in it in physical time ([ICE-Numerics] time-accurate = true). Without the hand-off the first MOSE block would run without ICE' "$T/missing-ta.log" && \
+  grep -qF 'start a new run from them: copy OUTPUT/gas-field.tec to INPUT/gas-ic.tec and OUTPUT/part-field.tec to INPUT/part-ic.tec' "$T/missing-ta.log" \
+  && ok "missing-ta: the stop names the time-accurate cycle (ICE's key) and the way out (both fields)" \
+  || ko "missing-ta: the stop does not name the cycle, its clock or the way out"
+way_out missing-ta-way-out "$T/missing-ta"
+rm -rf "$T/oos-src"; cp -rp "$T/removal-part1/run" "$T/oos-src"
+sed -i 's/\(DATASETAUXDATA MI2_MOSE_ITERATION = "\)[^"]*"/\1-7"/' "$T/oos-src/OUTPUT/part-coupling.tec"
+restart "$T/oos-src" "$T/outofstep-ta" "1 1 1 1" "$M 0 $M 0" "0 $K 0 $K"; rc=$?; rm -rf "$T/oos-src"
+refused outofstep-ta "$T/outofstep-ta.log" $rc "and MOSE iteration -7, the fields restored of ICE iteration"
+d=$(mk "$H/test/ice-burn-box" gas-ta-part1 "1 2" "0 1" "1 0" 1 1); "$RUN" "$d" "$d/run" 1 "$T/gas-ta-part1.log" "$EXE" > /dev/null 2>&1
+clean gas-ta-part1 "$T/gas-ta-part1.log" $?
+restart "$T/gas-ta-part1/run" "$T/missing-gas-ta" "1 2" "0 1" "1 0" OUTPUT/part-coupling.tec
+refused missing-gas-ta "$T/missing-gas-ta.log" $? "OUTPUT/part-coupling.tec is missing (MI2 writes it with the fields at the end of each coupling step that leaves both solvers' fields on disk and at the end of a run with ICE; an older binary did not). ICE iterates in cycle 1, a time-accurate cycle: the gas ICE hands its sources to steps in physical time ([MOSE-Numerics] time-accurate = true)"
 rm -rf "$T/layout-src"; cp -rp "$T/jpl-part1/run" "$T/layout-src"; sed -i '1s/"S1_p1"/"X1_p1"/; 1s/ S1_p1 / X1_p1 /' "$T/layout-src/OUTPUT/part-coupling.tec"
 restart "$T/layout-src" "$T/layout" 2 $M $K; rc=$?; rm -rf "$T/layout-src"
 refused layout "$T/layout.log" $rc 'does not match the ICE set-up of this run'
