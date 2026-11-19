@@ -15,9 +15,10 @@ plateau (JPL-3solver-hot-20micron). One PASS / FAIL / SKIP line per check, exit 
   T2  nucleation front: each IGLOO parcel's event cell (the midpoint of its last liquid and first plateau rows) in
       rows 1-10 within N_front of ICE's front (first chi_p1 >= 1/2 of the row);
       N_front = 3 + ceil(delta_hot (T0 - T_nuc) / (s dx)), s ICE's liquid slope over the 3 cells before its front
-  T3  plateau temperature: ICE cells with 0 < f_p1 < 1 and IGLOO's Eulerian T_p in the inner cells whose +-passes
-      box is crossed by plateau rows only (or none) at T_melt to 1e-9 relative; ICE plateau cells in rows 1-10 >= 50
-      (full) / 260 (partial); an IGLOO leg with no such cell fails (a plateau shorter than the mollifier's support)
+  T3  plateau temperature, at T_melt to 1e-9 relative: ICE's cells with 0 < f_p1 < 1 (in rows 1-10 >= 50 (full) /
+      260 (partial)) and IGLOO's parcel rows with 0 < f < 1 (its trajectories, not smoothed). A solver whose plateau
+      no leg judged fails T3. IGLOO's Eulerian T_p (mollified over +-passes cells, +-1 more with gas-order 2) is
+      printed as information on the cells whose box is crossed by plateau rows only
   T4  (full) end of the plateau: each inner parcel's end cell (midpoint of its last plateau row and the next row)
       within N_front + 1 of ICE's first f_p1 = 1 of the row
   T5  (full) every exit: IGLOO's exit-plane records (bc 400) T <= T_melt - 1 K; ICE's exit cells (bulk density above
@@ -78,6 +79,12 @@ def mollify_passes(run):
         return 0
     n = ini_key(run, 'IGLOO-General', 'mollify-passes')
     return int(n) if n else 8
+
+
+def gas_order(run):
+    """IGLOO's gas-order ([IGLOO-General], default 2, IGLOO Lib_INI.f90): order 2 deposits on the dual nodes, +-1 cell."""
+    n = ini_key(run, 'IGLOO-General', 'gas-order')
+    return int(n) if n else 2
 
 
 def trailer(path, key):
@@ -352,32 +359,45 @@ def analyse(run, design):
         txt2 += '; ' + '; '.join(bad2[:5]) + (' (+%d more)' % (len(bad2) - 5) if len(bad2) > 5 else '')
     check('T2', bool(rows2) and not nofront and not bad2, txt2)
 
-    # ---- T3 plateau temperature
+    # ---- T3 plateau temperature. ICE: its cells on the plateau. IGLOO: its parcel rows on the plateau (0 < f < 1, the
+    # trajectories are not smoothed). IGLOO's Eulerian T_p is mollified over +-passes cells (+-1 more with gas-order 2):
+    # printed as information on the cells whose whole box is crossed by plateau rows only
     platE = (fE > 0) & (fE < 1)
     errE = float((np.abs(TE[platE] - Tm) / Tm).max()) if platE.any() else 0.0
     nE = int((platE & inner).sum())
-    # IGLOO's Eulerian T_p is judged where the whole mollifier support (+-passes cells) is crossed by plateau rows only
-    # or by none
+    rT = np.concatenate([p['T'][(p['f'] > 0) & (p['f'] < 1)] for p in P.values()]) if P else np.zeros(0)
+    nL = int(rT.size)
+    errL = float((np.abs(rT - Tm) / Tm).max()) if nL else 0.0
+    rad = passes + (1 if gas_order(run) == 2 else 0)
     okL = iglo_plat_cells | ~crossed
     supp = np.ones_like(okL)
-    for dj in range(-passes, passes + 1):
-        for di in range(-passes, passes + 1):
+    for dj in range(-rad, rad + 1):
+        for di in range(-rad, rad + 1):
             sh = np.ones_like(okL)
             src = okL[max(0, dj):nj + min(0, dj), max(0, di):ni + min(0, di)]
             sh[max(0, -dj):nj - max(0, dj), max(0, -di):ni - max(0, di)] = src
             supp &= sh
     cellL = iglo_plat_cells & supp & inner
-    errL = float((np.abs(TL[cellL] - Tm) / Tm).max()) if cellL.any() else 0.0
+    errLe = float((np.abs(TL[cellL] - Tm) / Tm).max()) if cellL.any() else None
     plan3 = iglo_plat_cells & inner
-    R.update(t3_ice_cells=nE, t3_iglo_cells=int(cellL.sum()), t3_iglo_mask=cellL, t3_plan_cells=int(plan3.sum()),
+    R.update(t3_ice_cells=nE, t3_iglo_rows=nL, t3_iglo_cells=int(cellL.sum()), t3_iglo_mask=cellL,
+             t3_plan_cells=int(plan3.sum()),
              t3_plan_err=float((np.abs(TL[plan3] - Tm) / Tm).max()) if plan3.any() else None)
     need = T3_COUNT[design]
-    check('T3', nE >= need and errE <= TOL_T and cellL.any() and errL <= TOL_T,
-          'plateau temperature: ICE %d cells with 0 < f_p1 < 1 (%d in rows 1-%d, >= %d), max |T_p1 - T_melt|/T_melt '
-          '%.3e; IGLOO %d inner cells crossed by plateau rows only (%d of them with the mollifier\'s +-%d box so), max '
-          '|T_p - T_melt|/T_melt %s; <= %.0e' % (int(platE.sum()), nE, INNER, need, errE, int((iglo_plat_cells & inner).sum()),
-                                               int(cellL.sum()), passes, '%.3e' % errL if cellL.any() else 'vacuous (no cell)',
-                                               TOL_T))
+    legE = ('ICE %d cells with 0 < f_p1 < 1 (%d in rows 1-%d, >= %d), max |T_p1 - T_melt|/T_melt %.3e'
+            % (int(platE.sum()), nE, INNER, need, errE)) if platE.any() else 'ICE: not judged (no cell with 0 < f_p1 < 1)'
+    legL = ('IGLOO %d parcel rows with 0 < f < 1, max |T - T_melt|/T_melt %.3e' % (nL, errL)) if nL else \
+        'IGLOO: not judged (no parcel row with 0 < f < 1)'
+    judged = 'IGLOO\'s plateau judged by no leg; ' if not nL else ''
+    judged += 'ICE\'s plateau judged by no leg; ' if not platE.any() else ''
+    check('T3', bool(platE.any() and nL) and nE >= need and errE <= TOL_T and errL <= TOL_T,
+          'plateau temperature: %s%s; %s; <= %.0e' % (judged, legE, legL, TOL_T))
+    R['t3_euler_info'] = ('T3 information, IGLOO\'s Eulerian T_p (mollified over +-%d cells, gas-order %d): %s'
+                          % (rad, gas_order(run), '%d inner cells whose box is crossed by plateau rows only, max '
+                             '|T_p - T_melt|/T_melt %.3e' % (int(cellL.sum()), errLe) if cellL.any() else
+                             'no inner cell whose +-%d box is crossed by plateau rows only (%s)'
+                             % (rad, '%d crossed by plateau rows only: the plateau is shorter than the box' % int(plan3.sum())
+                                if plan3.any() else 'no plateau row')))
 
     # ---- T4 end of the plateau
     if design == 'full':
@@ -572,6 +592,7 @@ def analyse(run, design):
                  % R['delta_all_rows'],
                  'T1 with the plan\'s set (3 or more cells upstream of IGLOO\'s first plateau cell; not judged: IGLOO mollifies '
                  'its Eulerian field over +-%d cells): delta %.5f over %d cells' % (passes, R['delta_3cells'], R['t1_3cells']),
+                 R['t3_euler_info'],
                  'T3 with the plan\'s set (IGLOO inner cells crossed by plateau rows only, the mollifier\'s box not asked): %d '
                  'cells, max |T_p - T_melt|/T_melt %s' % (R['t3_plan_cells'], '%.3e' % R['t3_plan_err']
                                                           if R['t3_plan_err'] is not None else '-'),

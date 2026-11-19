@@ -10,7 +10,8 @@ the measured offsets), never a fixed number:
   T1  IGLOO's Eulerian T_p in T1's cells moved toward T0 by (tolerance + delta_hot + 0.01) (T0 - T_p)
   T2  ICE's front moved upstream in rows 1-10 by N_front + 1 cells (plus the largest offset of the other sign): the cells
       before it on the plateau (chi_p1 1, T_p1 T_melt, f_p1 on the row's plateau line)
-  T3  ICE's T_p1 x (1 + 1e-6) in its plateau cells; T3-iglo: IGLOO's Eulerian T_p x (1 + 1e-6) in the cells T3 judges
+  T3  ICE's T_p1 x (1 + 1e-6) in its plateau cells; T3-parcels: IGLOO's T x (1 + 1e-6) on one inner parcel's plateau
+      rows but its first and last (its events, and every other parcel, unchanged)
   T4  (full) each inner parcel's plateau ends N_front + 2 cells before ICE's (its later plateau rows solid at T_melt - 1)
   T5  (full) an exit-plane record outside the inner region at T_melt + 3 K; an ICE exit cell outside it at f_p1 0.9;
       a wall record at T0 - 1 K must change nothing
@@ -179,16 +180,25 @@ def doctor_T3(run, d, R):
     return 'ICE T_p1 x (1 + 1e-6) in %d plateau cells' % int(m.sum())
 
 
-def doctor_T3_iglo(run, d, R):
-    m = R['t3_iglo_mask']
-    if not m.any():
+def doctor_T3_parcels(run, d, R):
+    tf = files(run)['traj']
+    Tm = R['mat']['Tm']
+    rows = cf.load_rows(tf, 'T', 'f')
+    inner = sorted({pid for pid, _, j in R['events'] if 0 <= j < cf.INNER})
+    pick = next((pid for pid in inner if sum(1 for r in rows[pid] if 0 < r[1] < 1) >= 4), None)
+    if pick is None:
         return None
-    tf = files(run)['euler']
-    t = Tec(tf)
-    T = t.var([n for n in t.names if n.startswith('T')][0])
-    T[m] *= 1 + 1e-6
-    t.write(target(d, tf))
-    return 'IGLOO T_p x (1 + 1e-6) in the %d cells T3 judges' % int(m.sum())
+    ks = [k for k, r in enumerate(rows[pick]) if 0 < r[1] < 1]
+    mid = set(ks[1:-1])
+
+    def edit(cols, t, k):
+        if int(t[cols['ID']]) != pick or k not in mid:
+            return None
+        t = list(t)
+        t[cols['T']] = '%.6f' % (Tm * (1 + 1e-6))
+        return t
+    edit_points(tf, target(d, tf), edit)
+    return 'IGLOO T = T_melt x (1 + 1e-6) on %d plateau rows of parcel %d' % (len(mid), pick)
 
 
 def doctor_T4(run, d, R, mesh):
@@ -371,7 +381,7 @@ def main():
     cases = [('T1', 'T1', lambda d: doctor_T1(run, d, R)),
              ('T2', 'T2', lambda d: doctor_T2(run, d, R, mesh)),
              ('T3', 'T3', lambda d: doctor_T3(run, d, R)),
-             ('T3-iglo', 'T3', lambda d: doctor_T3_iglo(run, d, R))]
+             ('T3-parcels', 'T3', lambda d: doctor_T3_parcels(run, d, R))]
     if full:
         cases += [('T4', 'T4', lambda d: doctor_T4(run, d, R, mesh)),
                   ('T5-record', 'T5', lambda d: doctor_record(run, d, lambda r: outer_exit(r, yl), 'T', Tm + 3.0, R)),
