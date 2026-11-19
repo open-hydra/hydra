@@ -1,0 +1,2 @@
+condensed-dispersed modeling=eulerian
+A 1 solidification=on T-melt=2327 h-fus=1090000 T-nuc=1861.6 cp-solid=1360
