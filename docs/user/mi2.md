@@ -615,6 +615,7 @@ Warnings and notes do not stop the run:
 | `[WARNING] MI2: material ... burns as ... in ICE and as ... in IGLOO` | a section default decided one model |
 | `[WARNING] MI2: in <n> cells ... a smoke was born with no parcel's state` | smoke born at rest, 298.15 K |
 | `[MI2] ... source FROZEN this cycle` | [frozen sources](#frozen-sources) |
+| `[WARNING] MI2: an overset mesh: <n> chimera (102) boundary cells on <b> block(s)` | set-up: the coupler makes no correction for a chimera overlap; every sum over the domain it prints (the gas content, what ICE and IGLOO hand the gas, the [coupling report](#coupling-report), the [end-of-run balances](#end-of-run-balances)) counts the overlap once per block that covers it |
 | `[WARNING] MI2: input.ini, read again, advances <solver> after the iteration the schedule had made its last` | the rows and the solution due at that iteration were not written ([one coupling step](#one-coupling-step)) |
 | `[WARNING] MI2: newrun = false with IGLOO` | IGLOO starts empty on the restored fields ([restart](#a-restart-that-cannot-be-continued-exactly)) |
 | `[WARNING] MI2: ICE's hand-off is not used: ...` | the hand-off cannot be used and no time-accurate run is continued: the first MOSE block runs without ICE's source ([restart](#a-restart-that-cannot-be-continued-exactly)) |
