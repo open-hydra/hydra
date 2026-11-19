@@ -10,12 +10,12 @@ differences are `T0` and the keys `solidification`, `T-melt`, `h-fus`, `T-nuc`, 
 
 Inputs: `test/mi2-checks/regen_case.sh <case> <scratch> GPB BCB ICB --install` with a gfortran build of the pinned ATLAS
 (`ATLASDIR` set to it). Run: `figaro hydra-MI2 -p 8 solve`, or `test/mi2-checks/run_case.sh`. Compare:
-`python3 ../JPL-3solver-hot-2micron/compare_freezing.py <run-dir> --design partial`. Gate:
-`test/mi2-checks/p14_hot_nozzle_check.sh`.
+`python3 ../JPL-3solver-hot-2micron/compare_freezing.py <run-dir> --design partial`. No gate yet: the gas does not
+meet the planned gate's steadiness witnesses (below).
 
 Design estimate (a quasi-1D two-phase march, not a reference): nucleation near x = 0.116 m (axis 0.110–0.122 m, wall
 row 0.103–0.105 m), exit frozen fraction about 0.28.
 
-First runs (hydra 2afbfc8, 8 threads, 2026-11-18; no reference is stored: the gas does not meet p14's W1 and W1b, its
+First runs (hydra 2afbfc8, 8 threads, 2026-11-18; no reference is stored: the gas does not meet W1 and W1b, its
 axis exit Mach number moving by up to 1.6e-6 from one coupling step to the next): nucleation on the axis at x = 0.120 m
 (both solvers), inner exit frozen fraction 0.243 (both), below the estimate's 0.267–0.294.
