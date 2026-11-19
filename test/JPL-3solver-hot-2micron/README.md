@@ -12,6 +12,13 @@ Inputs: `test/mi2-checks/regen_case.sh <case> <scratch> GPB BCB ICB --install` w
 `python3 compare_freezing.py <run-dir>`. No gate yet: the gas does not meet the planned gate's steadiness witnesses
 (below).
 
+IGLOO's Eulerian field is mollified over +-`mollify-passes` cells (`[IGLOO-General]`, 8 by default), ICE's is not:
+`compare_freezing.py` therefore leaves out max(3, passes) cells upstream of IGLOO's first plateau cell in T1 and judges
+IGLOO's plateau temperature (T3) only on cells whose whole +-passes box lies on the plateau, the passes read from the
+case's `input.ini`. On a 3-coupling-step smoke of this case at one thread the plan's 3-cell set gives delta 0.045 with
+8 passes and 0.006 with `mollify-passes = 0` (bound 0.031): the excess is the mollifier's support. The 2 um plateau
+(about 12 cells) is shorter than that support (17 cells), so T3's IGLOO part has no cell here and T3 fails.
+
 Design estimate (a quasi-1D two-phase march, not a reference): nucleation near x = 0.10 m (wall row first, from
 0.088 m; axis 0.099–0.106 m), end of the plateau 0.110–0.123 m on the axis, solid at the exit near 1680 K.
 

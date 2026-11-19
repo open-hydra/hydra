@@ -17,7 +17,7 @@ plateau (JPL-3solver-hot-20micron). One PASS / FAIL / SKIP line per check, exit 
       N_front = 3 + ceil(delta_hot (T0 - T_nuc) / (s dx)), s ICE's liquid slope over the 3 cells before its front
   T3  plateau temperature: ICE cells with 0 < f_p1 < 1 and IGLOO's Eulerian T_p in the inner cells whose +-passes
       box is crossed by plateau rows only (or none) at T_melt to 1e-9 relative; ICE plateau cells in rows 1-10 >= 50
-      (full) / 260 (partial)
+      (full) / 260 (partial); an IGLOO leg with no such cell fails (a plateau shorter than the mollifier's support)
   T4  (full) end of the plateau: each inner parcel's end cell (midpoint of its last plateau row and the next row)
       within N_front + 1 of ICE's first f_p1 = 1 of the row
   T5  (full) every exit: IGLOO's exit-plane records (bc 400) T <= T_melt - 1 K; ICE's exit cells (bulk density above
@@ -28,7 +28,9 @@ plateau (JPL-3solver-hot-20micron). One PASS / FAIL / SKIP line per check, exit 
       ICE's plateau cells but its first and last; the mean over the parcels of each
   C2  (full) every exit-plane record f = 1; C2p (partial) inner exit f, mass-flow weighted:
       |f_ICE - f_IGLOO| <= 0.02 (f_IGLOO - f0) + s_f N_front dx
-Printed, not judged: the heat released per unit mass flow by each phase and delta over every row."""
+Printed, not judged: the heat released per unit mass flow by each phase, delta over every row, and the plan's own
+definitions of T1 (3 cells), T3 (IGLOO cells crossed by plateau rows only) and C1 (one fit per row and solver), with
+the same row fit through ICE's own f_p1 at IGLOO's points (what that definition reads from the sampling alone)."""
 import argparse
 import glob
 import math
@@ -366,13 +368,15 @@ def analyse(run, design):
             supp &= sh
     cellL = iglo_plat_cells & supp & inner
     errL = float((np.abs(TL[cellL] - Tm) / Tm).max()) if cellL.any() else 0.0
-    R.update(t3_ice_cells=nE, t3_iglo_cells=int(cellL.sum()))
+    plan3 = iglo_plat_cells & inner
+    R.update(t3_ice_cells=nE, t3_iglo_cells=int(cellL.sum()), t3_iglo_mask=cellL, t3_plan_cells=int(plan3.sum()),
+             t3_plan_err=float((np.abs(TL[plan3] - Tm) / Tm).max()) if plan3.any() else None)
     need = T3_COUNT[design]
-    check('T3', nE >= need and errE <= TOL_T and errL <= TOL_T,
+    check('T3', nE >= need and errE <= TOL_T and cellL.any() and errL <= TOL_T,
           'plateau temperature: ICE %d cells with 0 < f_p1 < 1 (%d in rows 1-%d, >= %d), max |T_p1 - T_melt|/T_melt '
           '%.3e; IGLOO %d inner cells crossed by plateau rows only (%d of them with the mollifier\'s +-%d box so), max '
           '|T_p - T_melt|/T_melt %s; <= %.0e' % (int(platE.sum()), nE, INNER, need, errE, int((iglo_plat_cells & inner).sum()),
-                                               int(cellL.sum()), passes, '%.3e' % errL if cellL.any() else 'not judged (no cell)',
+                                               int(cellL.sum()), passes, '%.3e' % errL if cellL.any() else 'vacuous (no cell)',
                                                TOL_T))
 
     # ---- T4 end of the plateau
@@ -456,6 +460,7 @@ def analyse(run, design):
         check('C1', None, 'plateau slope: no frozen-fraction column')
     else:
         plat_rows = {}                                     # row -> [(X, f) of one parcel's plateau rows in it]
+        plan_rows = {}                                     # the same, the parcel's first and last kept
         for pid, p in P.items():
             k = np.flatnonzero(p['plat'] & (p['f'] < 1))
             if len(k) < 3:
@@ -463,6 +468,8 @@ def analyse(run, design):
             pi_, pj_ = mesh.locate(p['X'][k], p['Y'][k])
             for j in range(INNER):
                 kk = k[pj_ == j]
+                if len(kk):
+                    plan_rows.setdefault(j, []).append((p['X'][kk], p['f'][kk]))
                 if len(kk) >= 3:
                     kk = kk[1:-1]
                 if len(kk) >= 2:
@@ -489,6 +496,24 @@ def analyse(run, design):
                 continue
             sE, sL = float(np.mean(se)), float(np.mean(sl))
             c1.append((j, sE, sL, sL / sE - 1 if sE else float('inf')))
+        # the plan's definition, printed: one least-squares fit per row and solver (ICE through its plateau cells but
+        # the first and last, IGLOO through all its plateau points in the row), and the same IGLOO-point fit through
+        # ICE's own f_p1 interpolated along the row: the part of the plan's figure that is sampling
+        c1p = []
+        for j in range(INNER):
+            ic = np.flatnonzero(platE[j])
+            ic = ic[1:-1] if len(ic) >= 3 else ic[:0]
+            if len(ic) < 2 or j not in plan_rows:
+                continue
+            xs = np.concatenate([x for x, _ in plan_rows[j]])
+            fs = np.concatenate([f for _, f in plan_rows[j]])
+            if len(xs) < 2 or np.ptp(xs) <= 0:
+                continue
+            sEp = np.polyfit(mesh.xc[j, ic], fE[j, ic], 1)[0]
+            sLp = np.polyfit(xs, fs, 1)[0]
+            sSp = np.polyfit(xs, np.interp(xs, mesh.xc[j], fE[j]), 1)[0]
+            c1p.append((j, sEp, sLp, sLp / sEp - 1, sSp / sEp - 1))
+        R['c1_plan'] = c1p
         done = [c for c in c1 if c[1] is not None]
         R['c1'] = c1
         worst = max(done, key=lambda c: abs(c[3])) if done else None
@@ -532,12 +557,24 @@ def analyse(run, design):
                             float(e(np.array(r[0]), np.array(fo))), r[1]))
     qL = (sum(a * w for a, _, w in ein) - sum(b * w for _, b, w in ein)) / sum(w for _, _, w in ein) if ein else float('nan')
     R.update(q_ice=qE, q_iglo=qL)
-    R['info'] = ['heat released per unit mass flow, inlet to exit plane: ICE %.4e J/kg, IGLOO %.4e J/kg (%+.3f %%)'
+    cp_ = R.get('c1_plan', [])
+    if cp_:
+        w1 = max(cp_, key=lambda c: abs(c[3]))
+        w2 = max(cp_, key=lambda c: abs(c[4]))
+        c1txt = ('C1 with the plan\'s row fit: worst row %d: ICE %.4f /m, IGLOO %.4f /m, %+.3f %%; the same fit through '
+                 'ICE\'s own f_p1 at IGLOO\'s points: worst row %d %+.3f %% (sampling alone)'
+                 % (w1[0] + 1, w1[1], w1[2], 100 * w1[3], w2[0] + 1, 100 * w2[4]))
+    else:
+        c1txt = 'C1 with the plan\'s row fit: no row'
+    R['info'] = [c1txt, 'heat released per unit mass flow, inlet to exit plane: ICE %.4e J/kg, IGLOO %.4e J/kg (%+.3f %%)'
                  % (qE, qL, 100 * (qL / qE - 1) if qE else float('nan')),
                  'delta over every row (both carry mass, both liquid, upstream of IGLOO\'s plateau, cooled > 5 K): max %.5f'
                  % R['delta_all_rows'],
                  'T1 with the plan\'s set (3 or more cells upstream of IGLOO\'s first plateau cell; not judged: IGLOO mollifies '
                  'its Eulerian field over +-%d cells): delta %.5f over %d cells' % (passes, R['delta_3cells'], R['t1_3cells']),
+                 'T3 with the plan\'s set (IGLOO inner cells crossed by plateau rows only, the mollifier\'s box not asked): %d '
+                 'cells, max |T_p - T_melt|/T_melt %s' % (R['t3_plan_cells'], '%.3e' % R['t3_plan_err']
+                                                          if R['t3_plan_err'] is not None else '-'),
                  'inner exit: T ICE %.3f / IGLOO %.3f K; f ICE %.5f / IGLOO %.5f; G3 cells %d; IGLOO parcels %d, events %d, '
                  'plateau ends %d; trajectory points outside every cell %d of %d' % (TiE, TiL, fiE, fiL, R['g3_cells'], len(P),
                                                                                    len(ev), len(en), R['unlocated'], len(okc))]

@@ -13,6 +13,9 @@ Inputs: `test/mi2-checks/regen_case.sh <case> <scratch> GPB BCB ICB --install` w
 `python3 ../JPL-3solver-hot-2micron/compare_freezing.py <run-dir> --design partial`. No gate yet: the gas does not
 meet the planned gate's steadiness witnesses (below).
 
+The comparison leaves out IGLOO's mollifier support (+-`mollify-passes` cells, 8) around the fronts: see
+`../JPL-3solver-hot-2micron/README.md`.
+
 Design estimate (a quasi-1D two-phase march, not a reference): nucleation near x = 0.116 m (axis 0.110–0.122 m, wall
 row 0.103–0.105 m), exit frozen fraction about 0.28.
 
