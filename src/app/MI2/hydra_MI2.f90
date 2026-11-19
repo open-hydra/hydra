@@ -326,6 +326,8 @@ program hydra_MI2_program
 
   call Report_Setup()
 
+  call Report_Chimera()
+
   call Check_Time_Accuracy()
 
   call Check_Burning_Defaults()
@@ -1306,5 +1308,36 @@ contains
     write(*,*)
 
   end subroutine Report_Setup
+
+
+  !> An overset mesh (gas faces of kind 102): the sums over the domain the coupler prints take every cell of every
+  !  block, so they count an overlap once per block that covers it. One warning; nothing on a mesh without such a face.
+  subroutine Report_Chimera()
+    implicit none
+    integer :: i, n, nb
+    logical, allocatable :: has(:)
+
+    associate ( dom => MOSE_simulation%domain(1) )
+      if ( .not. allocated(dom%bc) ) return
+      allocate(has(dom%nb)); has = .false.
+      n = 0
+      do i = 1, size(dom%bc)
+        if ( dom%bc(i)%type /= 102 ) cycle
+        n = n + 1
+        has(dom%bc(i)%b) = .true.
+      enddo
+      nb = count(has)
+    end associate
+    if ( n == 0 ) return
+
+    write(*,*)
+    write(*,'(A,I0,A,I0,A)') ' [WARNING] MI2: an overset mesh: ', n, ' chimera (102) boundary cells on ', nb, &
+      ' block(s). Every sum over the domain the coupler prints takes every cell of every block, so it counts an '// &
+      'overlap once per block that covers it: the gas mass, momentum and energy, what ICE and IGLOO hand the gas, '// &
+      'the coupling report and the mass and energy balances at the end of the run. The coupler makes no correction '// &
+      'for the overlap'
+    write(*,*)
+
+  end subroutine Report_Chimera
 
 end program hydra_MI2_program
