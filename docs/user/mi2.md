@@ -70,7 +70,7 @@ my_case/
     ├── partL-phase.txt       # a condensed phase solved by IGLOO
     ├── partL-bc.txt  partL-ic.tec  partL-properties.dat
     ├── partL-products.txt
-    └── partL-models.txt      # the constants of the burning models (ATLAS GPB), read by IGLOO
+    └── partL-models.txt      # the constants of the burning and breakup models (ATLAS GPB), read by IGLOO
 ```
 
 The names (`gas`, `partE`, `partL`) are those of the `[GPB-Phase*] name` keys. The run writes `OUTPUT/`, each
@@ -114,10 +114,13 @@ run, each needs its own phase: one phase cannot feed both (its mass would reach 
 | IGLOO | `phase.txt`, `bc.txt`, `properties.dat`, `models.txt` | `bc.txt` and `properties.dat` required |
 | `hydra-MI2` | `products.txt` of each condensed phase | see [Evaporation and combustion](#evaporation-and-combustion) |
 
-`models.txt` exists only when a material has constants of a burning model; the solvers read it, `hydra-MI2` does not.
-Its format and the keys it carries are in the solvers' input pages
+`models.txt` exists only when a material has constants of a burning or a breakup model; the solvers read it,
+`hydra-MI2` does not. Its format and the keys it carries are in the solvers' input pages
 ([ICE](https://open-hydra.github.io/ICE/user/input/), [IGLOO](https://open-hydra.github.io/IGLOO/user/input/)) and
-in [ATLAS GPB](https://open-hydra.github.io/ATLAS/user-guide/gpb/condensed-solid/#the-constants-of-the-burning-models-namemodelstxt).
+in [ATLAS GPB](https://open-hydra.github.io/ATLAS/user-guide/gpb/condensed-solid/#the-constants-of-the-models-namemodelstxt).
+Breakup is IGLOO's: ICE has no breakup model and ignores the `breakup=` word of a material line and a `breakup` row,
+one warning each, and the run goes on; ATLAS writes both for any phase whose `[GPB-Phase*]` gives breakup keys, so
+give them to the phase IGLOO solves. The oxide cap, IGLOO's too, is refused by ICE (see [Oxide cap](#oxide-cap-igloo)).
 
 ### Naming rules
 
@@ -619,6 +622,7 @@ Warnings and notes do not stop the run:
 | `[MI2] MOSE (ICE) made no iteration in this run` | a restarted solver writes no end-of-run output |
 | `[MI2] WARNING: the consumed-species floor guard clamped <n> (cell,species) extractions` | end of run: a mass-limited reaction |
 | `[WARNING] <n> coupling step(s) used the EULERIAN branch` | end of run: those steps are not in the balances |
+| `[WARNING] [ICE::Setup_Materials] ... is ignored: ICE has no breakup model` | a `breakup=` word or a `breakup` row in the phase ICE solves: ICE has no breakup model and goes on without it |
 
 ---
 

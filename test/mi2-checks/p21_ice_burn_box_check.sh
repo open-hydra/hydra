@@ -11,6 +11,8 @@
 #           step and name the record; so must a record with the former word "explicit", the former key d-res, a
 #           constant left on the material line, the oxide cap (its word on the line, its row), a row of an unknown
 #           kind, of another model than the line's, with a key the model does not read.
+#  ignore : the breakup model, which ICE does not have: breakup=TAB on the material line, a breakup row; each must
+#           print one warning, run to the end and write the first case's OUTPUT files.
 #  heat   : the coupler prints, for each burning material, the record's heat from the material at the temperature
 #           it burns at and q-comb beside it; it warns when the two differ by more than 5 % for Beckstead (the row's
 #           q-comb at 930000: 4.55 %, no warning; at 1030000: 5.71 %, one), never for direct (2000000: none).
@@ -95,13 +97,28 @@ stop old-line "the constants of the burning models are rows of INPUT/part-models
                                                               INPUT/part-phase.txt    's/^A 1 combustion=direct$/A 1 combustion=direct q-comb=1000000/'
 stop cap-word "names the oxide cap of a burning drop"         INPUT/part-phase.txt    's/^A 1 combustion=direct$/A 1 combustion=direct cap=constant/'
 stop cap-row  "a cap row gives the oxide cap of a burning drop" INPUT/part-models.txt '$a A cap constant xi-cap=0.2 product=OX'
-stop kind     'unknown kind "breakup"'                        INPUT/part-models.txt   '$a A breakup TAB Comega=8'
+stop kind     'unknown kind "Foo"'                            INPUT/part-models.txt   '$a A Foo TAB Comega=8'
 stop model    "the material burns with combustion=direct"     INPUT/part-models.txt   's/^A combustion direct /A combustion Beckstead /'
 stop key      "K-burn is not a constant of combustion=direct" INPUT/part-models.txt   's/^A combustion direct /A combustion direct K-burn=1.39e-06 /'
 stop section  "[ICE-Physics] q-comb: a constant of the burning model, in the material's row of the models file" \
                                                               input.ini               's/^\[ICE-Physics\]$/[ICE-Physics]\nq-comb = 1.0e6/'
 stop no-qcomb "requires q-comb, the heat of reaction per kg burnt, in its row of the models file" \
                                                               INPUT/part-models.txt   's/ q-comb=1000000 / /'
+
+# --- ignore: the breakup model, which ICE does not have: one warning, the run goes on and writes the same bytes ---
+goes() {  # goes <name> <warning> <file of the case> <sed script>
+  local d=$T/$1 log=$T/$1.log n
+  rm -rf "$d"; mkdir -p "$d"; cp -rp "$S/INPUT" "$S/MESH" "$S/input.ini" "$d/"
+  sed -i "$4" "$d/$3"
+  if cmp -s "$d/$3" "$S/$3"; then ko "$1: the edit changed nothing"; return; fi
+  "$RUN" "$d" "$d/run" 1 "$log" "$EXE" > /dev/null 2>&1; rc=$?
+  n=$(grep -c -F "$2" "$log")
+  if [ $rc = 0 ] && [ "$n" = 1 ] && grep -q "GAME OVER" "$log" && diff -rq "$T/ice-burn-box/OUTPUT" "$d/run/OUTPUT" > /dev/null; then
+    ok "$1: ignored with one warning, the run ends and writes ice-burn-box's OUTPUT files"
+  else ko "$1: exit=$rc, $n warning line(s), OUTPUT $(diff -rq "$T/ice-burn-box/OUTPUT" "$d/run/OUTPUT" > /dev/null 2>&1 && echo same || echo different)"; fi
+}
+goes brk-word "on the material line is ignored: ICE has no breakup model" INPUT/part-phase.txt  's/^A 1 combustion=direct$/A 1 combustion=direct breakup=TAB/'
+goes brk-row  "a breakup row is ignored: ICE has no breakup model"        INPUT/part-models.txt '$a A breakup TAB Comega=8'
 
 # --- lv: the latent heat from the Lv column of the property table ---
 column() {  # column <case dir>: an Lv column, 2.26e6 J/kg at 300 K and 1000 J/kg more per kelvin, appended to the table
