@@ -6,10 +6,12 @@
 # IGLOO sampled and compares the exit rows, every scatter sample, the plateau, the sample clock, the source field and
 # the Eulerian integrals (rows E S Q C G), and the run log (row L: no LK-interface: warning of IGLOO).
 # Per box: the run clean (exit 0, GAME OVER, none of the failure signatures), and the reference check with no failed
-# row (its count and the first failed row quoted otherwise). RED on IGLOO bdb4b91, whose unconverged Langmuir-Knudsen
-# iteration burnt the drops out 4.3-4.9 us early at 297.8-299.1 K against the reference's 329.7-334.7 K: the E rows
-# of every stream fail (8, 4, 4, 4 rows). One core: the four runs about a minute, the reference check one to two
-# minutes per box on an idle core (19 to 20 minutes in all at a load of 85 to 120 on 96 cores).
+# row (its count and the first failed row quoted otherwise) and its last sweep judged: gas-field.tec written at the
+# iteration that sweep sampled (row I fails when the header carries none; a field of another iteration leaves the
+# sweep informational, which fails here). RED on IGLOO bdb4b91, whose unconverged Langmuir-Knudsen iteration burnt the
+# drops out 4.3-4.9 us early at 297.8-299.1 K against the reference's 329.7-334.7 K: the E rows of every stream fail
+# (8, 4, 4, 4 rows, when only evap-box's last sweep was judged). One core: the four runs about a minute, the reference
+# check one to two minutes per box on an idle core, about five for evap-box-ord2 (its gas sampled bilinearly).
 #   usage: p19_evap_reference_check.sh [scratch-root] [exe]
 set -u
 export LC_ALL=C
@@ -37,10 +39,13 @@ for c in evap-box evap-box-ord2 evap-box-ta evap-box-sa; do
   python3 -B "$CR" "$d" --log "$T/$c.log" > "$T/$c.reference.out" 2>&1; crc=$?
   nf=$(grep -c '^ *\[FAIL\]' "$T/$c.reference.out")
   last=$(grep -E '^(PASS|FAIL): [0-9]+ check' "$T/$c.reference.out" | tail -1)
-  if [ $crc = 0 ] && [ "$nf" = 0 ] && [ "${last#PASS}" != "$last" ]; then
-    ok "$c: reference check, no failed row (E S Q C G L; $T/$c.reference.out)"
+  ninfo=$(grep -c 'per-stream checks informational' "$T/$c.reference.out")
+  if [ $crc = 0 ] && [ "$nf" = 0 ] && [ "$ninfo" = 0 ] && [ "${last#PASS}" != "$last" ]; then
+    ok "$c: reference check, no failed row, last sweep judged (E S Q C G L; $T/$c.reference.out)"
   elif [ "$nf" -gt 0 ]; then
     ko "$c: reference check, $nf failed row(s); first: $(grep -m1 '^ *\[FAIL\]' "$T/$c.reference.out" | sed 's/^ *//' | cut -c1-160)"
+  elif [ "$ninfo" -gt 0 ]; then
+    ko "$c: reference check, a sweep not judged: $(grep -m1 'per-stream checks informational' "$T/$c.reference.out" | sed 's/^ *//' | cut -c1-160)"
   else
     ko "$c: reference check did not run (exit $crc): $(tail -1 "$T/$c.reference.out" | cut -c1-160)"
   fi
