@@ -186,6 +186,7 @@ ICE and IGLOO standalone; `p31_steady_check.sh` takes an optional list of legs.
 | `p11_mass_flux_inlet_check.sh` | the gas inflow handed to IGLOO on mass-flux inlets |
 | `p12_igloo_momentum_check.sh` | `evap-box-mom`: momentum and energy of IGLOO's source coupling |
 | `p13_rans_slot_check.sh` | `evap-box-sa`: the coupling leaves the turbulence variable alone |
+| `p14_hot_nozzle_check.sh` | `JPL-3solver-hot-2micron`: alumina freezing in the hot three-solver nozzle, ICE against IGLOO (fronts, plateau, heat released); the gas steadiness is printed, not judged |
 | `p15_vapour_coherence_check.sh` | ICE and IGLOO read the vapour columns of one property table under the same names, with the same code, to the same values |
 | `p17_two_materials_check.sh` | `evap-box-2mat`: each IGLOO material's lost mass reaches its own gas species |
 | `p18_jpl_chang_check.sh` | the three JPL cases against `JPL_chang.dat` |
@@ -203,10 +204,13 @@ ICE and IGLOO standalone; `p31_steady_check.sh` takes an optional list of legs.
 | `p31_steady_check.sh` | a steady run does not depend on the local time steps |
 | `p32_fusion_check.sh` | a smoke freezing: its heat of fusion reaches the gas |
 | `p33_restart_check.sh` | a MOSE + ICE restart (`newrun = false` in both) goes on as the run in one go, every value equal: ICE's source alone (`JPL-Eulerian-20micron`), a burning family's smoke and the relaxation times that bound ICE's steps (`steady-ice-smoke`), the removals a time-accurate ICE stores in alternate cycles (`steady-ice-burnout`), and a run whose iterations are no multiple of `sol-diter`; a run killed (`kill -9`) after a coupling step restarts as the run in one go (MOSE's history rows past the restart counted and taken out); each run's end written once (no iteration twice in a history, output numbers = outputs written); a restart that cannot be continued exactly stops when it continues a time-accurate run (a cycle in which IGLOO or ICE iterates is time-accurate and the solver keeping that time resumes its counters) and names the way out, which the gate follows literally (keep a copy, copy the fields, a `.vtm` with its block files, set the keys) to a clean new run; otherwise it warns once and completes: ICE's hand-off missing (also of a run killed before its first step end with both outputs), out of step, cut in half, of another mesh or layout, counters not resumed (steady `JPL-Eulerian-20micron` warns; `steady-ice-burnout` with ICE time-accurate and `ice-burn-box`, the gas's clock, stop), ICE in no cycle stops; a run killed during the hand-off's write (its temporary file a FIFO) keeps the previous one whole; with `sol-overwrite = false` a killed restart keeps the hand-off of the last end and restarts exactly; a new run refused at set-up keeps an earlier hand-off and one that starts removes it; a restarted ICE with no iteration writes no end-of-run output; a restart with IGLOO stops in a time-accurate continuation (`evap-box-ta`; `igloo-al-box` with IGLOO in ICE's time-accurate cycle), warns once and completes in a steady schedule (`evap-box`; `igloo-al-box` with MOSE steady; the three-solver case, whose restart reads ICE's hand-off) or when MOSE restarts time-accurate from a steady field, and says nothing when no cycle runs IGLOO |
+| `p34_pyrolysis_table_check.sh` | BCB run again alone on an imported case with a pyrolysing-ablator wall (BC 506) finds the pyrolysis-gas tables, through `regen_case.sh` and through `figaro ATLAS BCB`; needs an ATLAS build that knows BC 506 |
 
 `run_case.sh <case> <scratch> <threads> <log> [exe]` runs one case in a scratch copy. `regen_case.sh <case> <scratch>
 <GPB|BCB|ICB ...> [--install]` regenerates a case's `INPUT/` with ATLAS (`ATLASDIR` selects the ATLAS tree) and diffs
-it against the stored one.
+it against the stored one. Without GPB among the tools, BCB and ICB read the tables an earlier GPB wrote: the script copies
+`INPUT/*phase.txt`, `*thermo.dat`, `*transport.dat`, `*properties.dat` and `*pyrolysis.dat` to the case root first, as
+`figaro ATLAS` does.
 
 ## Relationship to Solver-Level Tests
 

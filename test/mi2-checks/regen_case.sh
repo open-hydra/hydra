@@ -1,7 +1,7 @@
 #!/bin/bash
 # regen_case.sh <case-dir> <scratch-dir> <tools: GPB|BCB|ICB ...> [--install]
 # Runs the ATLAS tools on a scratch copy of the case (MESH/mesh.tec copied to the case root; without GPB among the
-# tools also INPUT/*phase.txt, *thermo.dat, *transport.dat and *properties.dat, which BCB and ICB then read), then
+# tools also INPUT/*phase.txt, *thermo.dat, *transport.dat, *properties.dat and *pyrolysis.dat, which BCB and ICB then read), then
 # diffs fromATLAStoSolver/ against the case's INPUT/. The ATLAS that wrote the files (commit, deps.lock, the ORION it
 # was configured with, the md5 of BCB and ICB, the Fortran compiler of its build, the Python that ran GPB) is printed
 # and kept as atlas-provenance.txt in the scratch copy. With --install the regenerated files are copied into INPUT/,
@@ -29,7 +29,7 @@ cd "$dst" || exit 2
 # BCB and ICB read a phase's tables from the case root when its phase.txt is there, else from fromATLAStoSolver/
 # (ATLAS phase_dir): after GPB they must read GPB's tables, so the stored ones are copied only without GPB
 gpb=0; for t in "${tools[@]}"; do [ "$t" = GPB ] && gpb=1; done
-[ $gpb = 1 ] || cp INPUT/*phase.txt INPUT/*thermo.dat INPUT/*transport.dat INPUT/*properties.dat . 2>/dev/null
+[ $gpb = 1 ] || cp INPUT/*phase.txt INPUT/*thermo.dat INPUT/*transport.dat INPUT/*properties.dat INPUT/*pyrolysis.dat . 2>/dev/null
 cp "$src/MESH/mesh.tec" . 2>/dev/null || cp "$src/MESH/mesh.p3d" . 2>/dev/null
 "$ATLASDIR/ATLAS.sh" "${tools[@]}" > atlas.log 2>&1; rc=$?
 if [ $rc -ne 0 ]; then echo "ATLAS exit $rc -- see $dst/atlas.log"; tail -5 atlas.log; exit $rc; fi
