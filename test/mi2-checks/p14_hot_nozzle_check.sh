@@ -9,23 +9,27 @@
 # W1 and W1b are printed for the 2 um case with the cold case's values and their bounds, not judged: the user's decision
 # of 2026-11-19 ("print the steadiness figures for 2 um without judging them, and accept the ICE-against-IGLOO
 # comparison on a gas that still moves slightly"). At one thread the 2 um gas still moves (W1 4.9e-8 of the first
-# residual, still falling, against 1e-8; W1b 2.0e-8 against 1e-7) while every comparison number is the same to its
-# printed digits at one and at eight threads. W2, W3, the hygiene and the comparison are judged.
+# residual against 1e-8, blocks 41-49 falling x0.83 per block, block 50 2.7e-8; W1b 2.0e-8 against 1e-7) while every
+# comparison number is the same to its printed digits at one and at eight threads. W2, W3, the hygiene and the
+# comparison are judged.
 # JPL-3solver-hot-20micron (T0 2400 K, 20 um, T-nuc 2227 K, --design partial) is no leg: P14_VARIANT=20micron judges
 # it on demand with W1 and W1b as the plan writes them, and it is RED today (one thread: W1 7.8e-8, W1b 7.1e-7; the
 # gas exit Mach on the axis switches between two states ~6.5e-7 apart at irregular coupling steps).
 # Every python step's verdict is counted; a step that exits non-zero without a FAIL line, or with a traceback, or with
 # no summary line, is one more FAIL; a witness that cannot be evaluated is a FAIL line of its own (p14_hot_nozzle.py).
-# Measured 2026-11-19 (hydra 74a90a4, ifx, one thread, 50 x 500/2/250 as the case ships): the run 49-51 min on a
+# Measured 2026-11-19 (hydra 74a90a4, ifx, one thread, 50 x 500/2/250 as the case ships): the run 43-49 min on a
 # pcprop; G1 6, G2 5 passed (W1 4.9e-8, W1b 2.0e-8 printed), compare 9, refute 13 passed. RED: the cold case directory
 # (G1 (a), (c), (d)); T-nuc 1900 K in IGLOO's phase only (G1 (a)); T-nuc 1961.6 K in ICE's phase only (T2: events 18-22
 # cells past ICE's front against N_front 4); h-fus 1.635e6 in IGLOO's phase only (T4 24-27 cells against 5, C1 -34 %);
-# the cold reference judged with P14_RUN ('solidification active', T0, T2, T3, T4, T5 fail); a run without
-# gas-residual-history.dat and a run read while it was written (each fails, rc 1; before: passed with rc 0).
+# the cold JPL-3solver-20micron run with probes judged with P14_RUN ('solidification active', T0, T2, T3, T4, T5 fail,
+# refute_compare stops without a verdict: 12 passed, 7 failed); a run without gas-residual-history.dat and a run read
+# while it was written (each fails, rc 1; before, the 20 um run without the residual history passed with rc 0 and the
+# mid-write run's three tracebacks went uncounted).
 #   usage: p14_hot_nozzle_check.sh [scratch-root] [exe]
 #   P14_VARIANT=2micron|20micron (default 2micron); P14_CASE=<dir> judges a copy of the case (a mutated input) instead
 #   of test/JPL-3solver-hot-<variant>; P14_RUN=<dir> judges a stored run (input.ini, INPUT/, OUTPUT/ and run.log, or
-#   <dir>.log; one variant; no solver run; a directory without OUTPUT/ fails).
+#   <dir>.log; one variant; no solver run; a directory without OUTPUT/ fails). A stored run must hold the two probe
+#   files inject adds (OUTPUT/exit_axis.txt, exit_wall.txt): a run of the case's own input.ini has none, and W1b fails.
 set -u
 export LC_ALL=C
 T=${1:-${MI2_SCRATCH:-/tmp/mi2-checks-${USER:-$(id -un)}}/P14}
