@@ -4,6 +4,15 @@ module hydraMI2_Mod_Coupling
   implicit none
   private
 
+  interface
+    !> libc rename(2): the hand-off's temporary file onto the hand-off, in one step
+    function c_rename ( from, to ) bind(C, name='rename') result( rc )
+      use, intrinsic :: iso_c_binding, only: c_char, c_int
+      character(kind=c_char), intent(in) :: from(*), to(*)
+      integer(c_int) :: rc
+    end function c_rename
+  end interface
+
   public :: MOSExIGLOO
   public :: MOSExICE
   public :: ICExMOSE
@@ -1766,10 +1775,13 @@ contains
   end function Exchange_Value
 
 
-  !> At the end of a run with ICE: the arrays ICExMOSE and Gone_To_Rate read and those ICE's next step starts from, to
-  !  ICE_Exchange_File, with ICE's iteration (CYCLE), whether ICE has produced sources and MOSE's iteration. Tecplot ASCII
-  !  through ORION: 17 digits, read back exactly.
-  subroutine Write_ICE_Exchange ( ICE_sim, hasSources, iterMOSE )
+  !> At the end of a coupling step that left both solvers' fields on disk, and at the end of a run with ICE: the arrays
+  !  ICExMOSE and Gone_To_Rate read and those ICE's next step starts from, to ICE_Exchange_File, with ICE's iteration
+  !  (CYCLE), whether ICE has produced sources and MOSE's iteration. Tecplot ASCII through ORION: 17 digits, read back
+  !  exactly. quiet: no line in the log (the writes of the coupling steps). Written to <file>.part, then renamed: a run
+  !  killed during the write keeps the hand-off it had.
+  subroutine Write_ICE_Exchange ( ICE_sim, hasSources, iterMOSE, quiet )
+    use, intrinsic :: iso_c_binding, only: c_null_char
     use ICE_Advanced_Types_m, only: ICE_simulation_type
     use ICE_Global_m,         only: ngroups
     use ICE_Config_Types_m,   only: ice_sim_param => obj_sim_param
@@ -1779,6 +1791,7 @@ contains
     type(ICE_simulation_type), intent(in) :: ICE_sim
     logical,                   intent(in) :: hasSources
     integer,                   intent(in) :: iterMOSE
+    logical, optional,         intent(in) :: quiet
     type(orion_data)              :: io
     type(xvar_t),     allocatable :: xv(:)
     character(len=:), allocatable :: names, f
@@ -1807,21 +1820,32 @@ contains
       enddo; enddo; enddo
     enddo
     f = ICE_Exchange_File()
-    err = tec_write_structured_multiblock( orion=io, varnames=names, filename=f, &
+    err = tec_write_structured_multiblock( orion=io, varnames=names, filename=f//'.part', &
                                            cycle=int(ice_sim_param%iter_general, I4), fldnames=XAUX, &
                                            fldvalues=[merge(1._R8, 0._R8, hasSources), real(iterMOSE, R8)] )
     if (err /= 0) then
-      write(*,'(A,I0,A)') ' [ERROR] MI2: cannot write '//f//' (error ', err, ' of the writer)'
+      write(*,'(A,I0,A)') ' [ERROR] MI2: cannot write '//f//'.part (error ', err, ' of the writer)'
       error stop 1
+    endif
+    err = c_rename( f//'.part'//c_null_char, f//c_null_char )
+    if (err /= 0) then
+      write(*,'(A,I0,A)') ' [ERROR] MI2: cannot rename '//f//'.part to '//f//' (error ', err, ' of rename)'
+      error stop 1
+    endif
+    if (present(quiet)) then
+      if (quiet) return
     endif
     write(*,'(A)') ' [MI2] what ICE''s last coupling step hands the gas, for a restart: '//f
 
   end subroutine Write_ICE_Exchange
 
 
-  !> An ICE restart: the arrays of Write_ICE_Exchange read back from ICE_Exchange_File, which must be of ICE's restored
-  !  iteration and of its layout; hasSources and iterMOSE as written. Without the file the run stops.
-  subroutine Read_ICE_Exchange ( ICE_sim, hasSources, iterMOSE )
+  !> An ICE restart whose solvers resumed their counters: the arrays of Write_ICE_Exchange read back from
+  !  ICE_Exchange_File (used) when it was written at ICE's restored iteration and, when MOSE restarts too (checkMOSE), at
+  !  MOSE's (iterMOSE). Missing, incomplete (a file MI2 did not write in full), of another layout or mesh, or written at
+  !  another iteration (the run stopped between its outputs), it is not used and why says so: the caller decides from
+  !  the schedule.
+  subroutine Read_ICE_Exchange ( ICE_sim, iterMOSE, checkMOSE, used, hasSources, why )
     use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_positive_inf
     use ICE_Advanced_Types_m, only: ICE_simulation_type
     use ICE_Global_m,         only: ngroups, ncond
@@ -1830,42 +1854,72 @@ contains
     use Lib_Tecplot,          only: tec_read_structured_multiblock
     implicit none
     type(ICE_simulation_type), intent(inout) :: ICE_sim
-    logical,                   intent(out)   :: hasSources
-    integer,                   intent(out)   :: iterMOSE
+    integer,                   intent(in)    :: iterMOSE
+    logical,                   intent(in)    :: checkMOSE
+    logical,                   intent(out)   :: used
+    logical,                   intent(inout) :: hasSources
+    character(len=:), allocatable, intent(out) :: why
     type(orion_data)              :: io
     type(xvar_t),     allocatable :: xv(:)
     character(len=:), allocatable :: f
     integer,          allocatable :: col(:)
     character(len=32) :: nm
+    character(len=96) :: at
     integer(I4) :: cyc
     real(R8)    :: aux(2)
     logical     :: found(2), there, srate(ngroups), rate
     integer     :: b, g, v, i, j, k, err, nv, ndir
 
+    used = .false.
+    why  = ''
     f = ICE_Exchange_File()
     inquire(file=f, exist=there)
     if (.not. there) then
-      write(*,'(A)') ' [ERROR] MI2: ICE restarts ([ICE-Parameters] newrun = false) and '//f//' is missing. MI2 writes '// &
-        'it at the end of a run with ICE: what ICE''s last coupling step hands the gas, which ICE''s field file does '// &
-        'not hold; without it the first MOSE block would run without ICE''s source. Restart from the OUTPUT/ of a '// &
-        'run that ended, or start ICE anew (newrun = true)'
-      error stop 1
+      why = f//' is missing (MI2 writes it with the fields at the end of each coupling step that leaves both solvers'' '// &
+        'fields on disk and at the end of a run with ICE; an older binary did not)'
+      return
     endif
     err = tec_read_structured_multiblock( orion=io, filename=f, cycle=cyc, fldnames=XAUX, fldvalues=aux, fldfound=found )
     if (err /= 0 .or. .not. all(found)) then
-      write(*,'(A,I0,A)') ' [ERROR] MI2: '//f//' is not a file MI2 wrote (read error ', err, ', or no records '// &
-        trim(XAUX(1))//' and '//trim(XAUX(2))//')'
-      error stop 1
+      write(at,'(A,I0,A)') ' (read error ', err, ', or no records '
+      why = f//' is not a file MI2 wrote in full'//trim(at)//' '//trim(XAUX(1))//' and '//trim(XAUX(2))//'): a run '// &
+        'killed while it wrote it, or another file'
+      return
     endif
-    if (cyc /= ice_sim_param%iter_general) then
-      write(*,'(A,I0,A,I0,A)') ' [ERROR] MI2: '//f//' was written at ICE iteration ', cyc, ' and ICE restarts from '// &
-        'iteration ', ice_sim_param%iter_general, ': the two files are not of the same end of a run'
-      error stop 1
+    if (cyc /= ice_sim_param%iter_general .or. (checkMOSE .and. nint(aux(2)) /= iterMOSE)) then
+      write(at,'(A,I0,A,I0,A,I0)') ' is of ICE iteration ', cyc, ' and MOSE iteration ', nint(aux(2)), &
+        ', the fields restored of ICE iteration ', ice_sim_param%iter_general
+      why = f//trim(at)
+      if (checkMOSE) then
+        write(at,'(A,I0)') ' and MOSE iteration ', iterMOSE
+      else
+        at = ' (MOSE starts anew)'
+      endif
+      why = why//trim(at)//': the run that wrote them stopped between two of its outputs'
+      return
     endif
-    if (size(io%block) /= ICE_sim%domain(1)%nb) call Refuse( 'its number of blocks' )
+    if (size(io%block) /= ICE_sim%domain(1)%nb) then
+      why = Refusal( 'its number of blocks' )
+      return
+    endif
     do b = 1, size(io%block)
-      if (any([io%block(b)%Ni, io%block(b)%Nj, io%block(b)%Nk] /= ICE_sim%domain(1)%blk(b)%dim(1:3))) &
-        call Refuse( 'the dimensions of a block' )
+      if (any([io%block(b)%Ni, io%block(b)%Nj, io%block(b)%Nk] /= ICE_sim%domain(1)%blk(b)%dim(1:3))) then
+        why = Refusal( 'the dimensions of a block' )
+        return
+      endif
+      ! the mesh: written from ICE's ORION data and read back exactly
+      if (.not. (allocated(io%block(b)%mesh) .and. allocated(ICE_sim%ODP(1)%block(b)%mesh))) then
+        why = Refusal( 'the mesh of a block' )
+        return
+      endif
+      if (any(shape(io%block(b)%mesh) /= shape(ICE_sim%ODP(1)%block(b)%mesh))) then
+        why = Refusal( 'the mesh of a block' )
+        return
+      endif
+      if (any(io%block(b)%mesh /= ICE_sim%ODP(1)%block(b)%mesh)) then
+        why = Refusal( 'the mesh of a block' )
+        return
+      endif
     enddo
     nv   = size(io%block(1)%vars, 1)
     ndir = size(io%varnames) - nv
@@ -1875,11 +1929,17 @@ contains
       srate(g) = Column(nm) > 0
     enddo
     call Exchange_Vars( srate, rate, xv )
-    if (size(xv) /= nv) call Refuse( 'its variables' )
+    if (size(xv) /= nv) then
+      why = Refusal( 'its variables' )
+      return
+    endif
     allocate(col(size(xv)))
     do v = 1, size(xv)
       col(v) = Column(xv(v)%name)
-      if (col(v) == 0) call Refuse( 'its variables ('//trim(xv(v)%name)//' missing)' )
+      if (col(v) == 0) then
+        why = Refusal( 'its variables ('//trim(xv(v)%name)//' missing)' )
+        return
+      endif
     enddo
 
     if (rate) call Gone_Rate_Setup( ICE_sim%domain(1) )
@@ -1910,7 +1970,7 @@ contains
       enddo; enddo; enddo
     enddo
     hasSources = aux(1) > 0.5_R8
-    iterMOSE   = nint(aux(2))
+    used       = .true.
 
   contains
 
@@ -1929,13 +1989,13 @@ contains
 
     end function Column
 
-    subroutine Refuse ( what )
-      character(len=*), intent(in) :: what
+    function Refusal ( what ) result( w )
+      character(len=*), intent(in)  :: what
+      character(len=:), allocatable :: w
 
-      write(*,'(A)') ' [ERROR] MI2: '//f//' does not match the ICE set-up of this run: '//what
-      error stop 1
+      w = f//' does not match the ICE set-up of this run: '//what
 
-    end subroutine Refuse
+    end function Refusal
 
   end subroutine Read_ICE_Exchange
 
