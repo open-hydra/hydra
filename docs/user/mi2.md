@@ -249,6 +249,8 @@ time-accurate = false
 ### Other refusals
 
 - Multigrid: `[HYDRA-Multigrid] levels` above 1 stops the run (IGLOO has no grid levels).
+- `[ICE-Multigrid] levels` above 1 stops the run: the coupler hands the gas to ICE's finest grid and takes ICE's source
+  from it, while ICE steps a coarse level on that level's own grid (and needs ATLAS's `<name>-bc<level>.txt` for it).
 - `IGLOO-iter = 2` in any cycle while an IGLOO material evaporates or burns: the Eulerian coupling hands the gas
   momentum and energy only. Use `IGLOO-iter = 1` in every cycle that runs IGLOO.
 
@@ -274,8 +276,9 @@ step starts from in a coupled run, the relaxation times that bound its steps and
 writes them to `OUTPUT/<prefix>coupling.tec` (Tecplot ASCII, 17 digits; per family the source, the heat, the smoke's
 birth, the removals' store, the relaxation time and, where they exist, a smoke family's birth rate and the removals'
 rate; ICE's iteration as `CYCLE`, MOSE's as `MI2_MOSE_ITERATION`) at the end of every coupling step after which both
-solvers' fields on disk are of their current iteration, and at the end of the run. A new ICE run (`newrun = true`)
-removes the file an earlier run left. An ICE restart reads it back before the first MOSE block:
+solvers' fields on disk are of their current iteration, and at the end of the run. Each write goes to
+`<prefix>coupling.tec.part`, then is renamed: a run killed during the write keeps the hand-off it had. An ICE restart
+reads it back before the first MOSE block:
 
 ```text
  [MI2] ICE restarts with what its last coupling step handed the gas, from OUTPUT/part-coupling.tec (ICE iteration 100, MOSE iteration 200)
@@ -283,70 +286,71 @@ removes the file an earlier run left. An ICE restart reads it back before the fi
 
 A run stopped after such a coupling step (killed, out of wall time, an `error stop`) is so continued exactly: the
 restart equals the run in one go, the residual histories included (each solver drops the rows the stopped run wrote
-past the iteration it restarts from). A run killed while it writes a file leaves that file incomplete: no restart
-point (the hand-off ends with its records, so an incomplete one stops the restart, `... is not a file MI2 wrote`).
+past the iteration it restarts from). Hand-offs are written only at step ends where both solvers write their fields:
+make each solver's `sol-diter` divide its `X-iter`, or a stopped run may leave none. A new ICE run (`newrun = true`)
+removes the hand-off an earlier run left, once every set-up check has passed.
 
-The hand-off cannot be used when
+With `sol-overwrite = false` in `[MOSE-IO]` or `[ICE-IO]`, a restart reads the unnumbered `<prefix>field.tec` that
+the end of the last completed run wrote, not the numbered outputs that follow it. The hand-off of that end is the one
+that matches, so the numbered outputs in between write none. A run that never ended (its first run stopped) has
+numbered fields and no hand-off: the rule below applies to it.
 
-- it is missing (a run of an older binary, which did not write it);
-- it and the fields are not of the same coupling step (the run stopped after a solver wrote its field in the middle of
-  a step: ICE's field of another iteration than `CYCLE`, or MOSE's of another than `MI2_MOSE_ITERATION` when MOSE
-  restarts too);
-- a solver restarts without the counters of the run it continues (a time-accurate run from a steady field, or the
-  other way round, or a field without counters).
+#### A restart that cannot be continued exactly
 
-The first MOSE block then runs without ICE's source. Whether the run may go on follows the same rule as a restart
-with IGLOO (below), for the cycles in which ICE iterates:
+Two things make a restart other than the run in one go:
 
-- A cycle in which ICE iterates is time-accurate (the gas steps in physical time, or ICE does in that cycle): the
-  restart stops at set-up. The run would not continue the one it restarts. The message gives the reason and the way
-  out, a new run from the restored fields:
+- **IGLOO iterates** (`IGLOO-iter` ≠ 0 in some cycle, and `newrun = false` in MOSE or ICE). IGLOO keeps neither its
+  parcels nor the sources it hands the gas from one run to the next, so it starts empty on the restored fields.
+- **ICE's hand-off cannot be used.** This happens when the file
+  - is missing (a run stopped before its first step end with both outputs, or fields of an older binary);
+  - is of another coupling step than the fields (the run stopped after a solver wrote its field in the middle of a
+    step: ICE's field of another iteration than `CYCLE`, or MOSE's of another than `MI2_MOSE_ITERATION`);
+  - is not a file MI2 wrote in full;
+  - does not match ICE's set-up (blocks, dimensions, mesh coordinates, variables);
+  - or a solver restarts without the counters of the run its field comes from (a time-accurate run from a steady
+    field, the other way round, or a field without counters).
 
-    ```text
-     [ERROR] MI2: ICE restarts ([ICE-Parameters] newrun = false) and its hand-off cannot be used: OUTPUT/part-coupling.tec is missing (...). ICE iterates in cycle 2, a time-accurate cycle: ICE iterates in it in physical time ([ICE-Numerics] time-accurate = true). ... To go on from these fields, start a new run from them: copy OUTPUT/gas-field.tec to INPUT/gas-ic.tec and OUTPUT/part-field.tec to INPUT/part-ic.tec (ic-format: the format of the field), and set newrun = true in [MOSE-Parameters] and [ICE-Parameters]
-    ```
+  The first MOSE block then runs without ICE's source.
 
-- ICE iterates in no cycle (`ICE-iter = 0` in every cycle): the restart stops too. The hand-off would be the only
-  source of ICE the gas gets (it receives ICE's source only once ICE has solved or the hand-off was read), so a steady
-  run would end on another state. Let ICE iterate in a cycle, or start a new run from the fields.
-- Every cycle in which ICE iterates is steady: the run goes on and converges again. It says so once:
+Such a restart stops at set-up, before any iteration, when it **continues a time-accurate run**. That is, a cycle in
+which IGLOO (or ICE) iterates is time-accurate and the solver that keeps that time resumes its counters:
 
-    ```text
-     [WARNING] MI2: ICE's hand-off is not used: OUTPUT/part-coupling.tec is missing (...). The first MOSE block runs without ICE's source; no cycle in which ICE iterates is time-accurate, and the run converges again
-    ```
-
-The restart also stops when the file's blocks, dimensions, mesh coordinates or variables do not match ICE's set-up.
-Not checked: the order of the materials (two cases with the same families per material in another order are taken
-for one) and, for a time-accurate ICE, the time of the file.
-
-IGLOO keeps neither its parcels nor the sources it hands the gas from one run to the next: `newrun = false` in either
-solver of a case whose schedule runs IGLOO (`IGLOO-iter` ≠ 0 in some cycle) starts IGLOO empty on the restored fields,
-a new IGLOO start. Whether that may go on depends on the cycles in which IGLOO iterates. Such a cycle is
-**time-accurate** when
-
-- the gas IGLOO hands its sources to steps in physical time: `[MOSE-Numerics] time-accurate = true` and MOSE iterates
-  in the schedule (IGLOO's sources stay in force until its next solve, whichever cycle MOSE iterates in), or
-- ICE iterates in that cycle with `[ICE-Numerics] time-accurate = true`.
+- the gas the sources go to steps in physical time: `[MOSE-Numerics] time-accurate = true`, MOSE iterates in the
+  schedule (sources stay in force until the next solve, whichever cycle MOSE iterates in) and MOSE resumes its
+  counters; or
+- ICE iterates in that cycle with `[ICE-Numerics] time-accurate = true`, and ICE resumes its counters.
 
 `[HYDRA-Parameters] time-accurate` is not read for this (it only labels the end-of-run balances), nor is IGLOO's
-coupling mode (`IGLOO-iter` 1 or 2): IGLOO's own solve has no time step.
+coupling mode (`IGLOO-iter` 1 or 2): IGLOO's own solve has no time step. A time-accurate run started from a steady
+field resumes no counters: it is a new run from that field, not a continuation.
 
-- A cycle in which IGLOO iterates is time-accurate: the restart stops at set-up, before any iteration, since a cold
-  IGLOO start does not continue a time-accurate run. The message names the cycle, the reason and the way out, a new
-  run from the restored fields (`test/evap-box-ta` restarted):
-
-    ```text
-     [ERROR] MI2: newrun = false with IGLOO, and IGLOO iterates in cycle 1, a time-accurate cycle: the gas IGLOO hands its sources to steps in physical time ([MOSE-Numerics] time-accurate = true). ... To go on from these fields, start a new run from them: copy OUTPUT/gas-field.tec to INPUT/gas-ic.tec (ic-format: the format of the field), and set newrun = true in [MOSE-Parameters]
-    ```
-
-- Every cycle in which IGLOO iterates is steady: the run goes on, IGLOO's start is new and the run converges again;
-  it says so once at set-up:
+- **Stop**, in a time-accurate continuation. The message names the cycle, the reason and the way out: a new run from
+  the restored fields (`test/evap-box-ta` restarted):
 
     ```text
-     [WARNING] MI2: newrun = false with IGLOO: IGLOO keeps no parcels and no sources from one run to the next, so it starts empty on the restored gas. ...
+     [ERROR] MI2: newrun = false with IGLOO, and IGLOO iterates in cycle 1, a time-accurate cycle: the gas IGLOO hands its sources to steps in physical time ([MOSE-Numerics] time-accurate = true) and continues the restored run (MOSE resumes its counters). ... To go on from these fields, start a new run from them: keep a copy of INPUT/gas-ic.tec (the initial condition it replaces); copy OUTPUT/gas-field.tec to INPUT/gas-ic.tec; set newrun = true in [MOSE-Parameters]
     ```
 
-- No cycle runs IGLOO (`IGLOO-iter = 0` in every cycle): nothing is said.
+  The way out is in the format each field was written in. A `.vtm` is copied with the block files it lists:
+  `copy OUTPUT/gas-field.vtm to INPUT/gas-ic.vtm and OUTPUT/vtk/gas-fieldBlock*.vts to INPUT/vtk/`. When a solver's
+  `ic-format` differs from its `sol-format`, the way out also says `set ic-format = <sol-format> in [MOSE-IO]` (or
+  `[ICE-IO]`).
+- **Stop**, too, when ICE's hand-off cannot be used and ICE iterates in no cycle (`ICE-iter = 0` everywhere). The gas
+  receives ICE's source only once ICE has solved or the hand-off was read, so the run would end without it.
+- **One warning** otherwise (a steady schedule, or counters not resumed); the run goes on:
+
+    ```text
+     [WARNING] MI2: ICE's hand-off is not used: OUTPUT/part-coupling.tec is missing (...). The first MOSE block runs without ICE's source. No time-accurate run is continued here (a steady schedule, or counters not resumed): a steady run converges again, a time-accurate one is a new run from the restored fields
+     [WARNING] MI2: newrun = false with IGLOO: IGLOO keeps no parcels and no sources from one run to the next, so it starts empty on the restored fields: a new IGLOO start. ...
+    ```
+
+  A steady restart without the hand-off converges to the state of the run in one go (measured on
+  `steady-ice-smoke` and `steady-ice-burnout`: 20 coupling steps restarted for 60 against 80 in one go, the
+  fields equal to 1e-13 and 7e-11 of their range).
+- **Nothing** is said when nothing is lost: no cycle runs IGLOO and the hand-off is read.
+
+Not checked: the order of the materials (two cases with the same families per material in another order are taken for
+one) and, for a time-accurate ICE, the time of the hand-off.
 
 ---
 
@@ -585,8 +589,9 @@ table quotes their characteristic words.
 | setup | `burns into the smoke ... and its row of INPUT/<name>-models.txt gives no d-smoke`; `which is not a material of ICE's phase`; `is born in the phase ..., and ICE runs the phase ...`; `has <n> families in ICE`; `whose closure is ...`; `evaporates or burns in ICE: a smoke does neither` | [smoke](#smoke) |
 | setup | `the smoke has no family: ICE is not run`; `relaxation = true blends two coupling steps` | smoke of an IGLOO material |
 | setup | `cycle <c> advances MOSE and ICE together with time-accurate on` | [time modes](#steady-and-time-accurate-runs) |
-| setup | `ICE restarts ([ICE-Parameters] newrun = false) and its hand-off cannot be used: ...` (a time-accurate cycle in which ICE iterates, or ICE in no cycle); `... does not match the ICE set-up of this run`; `... is not a file MI2 wrote` | [restart](#restart) |
-| setup | `newrun = false with IGLOO, and IGLOO iterates in cycle <c>, a time-accurate cycle` | a cold IGLOO start does not continue a time-accurate run: start a new run from the fields ([restart](#restart)) |
+| setup | `ICE restarts ([ICE-Parameters] newrun = false) and its hand-off cannot be used: ...` (a time-accurate continuation, or ICE in no cycle) | [restart](#a-restart-that-cannot-be-continued-exactly) |
+| setup | `[ICE-Multigrid] levels = <n>: the coupler hands the gas to ICE's finest grid ...` | ICE's coarse levels are not coupled: use `levels = 1` |
+| setup | `newrun = false with IGLOO, and IGLOO iterates in cycle <c>, a time-accurate cycle` | a cold IGLOO start does not continue a time-accurate run: start a new run from the fields ([restart](#a-restart-that-cannot-be-continued-exactly)) |
 | step | `MOSExIGLOO: IGLOO gasblock <b> extends beyond MOSE's ghosted range` | the gas and particle meshes disagree |
 | step | `record <i> of INPUT/<gas>-bc.txt is of block ...` | gas boundary records out of order |
 | step | `particles injected in proportion to the gas mass flow (particle BC 401) on a gas boundary of kind ...` | |
@@ -608,8 +613,8 @@ Warnings and notes do not stop the run:
 | `[WARNING] MI2: in <n> cells ... a smoke was born with no parcel's state` | smoke born at rest, 298.15 K |
 | `[MI2] ... source FROZEN this cycle` | [frozen sources](#frozen-sources) |
 | `[WARNING] MI2: input.ini, read again, advances <solver> after the iteration the schedule had made its last` | the rows and the solution due at that iteration were not written ([one coupling step](#one-coupling-step)) |
-| `[WARNING] MI2: newrun = false with IGLOO` | IGLOO starts empty on the restored gas ([restart](#restart)) |
-| `[WARNING] MI2: ICE's hand-off is not used: ...` | missing, out of step, or counters not resumed, in a steady schedule: the first MOSE block runs without ICE's source ([restart](#restart)) |
+| `[WARNING] MI2: newrun = false with IGLOO` | IGLOO starts empty on the restored fields ([restart](#a-restart-that-cannot-be-continued-exactly)) |
+| `[WARNING] MI2: ICE's hand-off is not used: ...` | the hand-off cannot be used and no time-accurate run is continued: the first MOSE block runs without ICE's source ([restart](#a-restart-that-cannot-be-continued-exactly)) |
 | `[MI2] ICE starts anew: OUTPUT/<prefix>coupling.tec of an earlier run removed` | [restart](#restart) |
 | `[MI2] MOSE (ICE) made no iteration in this run` | a restarted solver writes no end-of-run output |
 | `[MI2] WARNING: the consumed-species floor guard clamped <n> (cell,species) extractions` | end of run: a mass-limited reaction |
