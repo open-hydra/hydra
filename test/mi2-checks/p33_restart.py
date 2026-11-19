@@ -4,6 +4,11 @@
   p33_restart.py exact <one-go OUTPUT> <restarted OUTPUT> <part-1 OUTPUT> <MOSE sol-diter> <ICE sol-diter>
                 [<MOSE restart iteration> <ICE restart iteration>]   (a killed part 1)
                                                                             PASS/FAIL lines, exit 1 on a FAIL
+  p33_restart.py way_out <log> <run dir>    follows, in <run dir>, the way out the last stop of <log> names, item by
+                                            item ("keep a copy of X (...)", "copy A to B[ and C to D]", "set K = V in
+                                            [S][ and [T]]"); prints each action, exit 1 on an item it cannot follow
+  p33_restart.py perturb <tec file>         adds 1e-6 to the first coordinate of the first zone (a mesh other than
+                                            the run's)
 
 The run in one go against part 1 + the restart. gas-field.tec, part-field.tec and part-coupling.tec (what ICE's last
 coupling step hands the gas and leaves for its next): every header line equal, the output numbers included, every value
@@ -20,6 +25,7 @@ solver's output number is the outputs its iterations made, ITERATION // sol-dite
 field file). Non-vacuous: part 1's fields differ from the end's, and the restart's counters are those of the whole run.
 A missing file is a FAIL.
 """
+import glob
 import os
 import re
 import sys
@@ -228,7 +234,80 @@ def exact(one, rst, part1, sdm, sdk, cuts=(None, None)):
     return rep
 
 
+def way_out(log, d):
+    """Follow the way out of the last stop in log, literally, in the run directory d."""
+    text = [x for x in open(log, errors='replace').read().split('\n') if 'start a new run from them: ' in x]
+    if not text:
+        print('  way out: no stop with a way out in ' + log)
+        return 1
+    items = text[-1].split('start a new run from them: ', 1)[1].strip().split('; ')
+    for it in items:
+        m = re.match(r'keep a copy of (\S+) \(', it)
+        if m:
+            src = os.path.join(d, m.group(1))
+            open(src + '.kept', 'wb').write(open(src, 'rb').read())
+            print('  way out: kept ' + m.group(1) + ' as ' + m.group(1) + '.kept')
+            continue
+        if it.startswith('copy '):
+            for pair in it[5:].split(' and '):
+                a, b = pair.split(' to ')
+                srcs = sorted(glob.glob(os.path.join(d, a)))
+                if not srcs:
+                    print('  way out: nothing matches ' + a)
+                    return 1
+                if b.endswith('/'):
+                    os.makedirs(os.path.join(d, b), exist_ok=True)
+                    for f in srcs:
+                        open(os.path.join(d, b, os.path.basename(f)), 'wb').write(open(f, 'rb').read())
+                elif len(srcs) == 1:
+                    open(os.path.join(d, b), 'wb').write(open(srcs[0], 'rb').read())
+                else:
+                    print('  way out: ' + a + ' names several files and ' + b + ' is no directory')
+                    return 1
+                print('  way out: copied %s (%d file(s)) to %s' % (a, len(srcs), b))
+            continue
+        m = re.match(r'set (\S+) = (.+?) in ((\[[^\]]+\])( and \[[^\]]+\])*)$', it)
+        if m:
+            key, val = m.group(1), m.group(2)
+            ini = os.path.join(d, 'input.ini')
+            ls = open(ini).read().split('\n')
+            for sec in re.findall(r'\[([^\]]+)\]', m.group(3)):
+                h = [i for i, x in enumerate(ls) if x.strip() == '[' + sec + ']']
+                if not h:
+                    ls += ['', '[' + sec + ']', key + ' = ' + val]
+                    continue
+                i, done = h[0] + 1, False
+                while i < len(ls) and not ls[i].startswith('['):
+                    if re.match(re.escape(key) + r'\s*=', ls[i]):
+                        ls[i], done = key + ' = ' + val, True
+                    i += 1
+                if not done:
+                    ls.insert(h[0] + 1, key + ' = ' + val)
+            open(ini, 'w').write('\n'.join(ls))
+            print('  way out: set %s = %s in %s' % (key, val, m.group(3)))
+            continue
+        print('  way out: an item not followed: ' + it)
+        return 1
+    return 0
+
+
+def perturb(f):
+    """The first coordinate of the first zone, plus 1e-6: the hand-off of another mesh."""
+    ls = open(f).read().split('\n')
+    z = next(i for i, x in enumerate(ls) if x.lstrip().startswith('ZONE'))
+    i = next(k for k in range(z + 1, len(ls)) if re.match(r'^\s*[-+]?(\d|\.\d)', ls[k]))
+    t = ls[i].split()
+    t[0] = '%.17E' % (float(t[0]) + 1e-6)
+    ls[i] = ' ' + ' '.join(t)
+    open(f, 'w').write('\n'.join(ls))
+    return 0
+
+
 def main():
+    if len(sys.argv) == 4 and sys.argv[1] == 'way_out':
+        return way_out(sys.argv[2], sys.argv[3])
+    if len(sys.argv) == 3 and sys.argv[1] == 'perturb':
+        return perturb(sys.argv[2])
     if len(sys.argv) in (7, 9) and sys.argv[1] == 'exact':
         rep = exact(*sys.argv[2:7], cuts=(int(sys.argv[7]), int(sys.argv[8])) if len(sys.argv) == 9 else (None, None))
         print('  exact: %d passed, %d failed' % (rep.npass, rep.nfail))
