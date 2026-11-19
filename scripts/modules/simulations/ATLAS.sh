@@ -11,7 +11,8 @@ function ATLAS_ops () {
     exit 1
   fi
   # BCB and ICB read a phase's tables from the case root when its phase.txt is there, else from fromATLAStoSolver/:
-  # after GPB they must read GPB's, so the stored tables are copied only when GPB is not asked for
+  # after GPB they must read GPB's, so the stored tables are copied only when GPB is not asked for. The pyrolysis-gas
+  # tables of a phase (BC 506) go with them: BCB reads <phase>pyrolysis.dat from the case root first
   local gpb=0 j
   for j in "$@"; do [[ $j == GPB ]] && gpb=1; done
   if [[ $gpb == 0 ]]; then
@@ -19,10 +20,11 @@ function ATLAS_ops () {
     cp INPUT/*thermo.dat . 2>/dev/null || :
     cp INPUT/*transport.dat . 2>/dev/null || :
     cp INPUT/*properties.dat . 2>/dev/null || :
+    cp INPUT/*pyrolysis.dat . 2>/dev/null || :
   else
     # tables already in the case root (an earlier run, or written by hand) are kept: say that BCB and ICB read them
     local f stale=()
-    for f in *phase.txt *thermo.dat *transport.dat *properties.dat; do
+    for f in *phase.txt *thermo.dat *transport.dat *properties.dat *pyrolysis.dat; do
       if [[ -f $f ]]; then stale+=("$f"); fi
     done
     if (( ${#stale[@]} )); then
@@ -62,6 +64,7 @@ function import_from_ATLAS {
   rm -f *thermo.dat
   rm -f *transport.dat
   rm -f *properties.dat
+  rm -f *pyrolysis.dat
 }
 
 ATLAS_ops $@
