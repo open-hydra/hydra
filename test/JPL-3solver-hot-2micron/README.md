@@ -10,7 +10,7 @@ IGLOO are compared with each other.
 Inputs: `test/mi2-checks/regen_case.sh <case> <scratch> GPB BCB ICB --install` with a gfortran build of the pinned ATLAS
 (`ATLASDIR` set to it); `test/mi2-checks/p14_hot_nozzle.py g1 <case> 2um` checks them. Run: `figaro hydra-MI2 -p 8
 solve`, or `test/mi2-checks/run_case.sh`. Compare: `python3 compare_freezing.py <run-dir>`. Gate:
-`test/mi2-checks/p14_hot_nozzle_check.sh [scratch-root] [exe]` (one thread, 45–50 min on a pcprop): it runs a copy
+`test/mi2-checks/p14_hot_nozzle_check.sh [scratch-root] [exe]` (one thread, 42–49 min on a pcprop): it runs a copy
 of the case with two exit probes of the gas Mach number added (`p14_hot_nozzle.py inject`); `P14_RUN=<run-dir>` judges
 a stored run, which needs those probe files. The stored reference (`OUTPUT/`, `REFERENCE-STATE.md`) is such a run at one
 thread: byte identity holds at one thread only.

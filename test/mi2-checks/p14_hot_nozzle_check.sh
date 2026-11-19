@@ -17,7 +17,7 @@
 # gas exit Mach on the axis switches between two states ~6.5e-7 apart at irregular coupling steps).
 # Every python step's verdict is counted; a step that exits non-zero without a FAIL line, or with a traceback, or with
 # no summary line, is one more FAIL; a witness that cannot be evaluated is a FAIL line of its own (p14_hot_nozzle.py).
-# Measured 2026-11-19 (hydra 74a90a4, ifx, one thread, 50 x 500/2/250 as the case ships): the run 43-49 min on a
+# Measured 2026-11-19 (hydra 74a90a4, ifx, one thread, 50 x 500/2/250 as the case ships): the run 42-49 min on a
 # pcprop; G1 6, G2 5 passed (W1 4.9e-8, W1b 2.0e-8 printed), compare 9, refute 13 passed. RED: the cold case directory
 # (G1 (a), (c), (d)); T-nuc 1900 K in IGLOO's phase only (G1 (a)); T-nuc 1961.6 K in ICE's phase only (T2: events 18-22
 # cells past ICE's front against N_front 4); h-fus 1.635e6 in IGLOO's phase only (T4 24-27 cells against 5, C1 -34 %);
