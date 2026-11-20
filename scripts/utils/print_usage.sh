@@ -40,6 +40,8 @@ print_usage() {
   echo -e "  ${CYAN}<solver> [options] solve${NC}               Launch solver"
   echo -e "     ${CYAN}-b, --background${NC}                        Run in background"
   echo -e "     ${CYAN}-p, --parallel <n>${NC}                      Run with <n> threads"
+  echo -e "     ${CYAN}-m, --mpi <n>${NC}                           Run with <n> MPI ranks (mpirun; mesh split with ATLAS MDB)"
+  echo -e "     ${CYAN}-c, --cpus <list>${NC}                       Run inside these logical CPUs (taskset list, e.g. 0-47,96-143); MPI pinning stays inside them"
   echo -e "  ${CYAN}kill${NC}                                   Kill currently running simulation"
   echo
 
