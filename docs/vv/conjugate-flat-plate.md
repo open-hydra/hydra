@@ -250,8 +250,8 @@ Both variants track the correlation over the whole plate and across all three de
 | `hydra-MF` | 40 | 363.796 K | 365.780 K | 2.009 K | 1.830 K | 2.0 % |
 | `hydra-MF` | 400 | 389.493 K | 389.852 K | 0.678 K | 0.362 K | 0.68 % |
 | `hydra-MF` | 4000 | 392.648 K | 392.684 K | 0.176 K | 0.047 K | 0.18 % |
-| `hydra-AF` | 40 | 363.796 K | 365.429 K | 1.653 K | 1.499 K | 1.7 % |
-| `hydra-AF` | 400 | 389.493 K | 389.804 K | 1.124 K | 0.358 K | 1.1 % |
+| `hydra-AF` | 40 | 363.796 K | 365.427 K | 1.651 K | 1.497 K | 1.7 % |
+| `hydra-AF` | 400 | 389.493 K | 389.804 K | 1.126 K | 0.357 K | 1.1 % |
 | `hydra-AF` | 4000 | 392.648 K | 392.679 K | 0.259 K | 0.053 K | 0.26 % |
 
 Errors are measured against $\Delta T = T_B - T_\infty = 100$ K and exclude $Re_x < 9\times10^{3}$ — the first few cells, where the correlation itself is singular.
@@ -270,9 +270,9 @@ The deviation is largest in the strongly conjugate case and falls by roughly an 
 
 | $k_s/k_f$ | `hydra-MF` | `hydra-AF` |
 |---:|---:|---:|
-| 40 | $2.8\times10^{-8}$ K | $4.4\times10^{-11}$ K |
-| 400 | $6.9\times10^{-10}$ K | $2.0\times10^{-11}$ K |
-| 4000 | $3.5\times10^{-11}$ K | $3.0\times10^{-12}$ K |
+| 40 | $2.8\times10^{-8}$ K | $1.1\times10^{-13}$ K |
+| 400 | $6.9\times10^{-10}$ K | $1.1\times10^{-13}$ K |
+| 4000 | $3.5\times10^{-11}$ K | $5.7\times10^{-14}$ K |
 
 Temperature continuity across the interface holds to round-off. This is the coupling's core invariant, and it is satisfied far below any physical or discretization error.
 
@@ -291,8 +291,8 @@ This is the check only Hydra can perform. The two variants solve the same physic
 
 | $k_s/k_f$ | max $\lvert \Delta T_w \rvert$ | RMS $\Delta T_w$ | max $\lvert \Delta T_w \rvert / \Delta T$ |
 |---:|---:|---:|---:|
-| 40 | 0.665 K | 0.340 K | 0.67 % |
-| 400 | 0.691 K | 0.099 K | 0.69 % |
+| 40 | 0.668 K | 0.342 K | 0.67 % |
+| 400 | 0.693 K | 0.099 K | 0.69 % |
 | 4000 | 0.102 K | 0.013 K | 0.10 % |
 
 ARES and MOSE agree on the interface temperature to better than 0.7 K out of a 100 K driving difference, everywhere outside the leading-edge cells (shaded; the $k_s/k_f = 40$ curve runs off-scale there). The difference is a smooth, small, negative offset — the real-fluid path runs marginally cooler — rather than a divergence that grows along the plate, which is what a coupling inconsistency would look like.

@@ -93,6 +93,8 @@ def read_tec_zones(path):
         lines = fh.readlines()
 
     var_names = re.findall(r'"([^"]+)"', lines[0])
+    if not var_names:   # names without quotes (VARIABLES = x y z y+ ...), as hydra-AF writes hydra-wall.tec now
+        var_names = lines[0].split("=", 1)[1].split()
     starts = [i for i, l in enumerate(lines) if l.strip().upper().startswith("ZONE")]
 
     zones = []
@@ -359,10 +361,10 @@ def report():
         for ratio in RATIOS:
             rex_n, tw_n, rex_a, tw_a = load(key, ratio)
             e = tw_n - np.interp(rex_n, rex_a, tw_a)
-            m = rex_n > X_TRUST * RE_L / L
+            m = rex_n > X_TRUST * RE_L / L / RE_SCALE
             print("%-9s %6d %9.4f %11.3f %11.3f %9.3f %9.3f"
                   % ("hydra-" + key, ratio, KS[ratio],
-                     np.interp(RE_L / 2, rex_a, tw_a), np.interp(RE_L / 2, rex_n, tw_n),
+                     np.interp(RE_L / 2 / RE_SCALE, rex_a, tw_a), np.interp(RE_L / 2 / RE_SCALE, rex_n, tw_n),
                      np.max(np.abs(e[m])), np.sqrt(np.mean(e[m] ** 2))))
     print("* excluding Re_x < %.0e (leading-edge singularity of the correlation)"
           % (X_TRUST * RE_L / L))
@@ -374,7 +376,7 @@ def report():
     for ratio in RATIOS:
         rex, tw_mf, _, _ = load("MF", ratio)
         _, tw_af, _, _ = load("AF", ratio)
-        m = rex > X_TRUST * RE_L / L
+        m = rex > X_TRUST * RE_L / L / RE_SCALE
         d = tw_af - tw_mf
         cont = []
         for key in ("MF", "AF"):

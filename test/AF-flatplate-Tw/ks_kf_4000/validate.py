@@ -44,6 +44,8 @@ def read_tec_wall(path):
 
     # Parse variable names from line 1
     var_names = re.findall(r'"([^"]+)"', lines[0])
+    if not var_names:   # names without quotes (VARIABLES = x y z y+ ...), as hydra-AF writes hydra-wall.tec now
+        var_names = lines[0].split("=", 1)[1].split()
 
     # Parse zone dimensions from line 2
     zone_hdr = lines[1]

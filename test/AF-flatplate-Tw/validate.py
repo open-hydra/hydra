@@ -44,6 +44,8 @@ def read_tec_wall(path):
         lines = f.readlines()
 
     var_names = re.findall(r'"([^"]+)"', lines[0])
+    if not var_names:   # names without quotes (VARIABLES = x y z y+ ...), as hydra-AF writes hydra-wall.tec now
+        var_names = lines[0].split("=", 1)[1].split()
 
     zone_hdr = lines[1]
     I = int(re.search(r'\bI\s*=\s*(\d+)', zone_hdr).group(1))
