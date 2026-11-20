@@ -13,7 +13,7 @@ differ only in the solid conductivity k_s, i.e. the ratio k_s/k_f.
 The interface temperature Tw(x) extracted from each simulation
 (<case>/OUTPUT/hydra-wall.tec, fluid-side wall) is compared against the
 Lindstedt & Karvinen analytical correlation, in the same 3-panel style as
-Tw-Flat-Plate/analytical.py (the ideal-gas reference).
+MF-flatplate-Tw/analytical.py (the ideal-gas reference).
 
 Run from anywhere:  python3 test/AF-flatplate-Tw/validate.py
 """

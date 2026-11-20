@@ -1,6 +1,6 @@
 # Conjugate Flat Plate
 
-**Cases:** `test/Tw-Flat-Plate` (`hydra-MF`) and `test/AF-flatplate-Tw` (`hydra-AF`)
+**Cases:** `test/MF-flatplate-Tw` (`hydra-MF`) and `test/AF-flatplate-Tw` (`hydra-AF`)
 
 A laminar boundary layer develops over a conducting slab whose underside is held at a fixed temperature. Heat flows up through the solid, across the fluid–solid interface, and into the gas, so the interface temperature $T_w(x)$ is **not** prescribed — it is the outcome of the balance between conduction in the plate and convection in the boundary layer.
 
@@ -28,7 +28,7 @@ Within a variant the three cases differ **only** in the solid conductivity — s
 
 ## The two variants
 
-| | `Tw-Flat-Plate` | `AF-flatplate-Tw` |
+| | `MF-flatplate-Tw` | `AF-flatplate-Tw` |
 |---|---|---|
 | Executable | `hydra-MF` | `hydra-AF` |
 | Fluid solver | MOSE | ARES |
@@ -147,7 +147,7 @@ The factor $0.332\,Re_x^{1/2}Pr^{1/3}$ is the local laminar Nusselt number for a
 The sweep walks between these limits, and $T_w$ rising towards $T_B$ as $k_s$ grows is what the coupling must reproduce.
 
 !!! info "Source material"
-    Both reference papers are versioned with the case in `test/Tw-Flat-Plate/reference/`: `Lindstedt Correlation.pdf` and `Steady-State-Coupled-Fluid-Solid.pdf`. The correlation is implemented in `analytical.py::tw_laminar_forced`.
+    Both reference papers are versioned with the case in `test/MF-flatplate-Tw/reference/`: `Lindstedt Correlation.pdf` and `Steady-State-Coupled-Fluid-Solid.pdf`. The correlation is implemented in `analytical.py::tw_laminar_forced`.
 
 ---
 
@@ -191,14 +191,14 @@ k   = 10.2746            ; 102.746 / 1027.46 in the other two cases
     The ideal-gas cases ship a complete `INPUT/` and `MESH/`, so no pre-processing is needed:
 
     ```bash
-    cd test/Tw-Flat-Plate/ks_kf_40
+    cd test/MF-flatplate-Tw/ks_kf_40
     figaro hydra-MF solve -p 8       # 8 OpenMP threads
     ```
 
     Repeat for `ks_kf_400` and `ks_kf_4000`, then compare:
 
     ```bash
-    cd test/Tw-Flat-Plate
+    cd test/MF-flatplate-Tw
     python3 analytical.py
     ```
 

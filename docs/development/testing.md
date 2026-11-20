@@ -15,7 +15,7 @@ test/
 ├── hydra-MF.sh                 # standalone helper script (pre-figaro)
 ├── hydra-AF.sh                 # standalone helper script (pre-figaro)
 ├── make-vv-figures.py          # regenerates the figures in docs/vv/
-├── Tw-Flat-Plate/              # hydra-MF: MOSE + FUSS, ideal gas
+├── MF-flatplate-Tw/            # hydra-MF: MOSE + FUSS, ideal gas
 │   ├── analytical.py           #   Lindstedt correlation + comparison plot
 │   ├── ks_kf_40/ 400/ 4000/    #   three solid conductivities
 │   └── reference/              #   frozen wall solutions + literature PDFs
@@ -66,7 +66,7 @@ figaro compile hydra-MF
 Both suites ship their `INPUT/`, so a case runs directly:
 
 ```bash
-(cd test/Tw-Flat-Plate/ks_kf_40   && figaro hydra-MF solve -p 8)   # hydra-MF
+(cd test/MF-flatplate-Tw/ks_kf_40 && figaro hydra-MF solve -p 8)   # hydra-MF
 (cd test/AF-flatplate-Tw/ks_kf_40 && figaro hydra-AF solve -p 8)   # hydra-AF
 ```
 
@@ -77,7 +77,7 @@ rebuild the real-fluid `INPUT/` with ATLAS, see the
 ### 4. Post-run analytical check
 
 ```bash
-(cd test/Tw-Flat-Plate            && python3 analytical.py)   # hydra-MF, the three cases
+(cd test/MF-flatplate-Tw          && python3 analytical.py)   # hydra-MF, the three cases
 (cd test/AF-flatplate-Tw          && python3 validate.py)     # hydra-AF, the three cases
 (cd test/AF-flatplate-Tw/ks_kf_40 && python3 validate.py)     # one case, from its own OUTPUT/
 ```
