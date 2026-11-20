@@ -36,7 +36,7 @@ Within a variant the three cases differ **only** in the solid conductivity — s
 | Inflow specified as | total conditions $p_0,\ T_0$ | mass flux $g$, static $T$ |
 | Coupling steps | 200 000 | 400 000 |
 | `INPUT/` | versioned with the case | versioned with the case; the table is shared in `common/` |
-| Comparison script | `analytical.py` | `validate.py` |
+| Comparison script | `validate.py` | `validate.py` |
 
 Everything else — geometry, mesh, boundary conditions, solid material, free-stream state, numerics — is identical by construction.
 
@@ -147,7 +147,7 @@ The factor $0.332\,Re_x^{1/2}Pr^{1/3}$ is the local laminar Nusselt number for a
 The sweep walks between these limits, and $T_w$ rising towards $T_B$ as $k_s$ grows is what the coupling must reproduce.
 
 !!! info "Source material"
-    Both reference papers are versioned with the case in `test/MF-flatplate-Tw/reference/`: `Lindstedt Correlation.pdf` and `Steady-State-Coupled-Fluid-Solid.pdf`. The correlation is implemented in `analytical.py::tw_laminar_forced`.
+    Both reference papers are versioned with the case in `test/MF-flatplate-Tw/reference/`: `Lindstedt Correlation.pdf` and `Steady-State-Coupled-Fluid-Solid.pdf`. The correlation is implemented in `validate.py::tw_laminar_forced`.
 
 ---
 
@@ -198,8 +198,8 @@ k   = 10.2746            ; 102.746 / 1027.46 in the other two cases
     Repeat for `ks_kf_400` and `ks_kf_4000`, then compare:
 
     ```bash
-    python3 test/MF-flatplate-Tw/analytical.py --runs   # the cases' own OUTPUT/, errors over x > 2 cm
-    python3 test/MF-flatplate-Tw/analytical.py          # the frozen solutions in reference/
+    python3 test/MF-flatplate-Tw/validate.py --runs   # the cases' own OUTPUT/, errors over x > 2 cm
+    python3 test/MF-flatplate-Tw/validate.py          # the frozen solutions in reference/
     ```
 
 === "Real fluid (`hydra-AF`)"

@@ -16,7 +16,7 @@ and the fluid-side interface (`gas-B1F3` / `fluid-B1F3`). The solid zone
 carries only Tw and qw; its y+/tau/pw columns are the placeholder 1.78625e-7.
 
 The reference is the Lindstedt & Karvinen conjugate flat-plate correlation,
-identical to the one in MF-flatplate-Tw/analytical.py.
+identical to the one in MF-flatplate-Tw/validate.py.
 
 Theming
 -------

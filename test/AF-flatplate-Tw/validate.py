@@ -12,7 +12,7 @@ the solid conductivity k_s, i.e. the ratio k_s/k_f.
 
 The interface temperature Tw(x) of each case is compared against the
 Lindstedt & Karvinen analytical correlation, in the same 3-panel style as
-MF-flatplate-Tw/analytical.py (the ideal-gas reference):
+MF-flatplate-Tw/validate.py (the ideal-gas reference):
 
     python3 validate.py           the frozen solutions, reference/ks_kf_*_wall.tec
                                   -> validate.png

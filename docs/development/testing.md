@@ -16,7 +16,8 @@ test/
 ├── hydra-AF.sh                 # standalone helper script (pre-figaro)
 ├── make-vv-figures.py          # regenerates the figures in docs/vv/
 ├── MF-flatplate-Tw/            # hydra-MF: MOSE + FUSS, ideal gas
-│   ├── analytical.py           #   Lindstedt correlation + comparison plot
+│   ├── common/                 #   gas and plate files shared by the cases (links from INPUT/)
+│   ├── validate.py             #   Lindstedt correlation + comparison plot
 │   ├── ks_kf_40/ 400/ 4000/    #   three solid conductivities
 │   └── reference/              #   frozen wall solutions + literature PDFs
 ├── AF-flatplate-Tw/            # hydra-AF: ARES + FUSS, real fluid
@@ -78,9 +79,8 @@ rebuild the real-fluid `INPUT/` with ATLAS, see the
 ### 4. Post-run analytical check
 
 ```bash
-(cd test/MF-flatplate-Tw && python3 analytical.py)   # hydra-MF, from reference/
-python3 test/MF-flatplate-Tw/analytical.py          # the same, from anywhere
-python3 test/MF-flatplate-Tw/analytical.py --runs   # hydra-MF, from the cases' own OUTPUT/
+python3 test/MF-flatplate-Tw/validate.py             # hydra-MF, from reference/
+python3 test/MF-flatplate-Tw/validate.py --runs      # hydra-MF, from the cases' own OUTPUT/
 python3 test/AF-flatplate-Tw/validate.py             # hydra-AF, from reference/
 python3 test/AF-flatplate-Tw/validate.py --runs      # hydra-AF, from the cases' own OUTPUT/
 ```
@@ -112,7 +112,7 @@ When modifying hydra-level code (`src/app/common`, `src/app/MF`, or
 |-------------|----------------|
 | CLI/scripts (`scripts/*`) | `figaro doctor`, build, one benchmark run |
 | Input/config (`src/app/common/config/*`) | parse/launch check + one benchmark run |
-| Coupling internals (`src/app/MF/*`) | all three `ks_kf_*` runs + `analytical.py` |
+| Coupling internals (`src/app/MF/*`) | all three `ks_kf_*` runs + `validate.py` |
 | Coupling internals (`src/app/AF/*`) | all three `AF-flatplate-Tw/ks_kf_*` runs + `validate.py` |
 | Coupling internals (`src/app/MI2/*`) | the `test/mi2-checks/` gates of the changed path (routing, schedule, exchange, evaporation, combustion, smoke) |
 | Shared coupling code (`src/app/common/*`) | both suites, plus the cross-solver check |

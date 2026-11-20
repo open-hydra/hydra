@@ -3,10 +3,10 @@ Conjugate flat plate (ideal gas, hydra-MF): the interface temperature Tw(x) of t
 three cases ks_kf_40, ks_kf_400, ks_kf_4000 against the Lindstedt & Karvinen
 correlation.
 
-    python3 analytical.py           the frozen solutions, reference/ks_kf_*_wall.tec
-                                    -> Tw_analytical.png
-    python3 analytical.py --runs    the cases' own runs, <case>/OUTPUT/hydra-wall.tec
-                                    -> Tw_analytical_runs.png (a case not run is skipped)
+    python3 validate.py           the frozen solutions, reference/ks_kf_*_wall.tec
+                                  -> validate.png
+    python3 validate.py --runs    the cases' own runs, <case>/OUTPUT/hydra-wall.tec
+                                  -> validate_runs.png (a case not run is skipped)
 
 The errors are measured where the correlation holds, x > 2 cm, as on the V&V page;
 the leading-edge cells, where the correlation is singular, are printed apart.
@@ -356,7 +356,7 @@ if __name__ == "__main__":
         ax.ticklabel_format(style="sci", axis="x", scilimits=(0, 0))
 
     plt.tight_layout()
-    out = os.path.join(HERE, "Tw_analytical_runs.png" if runs else "Tw_analytical.png")
+    out = os.path.join(HERE, "validate_runs.png" if runs else "validate.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     print(f"  figure written: {os.path.relpath(out, HERE)}")
     plt.show()
