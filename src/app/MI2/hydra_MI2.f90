@@ -35,7 +35,7 @@ program hydra_MI2_program
 
   use MOSE_Advanced_Types_m, only: MOSE_simulation_type, MOSE_domain_type
   use MOSE_Config_Types_m,   only: MOSE_obj_sim_param => obj_sim_param, MOSE_obj_io => obj_io, &
-                                   MOSE_obj_time_scheme => obj_time_scheme
+                                   MOSE_obj_time_scheme => obj_time_scheme, MOSE_obj_multigrid => obj_multigrid
   use MOSE_Procedures_m,     only: MOSE_type
 
   use ICE_Advanced_Types_m,  only: ICE_simulation_type
@@ -133,6 +133,14 @@ program hydra_MI2_program
   ICE_obj_sim_param%twcoupled = hydra_MI2_obj%run_ICE
 
   call MOSE%setup( MOSE_simulation )
+  ! MOSE's grid levels: the coupler hands the condensed solvers MOSE's finest grid and adds their sources, cell by cell
+  ! of that grid, to the level MOSE steps
+  if ( MOSE_obj_multigrid%MGL > 1 ) then
+    write(*,'(A,I0,A)') ' [ERROR] MI2: [MOSE-Multigrid] levels = ', MOSE_obj_multigrid%MGL, ': the coupler hands '// &
+      'IGLOO and ICE the gas of MOSE''s finest grid and adds their sources, cell by cell of that grid, to the grid '// &
+      'MOSE steps, while MOSE steps its coarse levels on their own grids. Use levels = 1'
+    error stop 1
+  endif
 
   ! ICE and IGLOO ingest the gas field as ORION data; each is set up only when enabled
   if (hydra_MI2_obj%run_ICE)   call ICE%setup( ICE_simulation, MOSE_simulation%IOfield(1) )

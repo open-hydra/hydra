@@ -252,6 +252,9 @@ time-accurate = false
 ### Other refusals
 
 - Multigrid: `[HYDRA-Multigrid] levels` above 1 stops the run (IGLOO has no grid levels).
+- `[MOSE-Multigrid] levels` above 1 stops the run after MOSE's set-up: the coupler hands IGLOO and ICE the gas of
+  MOSE's finest grid and adds their sources, cell by cell of that grid, to the grid MOSE steps, while MOSE steps its
+  coarse levels (and the cycles of `[MOSE-Multigrid] cycle`) on their own grids.
 - `[ICE-Multigrid] levels` above 1 stops the run: the coupler hands the gas to ICE's finest grid and takes ICE's source
   from it, while ICE steps a coarse level on that level's own grid (and needs ATLAS's `<name>-bc<level>.txt` for it).
 - `IGLOO-iter = 2` in any cycle while an IGLOO material evaporates or burns: the Eulerian coupling hands the gas
@@ -593,6 +596,7 @@ table quotes their characteristic words.
 | setup | `the smoke has no family: ICE is not run`; `relaxation = true blends two coupling steps` | smoke of an IGLOO material |
 | setup | `cycle <c> advances MOSE and ICE together with time-accurate on` | [time modes](#steady-and-time-accurate-runs) |
 | setup | `ICE restarts ([ICE-Parameters] newrun = false) and its hand-off cannot be used: ...` (a time-accurate continuation, or ICE in no cycle) | [restart](#a-restart-that-cannot-be-continued-exactly) |
+| setup | `[MOSE-Multigrid] levels = <n>: the coupler hands IGLOO and ICE the gas of MOSE's finest grid ...` | MOSE's coarse levels are not coupled: use `levels = 1` |
 | setup | `[ICE-Multigrid] levels = <n>: the coupler hands the gas to ICE's finest grid ...` | ICE's coarse levels are not coupled: use `levels = 1` |
 | setup | `newrun = false with IGLOO, and IGLOO iterates in cycle <c>, a time-accurate cycle` | a cold IGLOO start does not continue a time-accurate run: start a new run from the fields ([restart](#a-restart-that-cannot-be-continued-exactly)) |
 | step | `MOSExIGLOO: IGLOO gasblock <b> extends beyond MOSE's ghosted range` | the gas and particle meshes disagree |
