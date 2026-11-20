@@ -1,6 +1,26 @@
+"""
+Conjugate flat plate (ideal gas, hydra-MF): the interface temperature Tw(x) of the
+three cases ks_kf_40, ks_kf_400, ks_kf_4000 against the Lindstedt & Karvinen
+correlation.
+
+    python3 analytical.py           the frozen solutions, reference/ks_kf_*_wall.tec
+                                    -> Tw_analytical.png
+    python3 analytical.py --runs    the cases' own runs, <case>/OUTPUT/hydra-wall.tec
+                                    -> Tw_analytical_runs.png (a case not run is skipped)
+
+The errors are measured where the correlation holds, x > 2 cm, as on the V&V page;
+the leading-edge cells, where the correlation is singular, are printed apart.
+Run from anywhere.
+"""
+
+import os
 import re
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+X_TRUST = 0.02      # [m] leading-edge cells (x below) left out of the error metrics, as on the V&V page
 
 
 def read_tec_wall(path):
@@ -26,6 +46,8 @@ def read_tec_wall(path):
 
     # Parse variable names from line 1
     var_names = re.findall(r'"([^"]+)"', lines[0])
+    if not var_names:   # names without quotes (VARIABLES = x y z y+ ...), as the current hydra writes hydra-wall.tec
+        var_names = lines[0].split("=", 1)[1].split()
 
     # Parse zone dimensions from line 2
     zone_hdr = lines[1]
@@ -155,6 +177,7 @@ def tw_laminar_forced(
 
 
 if __name__ == "__main__":
+    runs = "--runs" in sys.argv[1:]
 
     # ================================================================
     # SECTION 1 — Boundary Conditions Analysis  (from setup.f90)
@@ -234,14 +257,18 @@ if __name__ == "__main__":
     x = np.linspace(1e-3 * L, L, 600)
 
     ks_kf_ratios = [40, 400, 4000]
+    # Solid conductivity as set in each case's INPUT/plate-properties.dat (the nominal ratio times k_f would be
+    # 10.2948, 0.2 % more); the same values as test/make-vv-figures.py, so the numbers below are the V&V page's
+    k_solid = {40: 10.2746, 400: 102.746, 4000: 1027.46}
 
-    # Map each ratio to its solution file
-    solution_dir = "reference"
-    tec_files = {
-        40:   f"{solution_dir}/ks_kf_40_wall.tec",
-        400:  f"{solution_dir}/ks_kf_400_wall.tec",
-        4000: f"{solution_dir}/ks_kf_4000_wall.tec",
-    }
+    # The solution file of each ratio: the frozen one, or the case's own run with --runs
+    def wall_file(ratio):
+        if runs:
+            return os.path.join(HERE, f"ks_kf_{ratio}", "OUTPUT", "hydra-wall.tec")
+        return os.path.join(HERE, "reference", f"ks_kf_{ratio}_wall.tec")
+
+    print(f"  solutions: {'the cases own runs, <case>/OUTPUT/hydra-wall.tec' if runs else 'the frozen ones, reference/'}")
+    print(f"  errors over x > {100 * X_TRUST:.0f} cm (Re_x > {X_TRUST * ReL / L:.2g}); the leading-edge cells apart")
 
     fig, axes = plt.subplots(3, 1, figsize=(8, 13), sharex=True)
     fig.suptitle(
@@ -256,8 +283,9 @@ if __name__ == "__main__":
 
     ylims = {40: (310, 395), 400: (365, 395), 4000: (390, 395)}
 
+    found = 0
     for ax, ratio in zip(axes, ks_kf_ratios):
-        k_s = ratio * k_inf    # solid conductivity for this case [W/(m·K)]
+        k_s = k_solid[ratio]   # solid conductivity for this case [W/(m·K)]
 
         # -- Lindstedt & Karvinen correlation (accounts for 2-D solid effects) --
         res = tw_laminar_forced(
@@ -277,20 +305,36 @@ if __name__ == "__main__":
         Tw_LK = res["Tw"]
 
         # -- Print mid-chord values --
-        i_mid = np.argmin(np.abs(Re_x - ReL / 2.0))
-        print(f"\n  ks/kf = {ratio:>4d}   k_s = {k_s:.4f} W/(m K)")
+        tw_mid = np.interp(L / 2, x, Tw_LK)
+        print(f"\n  ks/kf = {ratio:>4d}   k_s = {k_s:.4f} W/(m K)  (k_s/k_f = {k_s / k_inf:.2f})")
         print(f"    Bi_mean = {np.mean(Bi_f):.4f}")
-        print(f"    Tw (Lindstedt, x=L/2)  = {Tw_LK[i_mid]:.3f} K")
+        print(f"    Tw (Lindstedt, x=L/2)  = {tw_mid:.3f} K")
 
-        # -- Numerical solution from .tec file (Zone 1) --
-        tec = read_tec_wall(tec_files[ratio])
-        Re_x_num = tec['x'] * ReL / L     # x_cc → Re_x  (= x_cc * U_inf / nu)
-
-        # -- Plot --
+        # -- Plot the correlation --
         ax.plot(Re_x, Tw_LK, color="#2471A3", linewidth=2.5,
                 label="Lindstedt Correlation")
-        ax.plot(Re_x_num, tec['Tw'], "o", color="#FF1A1A", markersize=5,
-                markevery=5, label="Numerical")
+        ax.axvspan(0, X_TRUST * ReL / L, color="0.5", alpha=0.15,
+                   label=f"$x < {100 * X_TRUST:.0f}$ cm: not in the errors")
+
+        # -- Numerical solution from .tec file (Zone 1) --
+        path = wall_file(ratio)
+        if not os.path.isfile(path):
+            print(f"    {os.path.relpath(path, HERE)} not found: case not run, skipped")
+        else:
+            found += 1
+            tec = read_tec_wall(path)
+            xc, tw = tec['x'], tec['Tw']
+            Re_x_num = xc * ReL / L     # x_cc → Re_x  (= x_cc * U_inf / nu)
+            err = tw - tw_laminar_forced(xc, T_B, T_inf, U_inf, rho_inf,
+                                         mu_inf, k_inf, cp_inf, k_s, delta)["Tw"]
+            m = xc > X_TRUST
+            print(f"    Tw (numerical, x=L/2)  = {np.interp(L / 2, xc, tw):.3f} K")
+            print(f"    x > {100 * X_TRUST:.0f} cm ({m.sum()} cells): max|err| = {np.max(np.abs(err[m])):.3f} K"
+                  f"   RMSE = {np.sqrt(np.mean(err[m] ** 2)):.3f} K")
+            print(f"    x < {100 * X_TRUST:.0f} cm ({(~m).sum()} cells, leading edge): "
+                  f"largest |err| = {np.max(np.abs(err[~m])):.3f} K (not judged)")
+            ax.plot(Re_x_num, tw, "o", color="#FF1A1A", markersize=5,
+                    markevery=5, label="Numerical")
         ax.axhline(T_B, color="k", linestyle="--", linewidth=1.0,
                    label=f"$T_B = {T_B:.0f}$ K")
         ax.set_ylabel("$T_w$ [K]", fontsize=14)
@@ -301,6 +345,9 @@ if __name__ == "__main__":
         ax.set_ylim(*ylims[ratio])
         ax.grid(True, alpha=0.4)
 
+    if runs and not found:
+        sys.exit("no case has OUTPUT/hydra-wall.tec: run the cases first")
+
     axes[-1].set_xlabel("$Re_x$", fontsize=13)
     axes[-1].set_xlim(0, 5e5)
     axes[-1].xaxis.set_major_locator(plt.matplotlib.ticker.MultipleLocator(1e5))
@@ -309,5 +356,7 @@ if __name__ == "__main__":
         ax.ticklabel_format(style="sci", axis="x", scilimits=(0, 0))
 
     plt.tight_layout()
-    plt.savefig("Tw_analytical.png", dpi=150, bbox_inches="tight")
+    out = os.path.join(HERE, "Tw_analytical_runs.png" if runs else "Tw_analytical.png")
+    plt.savefig(out, dpi=150, bbox_inches="tight")
+    print(f"  figure written: {os.path.relpath(out, HERE)}")
     plt.show()

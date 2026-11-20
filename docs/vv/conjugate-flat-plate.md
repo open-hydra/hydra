@@ -198,8 +198,8 @@ k   = 10.2746            ; 102.746 / 1027.46 in the other two cases
     Repeat for `ks_kf_400` and `ks_kf_4000`, then compare:
 
     ```bash
-    cd test/MF-flatplate-Tw
-    python3 analytical.py
+    python3 test/MF-flatplate-Tw/analytical.py --runs   # the cases' own OUTPUT/, errors over x > 2 cm
+    python3 test/MF-flatplate-Tw/analytical.py          # the frozen solutions in reference/
     ```
 
 === "Real fluid (`hydra-AF`)"

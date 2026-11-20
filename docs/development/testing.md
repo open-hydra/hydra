@@ -79,6 +79,8 @@ rebuild the real-fluid `INPUT/` with ATLAS, see the
 
 ```bash
 (cd test/MF-flatplate-Tw && python3 analytical.py)   # hydra-MF, from reference/
+python3 test/MF-flatplate-Tw/analytical.py          # the same, from anywhere
+python3 test/MF-flatplate-Tw/analytical.py --runs   # hydra-MF, from the cases' own OUTPUT/
 python3 test/AF-flatplate-Tw/validate.py             # hydra-AF, from reference/
 python3 test/AF-flatplate-Tw/validate.py --runs      # hydra-AF, from the cases' own OUTPUT/
 ```
