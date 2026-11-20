@@ -3,7 +3,7 @@
 """
 Validation of the three real-fluid conjugate flat-plate cases:
 
-    ks_kf_40_real/   ks_kf_400_real/   ks_kf_4000_real/
+    ks_kf_40/   ks_kf_400/   ks_kf_4000/
 
 Each case is a laminar flat plate with conjugate heat transfer, real-fluid
 (CoolProp) Air with Cp/mu/k forced constant so that Pr = mu*cp/k = 0.70
@@ -15,7 +15,7 @@ The interface temperature Tw(x) extracted from each simulation
 Lindstedt & Karvinen analytical correlation, in the same 3-panel style as
 Tw-Flat-Plate/analytical.py (the ideal-gas reference).
 
-Run from anywhere:  python3 validate_ks_kf_real.py
+Run from anywhere:  python3 test/AF-flatplate-Tw/validate.py
 """
 
 import os

@@ -1,6 +1,6 @@
 # Conjugate Flat Plate
 
-**Cases:** `test/Tw-Flat-Plate` (`hydra-MF`) and `test/Tw-Flat-Plate-real` (`hydra-AF`)
+**Cases:** `test/Tw-Flat-Plate` (`hydra-MF`) and `test/AF-flatplate-Tw` (`hydra-AF`)
 
 A laminar boundary layer develops over a conducting slab whose underside is held at a fixed temperature. Heat flows up through the solid, across the fluid–solid interface, and into the gas, so the interface temperature $T_w(x)$ is **not** prescribed — it is the outcome of the balance between conduction in the plate and convection in the boundary layer.
 
@@ -28,7 +28,7 @@ Within a variant the three cases differ **only** in the solid conductivity — s
 
 ## The two variants
 
-| | `Tw-Flat-Plate` | `Tw-Flat-Plate-real` |
+| | `Tw-Flat-Plate` | `AF-flatplate-Tw` |
 |---|---|---|
 | Executable | `hydra-MF` | `hydra-AF` |
 | Fluid solver | MOSE | ARES |
@@ -208,7 +208,7 @@ k   = 10.2746            ; 102.746 / 1027.46 in the other two cases
     These cases ship only `MESH/`, so ATLAS must build `INPUT/` once before the first solve:
 
     ```bash
-    cd test/Tw-Flat-Plate-real/ks_kf_40_real
+    cd test/AF-flatplate-Tw/ks_kf_40_real
 
     cp atlas.ini input.ini           # 1. build INPUT/ (real-fluid table, IC, BC)
     figaro ATLAS GPB ICB BCB
@@ -223,7 +223,7 @@ k   = 10.2746            ; 102.746 / 1027.46 in the other two cases
     Step 2 must follow step 1 and precede step 3 — ATLAS regenerates the table from scratch, overwriting any flattening already applied. Then compare:
 
     ```bash
-    cd test/Tw-Flat-Plate-real
+    cd test/AF-flatplate-Tw
     python3 validate.py                    # all three cases
     cd ks_kf_40_real && python3 validate.py  # one case, from its own OUTPUT/
     ```

@@ -19,7 +19,7 @@ test/
 │   ├── analytical.py           #   Lindstedt correlation + comparison plot
 │   ├── ks_kf_40/ 400/ 4000/    #   three solid conductivities
 │   └── reference/              #   frozen wall solutions + literature PDFs
-├── Tw-Flat-Plate-real/         # hydra-AF: ARES + FUSS, real fluid
+├── AF-flatplate-Tw/            # hydra-AF: ARES + FUSS, real fluid
 │   ├── validate.py             #   three-panel comparison for the whole suite
 │   ├── ks_kf_40_real/ 400_real/ 4000_real/
 │   └── reference/              #   frozen wall solutions

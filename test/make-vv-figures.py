@@ -8,7 +8,7 @@ the test cases.
 Sources
 -------
   Tw-Flat-Plate/reference/ks_kf_*_wall.tec        hydra-MF  (MOSE + FUSS)
-  Tw-Flat-Plate-real/reference/ks_kf_*_wall.tec   hydra-AF  (ARES + FUSS)
+  AF-flatplate-Tw/reference/ks_kf_*_wall.tec      hydra-AF  (ARES + FUSS)
 
 Both are `OUTPUT/hydra-wall.tec` files produced with `coupling-wall = true`.
 Each holds two zones: the solid-side interface (`plate-B1F4`, written first)
@@ -161,7 +161,7 @@ VARIANTS = {
         label="hydra-MF (MOSE + FUSS)", color=C_MF, marker="o",
     ),
     "AF": dict(
-        path=os.path.join(HERE, "Tw-Flat-Plate-real", "reference", "ks_kf_%d_wall.tec"),
+        path=os.path.join(HERE, "AF-flatplate-Tw", "reference", "ks_kf_%d_wall.tec"),
         label="hydra-AF (ARES + FUSS)", color=C_AF, marker="x",
     ),
 }
