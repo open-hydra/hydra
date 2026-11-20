@@ -35,7 +35,8 @@ hydra/
 ├── lib/                          # Shared dependencies (ORION, FLINT, OSLO, FiNeR)
 ├── test/                         # Framework-level validation assets
 │   ├── hydra-MF.sh
-│   └── Tw-Flat-Plate/
+│   ├── MF-flatplate-Tw/          # hydra-MF conjugate flat plate
+│   └── AF-flatplate-Tw/          # hydra-AF conjugate flat plate
 ├── docs/                         # Framework documentation (Zensical, mkdocs.yml)
 ├── mkdocs.yml                    # Documentation site configuration
 └── requirements-docs.txt         # Zensical version the site is built with

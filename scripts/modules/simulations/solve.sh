@@ -5,18 +5,22 @@
 source "$SCRIPT_DIR/utils/common.sh"
 
 # Argument parsing with getopt
-TEMP=$(getopt -o bnp: --long background,nosleep,parallel:, -- "$@") || exit 1
+TEMP=$(getopt -o bnp:m:c: --long background,nosleep,parallel:,mpi:,cpus:, -- "$@") || exit 1
 eval set -- "$TEMP"
 
 # Default flags
 BG=0
 NTHREADS=1
+NRANKS=0
+CPUS=
 
 while true; do
   case "$1" in
     -b|--background) BG=1; shift;;
     -n|--nosleep) NOSLEEP=1; shift;;
     -p|--parallel) NTHREADS=$2; shift 2;;
+    -m|--mpi) NRANKS=$2; shift 2;;
+    -c|--cpus) CPUS=$2; shift 2;;
     --) shift; break;;
     *) echo "Unknown option: $1"; exit 1;;
   esac
@@ -74,11 +78,43 @@ run_solver() {
 
 run_generic_solver() {
   local solver_exec=$1
+  local launch=("$solver_exec")
+  # MPI: launch through mpirun; .ID then holds mpirun's PID, which forwards a kill to every rank
+  if [[ ${NRANKS:-0} -gt 0 ]]; then
+    if ! command -v mpirun > /dev/null; then
+      log_error "mpirun not found: load the MPI environment first (e.g. source /opt/intel/oneapi/mpi/<version>/env/vars.sh)"
+      exit 1
+    fi
+    case ${I_MPI_PIN:-on} in
+      off|0|no|disable|false)
+        # Pinning off: OMP_PLACES=cores alone would still bind the threads of every rank to the
+        # same first cores of the machine (sprop2, 2026-10-08), so no thread binding either
+        export OMP_PROC_BIND=${OMP_PROC_BIND:-false} ;;
+      *)
+        # Give each rank its own OMP_NUM_THREADS physical cores (Intel MPI; ignored by other MPI
+        # libraries): without PIN_CELL=core the domain counts hyperthreads, i.e. half the cores
+        export I_MPI_PIN_DOMAIN=${I_MPI_PIN_DOMAIN:-omp}
+        export I_MPI_PIN_CELL=${I_MPI_PIN_CELL:-core}
+        # and one thread per core inside it, instead of letting threads share a core
+        export OMP_PLACES=${OMP_PLACES:-cores}
+        export OMP_PROC_BIND=${OMP_PROC_BIND:-close} ;;
+    esac
+    launch=(mpirun -np "$NRANKS" "$solver_exec")
+  fi
+  # --cpus: run inside that set of logical CPUs. Intel MPI keeps its pinning domains inside the set
+  # (checked 2026-10-08), so two cases on one machine get disjoint cores; without it both start from core 0
+  if [[ -n ${CPUS:-} ]]; then
+    if ! taskset -c "$CPUS" true 2> /dev/null; then
+      log_error "--cpus $CPUS: not a valid CPU list for taskset on $(hostname)"
+      exit 1
+    fi
+    launch=(taskset -c "$CPUS" "${launch[@]}")
+  fi
   mkdir -p OUTPUT
   if [[ ${BG:-0} -eq 0 ]]; then
-    "$solver_exec"
+    "${launch[@]}"
   else
-    "$solver_exec" 2>errors_file >logfile &
+    "${launch[@]}" 2>errors_file >logfile &
     echo $! > .ID
   fi
 }

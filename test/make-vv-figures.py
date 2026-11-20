@@ -7,8 +7,8 @@ the test cases.
 
 Sources
 -------
-  Tw-Flat-Plate/reference/ks_kf_*_wall.tec        hydra-MF  (MOSE + FUSS)
-  Tw-Flat-Plate-real/reference/ks_kf_*_wall.tec   hydra-AF  (ARES + FUSS)
+  MF-flatplate-Tw/reference/ks_kf_*_wall.tec      hydra-MF  (MOSE + FUSS)
+  AF-flatplate-Tw/reference/ks_kf_*_wall.tec      hydra-AF  (ARES + FUSS)
 
 Both are `OUTPUT/hydra-wall.tec` files produced with `coupling-wall = true`.
 Each holds two zones: the solid-side interface (`plate-B1F4`, written first)
@@ -16,7 +16,7 @@ and the fluid-side interface (`gas-B1F3` / `fluid-B1F3`). The solid zone
 carries only Tw and qw; its y+/tau/pw columns are the placeholder 1.78625e-7.
 
 The reference is the Lindstedt & Karvinen conjugate flat-plate correlation,
-identical to the one in Tw-Flat-Plate/analytical.py.
+identical to the one in MF-flatplate-Tw/validate.py.
 
 Theming
 -------
@@ -93,6 +93,8 @@ def read_tec_zones(path):
         lines = fh.readlines()
 
     var_names = re.findall(r'"([^"]+)"', lines[0])
+    if not var_names:   # names without quotes (VARIABLES = x y z y+ ...), as hydra-AF writes hydra-wall.tec now
+        var_names = lines[0].split("=", 1)[1].split()
     starts = [i for i, l in enumerate(lines) if l.strip().upper().startswith("ZONE")]
 
     zones = []
@@ -152,16 +154,16 @@ MU = RHO * U * L / RE_L
 CP = GAM / (GAM - 1.0) * R
 KF = MU * CP / PR
 
-# Solid conductivity as set in each case's atlas.ini
+# Solid conductivity as set in each case's input.ini
 KS = {40: 10.2746, 400: 102.746, 4000: 1027.46}
 
 VARIANTS = {
     "MF": dict(
-        path=os.path.join(HERE, "Tw-Flat-Plate", "reference", "ks_kf_%d_wall.tec"),
+        path=os.path.join(HERE, "MF-flatplate-Tw", "reference", "ks_kf_%d_wall.tec"),
         label="hydra-MF (MOSE + FUSS)", color=C_MF, marker="o",
     ),
     "AF": dict(
-        path=os.path.join(HERE, "Tw-Flat-Plate-real", "reference", "ks_kf_%d_wall.tec"),
+        path=os.path.join(HERE, "AF-flatplate-Tw", "reference", "ks_kf_%d_wall.tec"),
         label="hydra-AF (ARES + FUSS)", color=C_AF, marker="x",
     ),
 }
@@ -359,10 +361,10 @@ def report():
         for ratio in RATIOS:
             rex_n, tw_n, rex_a, tw_a = load(key, ratio)
             e = tw_n - np.interp(rex_n, rex_a, tw_a)
-            m = rex_n > X_TRUST * RE_L / L
+            m = rex_n > X_TRUST * RE_L / L / RE_SCALE
             print("%-9s %6d %9.4f %11.3f %11.3f %9.3f %9.3f"
                   % ("hydra-" + key, ratio, KS[ratio],
-                     np.interp(RE_L / 2, rex_a, tw_a), np.interp(RE_L / 2, rex_n, tw_n),
+                     np.interp(RE_L / 2 / RE_SCALE, rex_a, tw_a), np.interp(RE_L / 2 / RE_SCALE, rex_n, tw_n),
                      np.max(np.abs(e[m])), np.sqrt(np.mean(e[m] ** 2))))
     print("* excluding Re_x < %.0e (leading-edge singularity of the correlation)"
           % (X_TRUST * RE_L / L))
@@ -374,7 +376,7 @@ def report():
     for ratio in RATIOS:
         rex, tw_mf, _, _ = load("MF", ratio)
         _, tw_af, _, _ = load("AF", ratio)
-        m = rex > X_TRUST * RE_L / L
+        m = rex > X_TRUST * RE_L / L / RE_SCALE
         d = tw_af - tw_mf
         cont = []
         for key in ("MF", "AF"):

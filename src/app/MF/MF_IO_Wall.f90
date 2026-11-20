@@ -143,6 +143,8 @@ contains
   subroutine Write_Wall_Solution( FUSS_domain, MOSE_domain, file, level )
     use Lib_VTK
     use Lib_Tecplot
+    use hydraMF_Lib_Ghost, only: Fill_Coupled_Ghost_Cell
+    use hydraMF_Mod_CouplingExchange, only: exchange_coupling_Tg_P, exchange_coupling_Pg_matID
     use hydra_Parameters_m
     use MOSE_Advanced_Types_m
     use FUSS_Advanced_Types_m
@@ -159,19 +161,27 @@ contains
     character(len=clen_) :: format(2)
 
 
+    ! bc%Tg / bc%Pg still hold the stencil of the last BC_Coupled_Fluxes call, which ran
+    ! BEFORE the last solver update: refresh it, so that the wall file is built from the
+    ! current state of both solvers and the two sides of an interface report the same Tw.
+    ! Both exchanges are no-ops in serial and on a single rank; every rank reaches this
+    ! point, so the point-to-point pairing stays matched.
+    call exchange_coupling_Tg_P    ( FUSS_domain, MOSE_domain, level )
+    call exchange_coupling_Pg_matID( FUSS_domain, MOSE_domain, level )
+    call Fill_Coupled_Ghost_Cell   ( FUSS_domain, MOSE_domain, level )
+
     ! Update IOwall variables
     call Extract_Properties_From_BC( FUSS_domain, MOSE_domain, level )
 
 
-    ! Only rank 0 writes the consolidated wall output file. In a multi-rank
-    ! run, IOwall(level) currently contains only the local partition's entries;
-    ! a full MPI_Gatherv step is needed as a follow-up to consolidate the data
-    ! before writing. See build_coupling_schedule TODOs.
+    ! Only rank 0 writes the consolidated wall output file: Extract_Properties_From_BC
+    ! has already reduced every rank's contribution onto it.
     if (mpi_is_root) then
       path = 'OUTPUT/'
       call parse(hydra_obj_io%coupling_format,' ', format)
       
       ! Write the IOwall accordingly to the solution format
+      E_IO = 0
       select case(trim(format(1)))
         case('vtk')
         IOwall(level)%vtk%format = trim(format(2))
@@ -184,6 +194,10 @@ contains
         IOwall(level)%tec%format = trim(format(2))
         E_IO = tec_write_structured_multiblock(orion=IOwall(level),varnames=hydra_obj_io%Owallnames,filename=trim(path)//trim(file)//trim(IOwall(level)%tec%extension))
       end select
+      ! A failed write (disk full, quota, permission) leaves a cut file: say so, and go on (the next output may
+      ! succeed), as the writers of MOSE
+      if ( E_IO /= 0 ) write(*,'(A,I0,A)') ' [WARNING] '//trim(path)//trim(file)//' was not written (status ', E_IO, &
+                                           '): disk full, quota or permission?'
     endif
 
   end subroutine Write_Wall_Solution
@@ -199,7 +213,9 @@ contains
     use hydraMF_Lib_Coupling_Segments, only: Segment_Wall_Output_FUSS, Segment_Wall_Output_MOSE, &
                                              Update_Coupling_Segment_Partners
     use hydraMF_Mod_CouplingExchange, only: is_FUSS_bc_local_local, is_MOSE_bc_local_local, &
-                                            get_F_remote_P, get_M_remote_matID
+                                            get_F_remote_P, get_M_remote_matID, &
+                                            get_k_wall_FUSS, get_k_wall_MOSE, &
+                                            get_partner_half_FUSS, get_partner_half_MOSE
 #ifdef USE_MPI                                      
     use FUSS_Mod_MPI, only: FUSS_block_owner => block_owner, mpi_rank_, mpi_is_root, mpi_reduce_sum_r8_array
     use MOSE_Mod_MPI, only: MOSE_block_owner => block_owner
@@ -214,7 +230,7 @@ contains
     integer :: n_wall_total, MOSE_n_wall_total, wall_i
     real(R8), allocatable :: FUSS_wall_buf(:), MOSE_wall_buf(:)
     real(R8) :: FUSS_new_flux, MOSE_new_flux(nprim)
-    real(R8) :: P_con(nsc), matID_con
+    real(R8) :: P_con(nsc), matID_con, A_con, Teff_con
     real(R8), pointer :: p_remote(:)
 
     ! 104: current partner cells for the segments, also across ranks (collective)
@@ -238,16 +254,12 @@ contains
         lower = upper + 1                        ! Update lower bound
         upper = upper + FUSS_domain % n_bf(b,f)  ! Upper bound: add number of cells on face f of block b
 
-        ! wall_i indexes every entry of the coupling faces, as in the gather below:
-        ! a 104 face may hold entries of other BC types
-        if (.not. FUSS_obj_io_bc%coupling_flag(b,f)) cycle
-
         do i = lower, upper
-          wall_i = wall_i + 1
           Ovar = 0d0
           select case ( FUSS_domain % bc(i) % type )
             case (103)
               Bm  = FUSS_domain % bc(i) % b
+              wall_i = wall_i + 1
 #ifdef USE_MPI
               ! Skip entries whose FUSS primary block is not on this rank.
               if (allocated(FUSS_block_owner)) then
@@ -279,15 +291,20 @@ contains
 #else
               P_con(1:nsc) = MOSE_domain % blk(Bs) % P(1:nsc, Is, Js, Ks)
 #endif
+              ! Same mirrored wall conductivity and same partner half of the balance
+              ! the solver used, so the wall file reports the temperature and the flux
+              ! that were actually applied.
+              call get_partner_half_FUSS(level, i, A_con, Teff_con)
               call FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
-                                          Is, Js, Ks, Fs, P_con, &
-                                          FUSS_domain%bc(i)%Mg(1), FUSS_domain%bc(i)%Tg, &
-                                          FUSS_new_flux, Ovar(6:7) )
+                                          P_con, FUSS_domain%bc(i)%Tg(1), A_con, Teff_con, &
+                                          FUSS_new_flux, Ovar(6:7), &
+                                          k_fluid_wall = get_k_wall_FUSS(level, i) )
            
               FUSS_wall_buf(2*(wall_i-1)+1 : 2*wall_i) = Ovar(6:7)
 
             case (104)
               Bm  = FUSS_domain % bc(i) % b
+              wall_i = wall_i + 1
 #ifdef USE_MPI
               if (allocated(FUSS_block_owner)) then
                 if (FUSS_block_owner(Bm) /= mpi_rank_) cycle
@@ -319,6 +336,10 @@ contains
           bb = bb + 1
 
           do i = lower, upper
+            ! Count exactly the entries the first loop counted: a face flagged as coupled
+            ! may still carry non-103/104 entries, and taking them in would shift the buffer
+            ! for the whole rest of the block.
+            if (FUSS_domain%bc(i)%type /= 103 .and. FUSS_domain%bc(i)%type /= 104) cycle
             wall_i = wall_i + 1
             Ovar(6:7) = FUSS_wall_buf(2*(wall_i-1)+1 : 2*wall_i)
 
@@ -355,16 +376,12 @@ contains
         lower = upper + 1                        ! Update lower bound
         upper = upper + MOSE_domain % n_bf(b,f)  ! Upper bound: add number of cells on face f of block b
 
-        ! wall_i indexes every entry of the coupling faces, as in the gather below:
-        ! a 104 face may hold entries of other BC types
-        if (.not. MOSE_obj_io_bc%coupling_flag(b,f)) cycle
-
         do i = lower, upper
-          wall_i = wall_i + 1
           Ovar = 0d0
           select case ( MOSE_domain % bc(i) % type )
             case (103)
               Bm  = MOSE_domain % bc(i) % b
+              wall_i = wall_i + 1
 #ifdef USE_MPI
               ! Skip entries whose MOSE primary block is not on this rank.
               if (allocated(MOSE_block_owner)) then
@@ -390,16 +407,19 @@ contains
 #else
               matID_con = FUSS_domain % blk(Bs) % matID(Is, Js, Ks)
 #endif
+              ! k_fluid_wall only: the store must not be advanced from the I/O path.
+              call get_partner_half_MOSE(level, i, A_con, Teff_con)
               call MOSE_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, MOSE_domain % blk(Bm), &
-                                          Is, Js, Ks, Fs, matID_con, &
-                                          MOSE_domain%bc(i)%Mg(1), MOSE_domain%bc(i)%Pg, &
+                                          matID_con, MOSE_domain%bc(i)%Pg(1,1), A_con, Teff_con, &
                                           MOSE_new_flux, Ovar, &
+                                          k_fluid_wall = get_k_wall_MOSE(level, i), &
                                           k_rough = MOSE_domain%bc(i)%k_rough )
              
               MOSE_wall_buf(7*(wall_i-1)+1 : 7*wall_i) = Ovar(1:7)
 
             case (104)
               Bm  = MOSE_domain % bc(i) % b
+              wall_i = wall_i + 1
 #ifdef USE_MPI
               if (allocated(MOSE_block_owner)) then
                 if (MOSE_block_owner(Bm) /= mpi_rank_) cycle
@@ -432,6 +452,7 @@ contains
           bb = bb + 1
 
           do i = lower, upper
+            if (MOSE_domain%bc(i)%type /= 103 .and. MOSE_domain%bc(i)%type /= 104) cycle
             wall_i = wall_i + 1
             Ovar(1:7) = MOSE_wall_buf(7*(wall_i-1)+1 : 7*wall_i)
 
