@@ -104,7 +104,7 @@ if __name__ == "__main__":
 
     # ================================================================
     # Common parameters (shared by the three cases)
-    # from input.ini + set_constant_*.py + MESH/mesh.ini
+    # from input.ini + set_constant_*.py + the mesh
     # ================================================================
     T_inf = 293.0                  # free-stream static temperature   [K]
     p_inf = 1.0e5                  # ambient static pressure          [Pa]

@@ -120,7 +120,7 @@ def tw_laminar_forced(x, T_B, T_inf, U_inf, rho_f, mu_f, k_f, cp_f, k_s, t):
 if __name__ == "__main__":
 
     # ================================================================
-    # Case parameters (from input.ini + set_constant_*.py + MESH/mesh.ini)
+    # Case parameters (from input.ini + set_constant_*.py + the mesh)
     # ================================================================
     # -- Free-stream / fluid --
     T_inf = 293.0                 # free-stream static temperature   [K]

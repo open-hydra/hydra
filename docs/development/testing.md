@@ -33,7 +33,7 @@ test/
 Each `ks_kf_*` case is ready to run, in both suites:
 
 - `input.ini` — the Hydra, solver and ATLAS sections in one file
-- `MESH/` — the mesh (the real-fluid cases also keep its `[GRIB-*]` blocks in `MESH/mesh.ini`)
+- `MESH/mesh.tec` — the mesh, one and the same file in the six cases of the two suites
 - `INPUT/` — the solver input, versioned; in the real-fluid suite the table comes through links into `common/`
 
 The real-fluid cases additionally carry `set_constant_cp.py` and

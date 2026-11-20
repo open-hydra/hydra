@@ -233,8 +233,8 @@ k   = 10.2746            ; 102.746 / 1027.46 in the other two cases
 
 Each run writes `OUTPUT/hydra-wall.tec`. The suite-level scripts read the frozen solutions in `reference/`, so they work without a prior solve; point them at your own `OUTPUT/hydra-wall.tec` to check a fresh run.
 
-!!! note "Rebuilding the mesh"
-    Both variants ship `MESH/mesh.tec`. The real-fluid cases also keep the `[GRIB-*]` blocks that made it, in `MESH/mesh.ini`: to regenerate the mesh, put that file in place of `input.ini` (keep the deck aside) and run the mesh generator on it.
+!!! note "One mesh"
+    Both variants run on the same mesh: `MESH/mesh.tec` is one file, identical in the six cases. The mesh table above gives the blocks it was generated with.
 
 ---
 
