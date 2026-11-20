@@ -2,6 +2,41 @@
 
 cmake_minimum_required(VERSION 3.23)
 
+# ifx (IntelLLVM): the IPO-aware archiver has to be known BEFORE project(). Intel IPO objects hold IR, not machine
+# code, so GNU ar/ranlib cannot index them, and from oneAPI 2024 llvm-ar/llvm-ranlib live in <bin>/compiler, where
+# CMake's compiler detection does not look (it knows only the 2023 layout, <bin>/../bin-llvm). Detection writes what
+# it finds into the build's CMakeFortranCompiler.cmake, and every nested project() (FiNeR, PENF, FACE, ...) reloads
+# the archiver from there, so a value set after project() is lost in those subprojects ("CMAKE_Fortran_COMPILER_AR-
+# NOTFOUND" in their link rules). Cache entries set here are kept by detection, as -D options would be.
+# The compiler is the one CMake will use: -DCMAKE_Fortran_COMPILER, else the FC environment variable (figaro
+# --compilers=intel exports FC=ifx). -DIPO_AR=... -DIPO_RANLIB=... give the tools by hand, for any other layout.
+if(DEFINED CMAKE_Fortran_COMPILER)
+  set(_ipo_fc "${CMAKE_Fortran_COMPILER}")
+else()
+  set(_ipo_fc "$ENV{FC}")
+endif()
+get_filename_component(_ipo_fc_name "${_ipo_fc}" NAME)
+if(_ipo_fc_name MATCHES "^ifx")
+  if(NOT IS_ABSOLUTE "${_ipo_fc}")
+    find_program(_ipo_fc_path NAMES "${_ipo_fc}")
+    set(_ipo_fc "${_ipo_fc_path}")
+  endif()
+  get_filename_component(_ipo_bindir "${_ipo_fc}" REALPATH)
+  get_filename_component(_ipo_bindir "${_ipo_bindir}" DIRECTORY)
+  find_program(IPO_AR     NAMES llvm-ar
+               HINTS "${_ipo_bindir}/compiler" "${_ipo_bindir}/../bin-llvm" "${_ipo_bindir}" NO_DEFAULT_PATH)
+  find_program(IPO_RANLIB NAMES llvm-ranlib
+               HINTS "${_ipo_bindir}/compiler" "${_ipo_bindir}/../bin-llvm" "${_ipo_bindir}" NO_DEFAULT_PATH)
+  if(IPO_AR AND IPO_RANLIB)
+    set(CMAKE_AR     "${IPO_AR}"     CACHE FILEPATH "Archiver (llvm-ar: IPO objects)")
+    set(CMAKE_RANLIB "${IPO_RANLIB}" CACHE FILEPATH "Ranlib (llvm-ranlib: IPO objects)")
+    foreach(_ipo_lang Fortran C CXX)
+      set(CMAKE_${_ipo_lang}_COMPILER_AR     "${IPO_AR}"     CACHE FILEPATH "IPO-aware archiver (${_ipo_lang})")
+      set(CMAKE_${_ipo_lang}_COMPILER_RANLIB "${IPO_RANLIB}" CACHE FILEPATH "IPO-aware ranlib (${_ipo_lang})")
+    endforeach()
+  endif()
+endif()
+
 project (hydra LANGUAGES Fortran CXX C)
 
 set(CMAKE_VERBOSE_MAKEFILE FALSE)
@@ -53,40 +88,19 @@ if(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM" AND CMAKE_Fortran_COMPILER_VER
   endif()
 endif()
 
-# Intel IPO objects hold IR, not machine code: GNU ar/ranlib cannot index them ("Error running link command" /
-# "archive has no index" on the first static library), and from oneAPI 2024 the llvm-ar/llvm-ranlib that can live
-# in <bin>/compiler, where CMake looks only up to the 2023 layout (<bin>/../bin-llvm). Found here instead, as
-# MOSE's cmake/SetFortranFlags.cmake does; -DIPO_AR=... -DIPO_RANLIB=... give the tools by hand, for any other
-# layout. Cache and plain variables both: the plain ones CMake leaves in this scope shadow the cache entries when
-# the archive rules expand them.
+# IPO with ifx: the archiver found before project() must have reached the compiler detection; stop here, not on
+# the first static library.
 if(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM")
   string(TOUPPER "${CMAKE_BUILD_TYPE}" _ipo_bt)
   if(CMAKE_INTERPROCEDURAL_OPTIMIZATION OR CMAKE_INTERPROCEDURAL_OPTIMIZATION_${_ipo_bt})
-    get_filename_component(_ipo_bindir "${CMAKE_Fortran_COMPILER}" REALPATH)
-    get_filename_component(_ipo_bindir "${_ipo_bindir}" DIRECTORY)
-    find_program(IPO_AR     NAMES llvm-ar
-                 HINTS "${_ipo_bindir}/compiler" "${_ipo_bindir}/../bin-llvm" "${_ipo_bindir}")
-    find_program(IPO_RANLIB NAMES llvm-ranlib
-                 HINTS "${_ipo_bindir}/compiler" "${_ipo_bindir}/../bin-llvm" "${_ipo_bindir}")
-    if(IPO_AR AND IPO_RANLIB)
-      set(CMAKE_AR     "${IPO_AR}"     CACHE FILEPATH "Archiver used for IPO objects" FORCE)
-      set(CMAKE_RANLIB "${IPO_RANLIB}" CACHE FILEPATH "Ranlib used for IPO objects"   FORCE)
-      set(CMAKE_AR     "${IPO_AR}")
-      set(CMAKE_RANLIB "${IPO_RANLIB}")
-      foreach(_ipo_lang Fortran C CXX)
-        set(CMAKE_${_ipo_lang}_COMPILER_AR     "${IPO_AR}"     CACHE FILEPATH "IPO-aware archiver (${_ipo_lang})" FORCE)
-        set(CMAKE_${_ipo_lang}_COMPILER_RANLIB "${IPO_RANLIB}" CACHE FILEPATH "IPO-aware ranlib (${_ipo_lang})"   FORCE)
-        set(CMAKE_${_ipo_lang}_COMPILER_AR     "${IPO_AR}")
-        set(CMAKE_${_ipo_lang}_COMPILER_RANLIB "${IPO_RANLIB}")
-      endforeach()
-      message(STATUS "IPO                : enabled (archiver ${IPO_AR})")
-    else()
+    if(NOT CMAKE_Fortran_COMPILER_AR OR NOT CMAKE_Fortran_COMPILER_RANLIB)
       message(FATAL_ERROR "IPO is on but no llvm-ar/llvm-ranlib was found with ${CMAKE_Fortran_COMPILER} "
                           "(looked in <bin>/compiler, <bin>/../bin-llvm and <bin>, <bin> the compiler's directory "
                           "with its links resolved). A static library of IPO objects cannot be indexed by GNU ar. "
-                          "Give the tools with -DIPO_AR=... -DIPO_RANLIB=..., or build without IPO: -O0 "
-                          "(--type=DEBUG) or gfortran (--compilers=gnu).")
+                          "Give the tools with -DIPO_AR=... -DIPO_RANLIB=... on a fresh build directory, or build "
+                          "without IPO: -O0 (--type=DEBUG) or gfortran (--compilers=gnu).")
     endif()
+    message(STATUS "IPO                : enabled (archiver ${CMAKE_Fortran_COMPILER_AR})")
   endif()
 endif()
 # Locate and set parallelization libraries. There are some CMake peculiarities
