@@ -42,12 +42,51 @@ if(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM" AND CMAKE_Fortran_COMPILER_VER
     endif()
   endforeach()
   if(_ifx_high AND NOT _ifx_ipo)
-    message(FATAL_ERROR "ifx ${CMAKE_Fortran_COMPILER_VERSION} with ${_ifx_level} and without IPO compiles a loop of the "
-                        "ghost metrics of MOSE and ARES wrongly (an error of the compiler: a minimal program in standard "
-                        "Fortran gives wrong values at -O2 and -O3 and the right ones at -O0, -O1 and with -ipo); a solver "
-                        "built so stops at set-up on the check of its ghost metrics or on a negative volume, or runs with "
-                        "wrong ghost metrics. Build with -O0 (figaro build hydra-<SUFFIX> --type=DEBUG), with gfortran "
-                        "(--compilers=gnu), or with IPO (-DCMAKE_INTERPROCEDURAL_OPTIMIZATION=ON).")
+    # Without IPO this compiler compiles a loop of the ghost metrics of MOSE and ARES wrongly (an error of the
+    # compiler: a minimal program in standard Fortran gives wrong values at -O2 and -O3 and the right ones at -O0,
+    # -O1 and with -ipo); a solver built so stops at set-up on the check of its ghost metrics or on a negative
+    # volume, or runs with wrong ghost metrics. So IPO goes on here; -O0 (--type=DEBUG) and gfortran
+    # (--compilers=gnu) remain the IPO-free builds.
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+    message(STATUS "ifx ${CMAKE_Fortran_COMPILER_VERSION} with ${_ifx_level}: IPO turned on (this compiler "
+                   "miscompiles the ghost metrics of MOSE and ARES at -O2/-O3 without it)")
+  endif()
+endif()
+
+# Intel IPO objects hold IR, not machine code: GNU ar/ranlib cannot index them ("Error running link command" /
+# "archive has no index" on the first static library), and from oneAPI 2024 the llvm-ar/llvm-ranlib that can live
+# in <bin>/compiler, where CMake looks only up to the 2023 layout (<bin>/../bin-llvm). Found here instead, as
+# MOSE's cmake/SetFortranFlags.cmake does; -DIPO_AR=... -DIPO_RANLIB=... give the tools by hand, for any other
+# layout. Cache and plain variables both: the plain ones CMake leaves in this scope shadow the cache entries when
+# the archive rules expand them.
+if(CMAKE_Fortran_COMPILER_ID STREQUAL "IntelLLVM")
+  string(TOUPPER "${CMAKE_BUILD_TYPE}" _ipo_bt)
+  if(CMAKE_INTERPROCEDURAL_OPTIMIZATION OR CMAKE_INTERPROCEDURAL_OPTIMIZATION_${_ipo_bt})
+    get_filename_component(_ipo_bindir "${CMAKE_Fortran_COMPILER}" REALPATH)
+    get_filename_component(_ipo_bindir "${_ipo_bindir}" DIRECTORY)
+    find_program(IPO_AR     NAMES llvm-ar
+                 HINTS "${_ipo_bindir}/compiler" "${_ipo_bindir}/../bin-llvm" "${_ipo_bindir}")
+    find_program(IPO_RANLIB NAMES llvm-ranlib
+                 HINTS "${_ipo_bindir}/compiler" "${_ipo_bindir}/../bin-llvm" "${_ipo_bindir}")
+    if(IPO_AR AND IPO_RANLIB)
+      set(CMAKE_AR     "${IPO_AR}"     CACHE FILEPATH "Archiver used for IPO objects" FORCE)
+      set(CMAKE_RANLIB "${IPO_RANLIB}" CACHE FILEPATH "Ranlib used for IPO objects"   FORCE)
+      set(CMAKE_AR     "${IPO_AR}")
+      set(CMAKE_RANLIB "${IPO_RANLIB}")
+      foreach(_ipo_lang Fortran C CXX)
+        set(CMAKE_${_ipo_lang}_COMPILER_AR     "${IPO_AR}"     CACHE FILEPATH "IPO-aware archiver (${_ipo_lang})" FORCE)
+        set(CMAKE_${_ipo_lang}_COMPILER_RANLIB "${IPO_RANLIB}" CACHE FILEPATH "IPO-aware ranlib (${_ipo_lang})"   FORCE)
+        set(CMAKE_${_ipo_lang}_COMPILER_AR     "${IPO_AR}")
+        set(CMAKE_${_ipo_lang}_COMPILER_RANLIB "${IPO_RANLIB}")
+      endforeach()
+      message(STATUS "IPO                : enabled (archiver ${IPO_AR})")
+    else()
+      message(FATAL_ERROR "IPO is on but no llvm-ar/llvm-ranlib was found with ${CMAKE_Fortran_COMPILER} "
+                          "(looked in <bin>/compiler, <bin>/../bin-llvm and <bin>, <bin> the compiler's directory "
+                          "with its links resolved). A static library of IPO objects cannot be indexed by GNU ar. "
+                          "Give the tools with -DIPO_AR=... -DIPO_RANLIB=..., or build without IPO: -O0 "
+                          "(--type=DEBUG) or gfortran (--compilers=gnu).")
+    endif()
   endif()
 endif()
 # Locate and set parallelization libraries. There are some CMake peculiarities
