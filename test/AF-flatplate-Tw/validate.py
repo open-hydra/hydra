@@ -104,7 +104,7 @@ if __name__ == "__main__":
 
     # ================================================================
     # Common parameters (shared by the three cases)
-    # from atlas.ini + set_constant_*.py + mesh.ini
+    # from input.ini + set_constant_*.py + MESH/mesh.ini
     # ================================================================
     T_inf = 293.0                  # free-stream static temperature   [K]
     p_inf = 1.0e5                  # ambient static pressure          [Pa]
@@ -124,7 +124,7 @@ if __name__ == "__main__":
     T_B   = 393.0                  # bottom-wall temperature ([T_plate] BC) [K]
     ReL   = g_inf * L / mu_inf     # plate-length Reynolds number
 
-    # -- per-case solid conductivity k_s (from each case's atlas.ini) and
+    # -- per-case solid conductivity k_s (from each case's input.ini) and
     #    frozen reference wall file in reference/ (solid-side converged wall,
     #    copied from <case>/OUTPUT/hydra-wall.tec) --
     cases = {

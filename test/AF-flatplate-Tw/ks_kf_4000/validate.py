@@ -120,7 +120,7 @@ def tw_laminar_forced(x, T_B, T_inf, U_inf, rho_f, mu_f, k_f, cp_f, k_s, t):
 if __name__ == "__main__":
 
     # ================================================================
-    # Case parameters (from atlas.ini + set_constant_*.py + mesh.ini)
+    # Case parameters (from input.ini + set_constant_*.py + MESH/mesh.ini)
     # ================================================================
     # -- Free-stream / fluid --
     T_inf = 293.0                 # free-stream static temperature   [K]
@@ -136,7 +136,7 @@ if __name__ == "__main__":
     rho_inf = p_inf / (R * T_inf)          # free-stream density     [kg/m3]
     U_inf   = g_inf / rho_inf              # free-stream velocity     [m/s]
 
-    # -- Solid plate (phase 'plate' in atlas.ini) --
+    # -- Solid plate (phase 'plate' in input.ini) --
     k_s   = 1027.46               # solid thermal conductivity       [W/(m K)]
     delta = 0.05                  # plate thickness (Block2 height)  [m]
     L     = 1.0                   # plate length                     [m]

@@ -154,7 +154,7 @@ MU = RHO * U * L / RE_L
 CP = GAM / (GAM - 1.0) * R
 KF = MU * CP / PR
 
-# Solid conductivity as set in each case's atlas.ini
+# Solid conductivity as set in each case's input.ini
 KS = {40: 10.2746, 400: 102.746, 4000: 1027.46}
 
 VARIANTS = {
