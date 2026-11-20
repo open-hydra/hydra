@@ -147,7 +147,7 @@ The factor $0.332\,Re_x^{1/2}Pr^{1/3}$ is the local laminar Nusselt number for a
 The sweep walks between these limits, and $T_w$ rising towards $T_B$ as $k_s$ grows is what the coupling must reproduce.
 
 !!! info "Source material"
-    Both reference papers are versioned with the case in `test/MF-flatplate-Tw/reference/`: `Lindstedt Correlation.pdf` and `Steady-State-Coupled-Fluid-Solid.pdf`. The correlation is implemented in `validate.py::tw_laminar_forced`.
+    The correlation is from M. Lindstedt and R. Karvinen, *Conjugate heat transfer in a plate – One surface at constant temperature and the other cooled by forced or natural convection*, International Journal of Heat and Mass Transfer 66 (2013) 489–495, [doi:10.1016/j.ijheatmasstransfer.2013.07.052](https://doi.org/10.1016/j.ijheatmasstransfer.2013.07.052). The conjugate flat plate as a check of a coupled fluid–solid solver follows R. Corral and Z. Wang, *An efficient steady state coupled fluid-solid heat transfer method for turbomachinery applications*, International Journal of Thermal Sciences 130 (2018) 59–69, [doi:10.1016/j.ijthermalsci.2018.04.003](https://doi.org/10.1016/j.ijthermalsci.2018.04.003). The correlation is implemented in each suite's `validate.py` (`tw_laminar_forced`).
 
 ---
 
