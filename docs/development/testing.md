@@ -36,10 +36,11 @@ Each `ks_kf_*` case is ready to run, in both suites:
 - `MESH/mesh.tec` — the mesh, one and the same file in the six cases of the two suites
 - `INPUT/` — the solver input, versioned; in the real-fluid suite the table comes through links into `common/`
 
-The real-fluid cases additionally carry `set_constant_cp.py` and
+The real-fluid suite additionally carries `set_constant_cp.py` and
 `set_constant_transport.py`, which flatten the generated CoolProp table to
-constant properties so the analytical comparison is meaningful, and a
-per-case `validate.py`.
+constant properties so the analytical comparison is meaningful. The versioned
+table in `common/` is already flattened: they are needed only when `INPUT/` is
+rebuilt with ATLAS.
 
 See [Verification & Validation](../vv/index.md) for what each suite checks and
 the expected error margins.
@@ -77,14 +78,14 @@ rebuild the real-fluid `INPUT/` with ATLAS, see the
 ### 4. Post-run analytical check
 
 ```bash
-(cd test/MF-flatplate-Tw          && python3 analytical.py)   # hydra-MF, the three cases
-(cd test/AF-flatplate-Tw          && python3 validate.py)     # hydra-AF, the three cases
-(cd test/AF-flatplate-Tw/ks_kf_40 && python3 validate.py)     # one case, from its own OUTPUT/
+(cd test/MF-flatplate-Tw && python3 analytical.py)   # hydra-MF, from reference/
+python3 test/AF-flatplate-Tw/validate.py             # hydra-AF, from reference/
+python3 test/AF-flatplate-Tw/validate.py --runs      # hydra-AF, from the cases' own OUTPUT/
 ```
 
 These scripts compare the wall temperature against the Lindstedt correlation
-and write a comparison plot. The suite scripts read the frozen solutions in
-`reference/`; the per-case `validate.py` reads the case's own run.
+and write a comparison plot. They read the frozen solutions in `reference/`;
+`validate.py --runs` reads the cases' own runs instead.
 
 To re-derive every number and figure in the V&V section from the frozen
 solutions, without running a solver:

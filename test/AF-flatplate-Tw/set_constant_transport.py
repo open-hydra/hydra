@@ -1,12 +1,32 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+Set a CONSTANT viscosity and conductivity in INPUT/fluid-transport.dat (FLINT
+real-fluid table), the constant properties of the analytical reference:
+mu = 1.79352e-4 Pa s, k = mu cp / Pr with cp = 1004.5 J/(kg K), Pr = 0.70.
+set_constant_cp.py sets the same cp in fluid-thermo.dat.
+
+fluid-transport.dat is a Tecplot BLOCK file with 4 variables (pressure,
+enthalpy, viscosity, conductivity): 3 header lines then 4 blocks of I*J*K
+values, one per line. The pressure/enthalpy grid is kept verbatim.
+
+Needed only after ATLAS has rebuilt a case's INPUT/: the versioned table, in
+common/, is already flattened, and the cases reach it through links, which
+this script refuses to write through.
+
+Original backed up to INPUT/fluid-transport.dat.orig (once).
+
+Usage, from a case folder:  python3 ../set_constant_transport.py
+       or from anywhere:    python3 set_constant_transport.py <case folder>
+"""
 
 import os
 import re
 import shutil
+import sys
 
-HERE = os.path.dirname(os.path.abspath(__file__))
-F    = os.path.join(HERE, "INPUT", "fluid-transport.dat")
+CASE = os.path.abspath(sys.argv[1]) if len(sys.argv) > 1 else os.getcwd()
+F    = os.path.join(CASE, "INPUT", "fluid-transport.dat")
 
 # --------------------------------------------------------------------------- #
 # constants to impose  (edit here)
@@ -18,6 +38,12 @@ CONDUCTIVITY = VISCOSITY * CP / PRANDTL   # [W/m/K]  k = mu*cp/Pr  (or set direc
 
 
 def main():
+    if not os.path.isfile(F):
+        sys.exit(f"no {F}: run from a case folder, or give the case folder as argument")
+    if os.path.islink(F):
+        sys.exit(f"{os.path.relpath(F, CASE)} is a link (to the shared, already flattened table "
+                 "in common/): nothing to do. Rebuild INPUT/ with ATLAS in a copy first.")
+
     with open(F) as fh:
         lines = fh.read().splitlines()
 
@@ -43,18 +69,17 @@ def main():
     bak = F + ".orig"
     if not os.path.exists(bak):
         shutil.copy2(F, bak)
-        print(f"  backup written: {os.path.relpath(bak, HERE)}")
+        print(f"  backup written: {os.path.relpath(bak, CASE)}")
     else:
-        print(f"  backup already exists: {os.path.relpath(bak, HERE)} (kept)")
+        print(f"  backup already exists: {os.path.relpath(bak, CASE)} (kept)")
 
     with open(F, "w") as fh:
         fh.write("\n".join(header + P + H + visc + cond) + "\n")
 
-    print(f"  transport.dat updated  (grid {I}x{J}x{K}, {nval} pts):")
+    print(f"  fluid-transport.dat updated  (grid {I}x{J}x{K}, {nval} pts):")
     print(f"    Viscosity    = {VISCOSITY:.6e} Pa s   (constant)")
     print(f"    Conductivity = {CONDUCTIVITY:.6e} W/m/K (constant, Pr={PRANDTL}, cp={CP})")
     print(f"    Pressure / Enthalpy grid preserved")
-    print(f"  -> with g=59.29: Re/m = g/mu = {59.29/VISCOSITY:.3e}  (target 5.0e6, M=0.2)")
 
 
 if __name__ == "__main__":

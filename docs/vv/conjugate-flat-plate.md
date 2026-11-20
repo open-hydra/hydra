@@ -41,7 +41,7 @@ Within a variant the three cases differ **only** in the solid conductivity — s
 Everything else — geometry, mesh, boundary conditions, solid material, free-stream state, numerics — is identical by construction.
 
 !!! info "Why the real-fluid variant uses constant properties"
-    The analytical reference assumes constant fluid properties. Each real-fluid case therefore ships `set_constant_transport.py` and `set_constant_cp.py`, which overwrite the viscosity, conductivity and $c_p$ blocks of the generated table with $\mu = 1.79352\times10^{-4}$ Pa·s, $k = 0.25737$ W/(m·K) and $c_p = 1004.5$ J/(kg·K), giving $Pr = 0.70$ exactly.
+    The analytical reference assumes constant fluid properties. The real-fluid suite therefore ships `set_constant_transport.py` and `set_constant_cp.py`, which overwrite the viscosity, conductivity and $c_p$ blocks of the generated table with $\mu = 1.79352\times10^{-4}$ Pa·s, $k = 0.25737$ W/(m·K) and $c_p = 1004.5$ J/(kg·K), giving $Pr = 0.70$ exactly.
 
     The pressure/enthalpy grid and every other EOS variable — density, temperature, sound speed — are left untouched, so $T(p,h)$ is still resolved through the real-fluid table and the real-fluid code path is fully exercised. Only the properties that enter the correlation are pinned.
 
@@ -215,8 +215,8 @@ k   = 10.2746            ; 102.746 / 1027.46 in the other two cases
 
     ```bash
     cd test/AF-flatplate-Tw
-    python3 validate.py                      # all three cases
-    cd ks_kf_40 && python3 validate.py       # one case, from its own OUTPUT/
+    python3 validate.py --runs               # the cases' own OUTPUT/ (validate_runs.png)
+    python3 validate.py                      # the frozen solutions in reference/ (validate.png)
     ```
 
     To rebuild `INPUT/` (after a change to ATLAS or to the deck), work in a copy of the suite and remove the links first, since ATLAS would otherwise write through them into `common/`:
@@ -225,13 +225,13 @@ k   = 10.2746            ; 102.746 / 1027.46 in the other two cases
     cp -r test/AF-flatplate-Tw /tmp/AF-flatplate-Tw && cd /tmp/AF-flatplate-Tw/ks_kf_40
     find INPUT -type l -delete
     figaro ATLAS GPB ICB BCB             # 1. real-fluid table, IC, BC from input.ini
-    python3 set_constant_transport.py    # 2. flatten the table
-    python3 set_constant_cp.py
+    python3 ../set_constant_transport.py # 2. flatten the table
+    python3 ../set_constant_cp.py
     ```
 
     Step 2 must follow step 1: ATLAS regenerates the table from scratch, overwriting any flattening already applied.
 
-Each run writes `OUTPUT/hydra-wall.tec`. The suite-level scripts read the frozen solutions in `reference/`, so they work without a prior solve; point them at your own `OUTPUT/hydra-wall.tec` to check a fresh run.
+Each run writes `OUTPUT/hydra-wall.tec`. The comparison scripts read the frozen solutions in `reference/`, so they work without a prior solve; `validate.py --runs` reads the cases' own `OUTPUT/hydra-wall.tec` to check a fresh run.
 
 !!! note "One mesh"
     Both variants run on the same mesh: `MESH/mesh.tec` is one file, identical in the six cases. The mesh table above gives the blocks it was generated with.

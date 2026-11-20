@@ -7,23 +7,31 @@ Validation of the three real-fluid conjugate flat-plate cases:
 
 Each case is a laminar flat plate with conjugate heat transfer, real-fluid
 (CoolProp) Air with Cp/mu/k forced constant so that Pr = mu*cp/k = 0.70
-(see each case's set_constant_cp.py / set_constant_transport.py). The cases
-differ only in the solid conductivity k_s, i.e. the ratio k_s/k_f.
+(set_constant_cp.py / set_constant_transport.py). The cases differ only in
+the solid conductivity k_s, i.e. the ratio k_s/k_f.
 
-The interface temperature Tw(x) extracted from each simulation
-(<case>/OUTPUT/hydra-wall.tec, fluid-side wall) is compared against the
+The interface temperature Tw(x) of each case is compared against the
 Lindstedt & Karvinen analytical correlation, in the same 3-panel style as
-MF-flatplate-Tw/analytical.py (the ideal-gas reference).
+MF-flatplate-Tw/analytical.py (the ideal-gas reference):
 
-Run from anywhere:  python3 test/AF-flatplate-Tw/validate.py
+    python3 validate.py           the frozen solutions, reference/ks_kf_*_wall.tec
+                                  -> validate.png
+    python3 validate.py --runs    the cases' own runs, <case>/OUTPUT/hydra-wall.tec
+                                  -> validate_runs.png (a case not run is skipped)
+
+The errors are measured where the correlation holds, x > 2 cm (Re_x > 9.1e3),
+as on the V&V page; the leading-edge cells, where the correlation is singular,
+are printed apart. Run from anywhere.
 """
 
 import os
 import re
+import sys
 import numpy as np
 import matplotlib.pyplot as plt
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+X_TRUST = 0.02      # [m] leading-edge cells (x below) left out of the error metrics, as on the V&V page
 
 
 def read_tec_wall(path):
@@ -101,6 +109,7 @@ def tw_laminar_forced(x, T_B, T_inf, U_inf, rho_f, mu_f, k_f, cp_f, k_s, t):
 
 
 if __name__ == "__main__":
+    runs = "--runs" in sys.argv[1:]
 
     # ================================================================
     # Common parameters (shared by the three cases)
@@ -124,15 +133,18 @@ if __name__ == "__main__":
     T_B   = 393.0                  # bottom-wall temperature ([T_plate] BC) [K]
     ReL   = g_inf * L / mu_inf     # plate-length Reynolds number
 
-    # -- per-case solid conductivity k_s (from each case's input.ini) and
-    #    frozen reference wall file in reference/ (solid-side converged wall,
-    #    copied from <case>/OUTPUT/hydra-wall.tec) --
+    # -- per-case solid conductivity k_s (from each case's input.ini) and plot range --
     cases = {
-        40:   {"sol": "reference/ks_kf_40_wall.tec",   "k_s": 10.2746,  "ylim": (310, 395)},
-        400:  {"sol": "reference/ks_kf_400_wall.tec",  "k_s": 102.746,  "ylim": (365, 395)},
-        4000: {"sol": "reference/ks_kf_4000_wall.tec", "k_s": 1027.46,  "ylim": (390, 395)},
+        40:   {"k_s": 10.2746, "ylim": (310, 395)},
+        400:  {"k_s": 102.746, "ylim": (365, 395)},
+        4000: {"k_s": 1027.46, "ylim": (390, 395)},
     }
     ks_kf_ratios = [40, 400, 4000]
+
+    def wall_file(ratio):
+        if runs:
+            return os.path.join(HERE, f"ks_kf_{ratio}", "OUTPUT", "hydra-wall.tec")
+        return os.path.join(HERE, "reference", f"ks_kf_{ratio}_wall.tec")
 
     print("=" * 56)
     print("Real-fluid conjugate flat plate  --  shared state")
@@ -142,6 +154,9 @@ if __name__ == "__main__":
     print(f"  mu    = {mu_inf:.5e} Pa s   cp = {cp_inf:.1f} J/kg/K")
     print(f"  k_f   = {k_inf:.5f} W/m/K   Pr = {Pr}")
     print(f"  Re_L  = {ReL:.3e}   Ma = {U_inf/np.sqrt(1.4*R*T_inf):.3f}")
+    print(f"  solutions: {'the cases own runs, <case>/OUTPUT/hydra-wall.tec' if runs else 'the frozen ones, reference/'}")
+    print(f"  errors over x > {100 * X_TRUST:.0f} cm (Re_x > {X_TRUST * ReL / L:.2g}); "
+          f"the leading-edge cells apart")
     print("=" * 56)
 
     # ================================================================
@@ -158,6 +173,7 @@ if __name__ == "__main__":
     )
     fig.subplots_adjust(top=0.88)
 
+    found = 0
     for ax, ratio in zip(axes, ks_kf_ratios):
         c   = cases[ratio]
         k_s = c["k_s"]
@@ -167,26 +183,33 @@ if __name__ == "__main__":
                                   mu_inf, k_inf, cp_inf, k_s, delta)
         Re_x  = res["Re_x"]
         Tw_LK = res["Tw"]
-
-        # -- numerical (fluid-side wall, frozen reference) --
-        tec_path = os.path.join(HERE, c["sol"])
-        tec = read_tec_wall(tec_path)
-        Re_x_num = tec['x'] * ReL / L
-
-        # -- error metrics --
-        err  = tec['Tw'] - np.interp(Re_x_num, Re_x, Tw_LK)
-        rmse = np.sqrt(np.mean(err ** 2))
-        i_mid = np.argmin(np.abs(Re_x - ReL / 2.0))
-        print(f"\n  ks/kf = {ratio:>4d}   k_s = {k_s:.4f} W/m/K  (k_s/k_f = {k_s/k_inf:.1f})")
-        print(f"    Tw analytic / numeric (x=L/2) = "
-              f"{Tw_LK[i_mid]:.3f} / {np.interp(ReL/2.0, Re_x_num, tec['Tw']):.3f} K")
-        print(f"    max|err| = {np.max(np.abs(err)):.3f} K   RMSE = {rmse:.3f} K")
-
-        # -- plot --
         ax.plot(Re_x, Tw_LK, color="#2471A3", linewidth=2.5,
                 label="Lindstedt correlation")
-        ax.plot(Re_x_num, tec['Tw'], "o", color="#FF1A1A", markersize=5,
-                markevery=5, label="Numerical (HYDRA)")
+        ax.axvspan(0, X_TRUST * ReL / L, color="0.5", alpha=0.15,
+                   label=f"$x < {100 * X_TRUST:.0f}$ cm: not in the errors")
+
+        print(f"\n  ks/kf = {ratio:>4d}   k_s = {k_s:.4f} W/m/K  (k_s/k_f = {k_s/k_inf:.1f})")
+        path = wall_file(ratio)
+        if not os.path.isfile(path):
+            print(f"    {os.path.relpath(path, HERE)} not found: case not run, skipped")
+        else:
+            found += 1
+            # -- numerical (fluid-side wall) against the correlation at the cell centres --
+            tec = read_tec_wall(path)
+            xc, tw = tec['x'], tec['Tw']
+            err = tw - tw_laminar_forced(xc, T_B, T_inf, U_inf, rho_inf,
+                                         mu_inf, k_inf, cp_inf, k_s, delta)["Tw"]
+            m = xc > X_TRUST
+            tw_mid = tw_laminar_forced([L / 2], T_B, T_inf, U_inf, rho_inf,
+                                       mu_inf, k_inf, cp_inf, k_s, delta)["Tw"][0]
+            print(f"    Tw correlation / numeric (x=L/2) = {tw_mid:.3f} / {np.interp(L / 2, xc, tw):.3f} K")
+            print(f"    x > {100 * X_TRUST:.0f} cm ({m.sum()} cells): max|err| = {np.max(np.abs(err[m])):.3f} K"
+                  f"   RMSE = {np.sqrt(np.mean(err[m] ** 2)):.3f} K")
+            print(f"    x < {100 * X_TRUST:.0f} cm ({(~m).sum()} cells, leading edge): "
+                  f"largest |err| = {np.max(np.abs(err[~m])):.3f} K (not judged)")
+            ax.plot(xc * ReL / L, tw, "o", color="#FF1A1A", markersize=5,
+                    markevery=5, label="Numerical (HYDRA)")
+
         ax.axhline(T_B, color="k", linestyle="--", linewidth=1.0,
                    label=f"$T_B = {T_B:.0f}$ K")
         ax.set_ylabel("$T_w$ [K]", fontsize=14)
@@ -197,6 +220,8 @@ if __name__ == "__main__":
         ax.grid(True, alpha=0.4)
 
     print("=" * 56)
+    if runs and not found:
+        sys.exit("no case has OUTPUT/hydra-wall.tec: run the cases first")
 
     axes[-1].set_xlabel("$Re_x$", fontsize=13)
     axes[-1].set_xlim(0, ReL)
@@ -206,7 +231,7 @@ if __name__ == "__main__":
         ax.ticklabel_format(style="sci", axis="x", scilimits=(0, 0))
 
     plt.tight_layout()
-    out = os.path.join(HERE, "validate.png")
+    out = os.path.join(HERE, "validate_runs.png" if runs else "validate.png")
     plt.savefig(out, dpi=150, bbox_inches="tight")
     print(f"  figure written: {os.path.relpath(out, HERE)}")
     plt.show()
