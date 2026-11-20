@@ -5,7 +5,9 @@ module hydraMF_Lib_Ghost
   use MOSE_Advanced_Types_m
   use FUSS_Advanced_Types_m
   use hydraMF_Mod_CouplingExchange, only: is_FUSS_bc_local_local, is_MOSE_bc_local_local, &
-                                          own103_FUSS, own103_MOSE
+                                          own103_FUSS, own103_MOSE, &
+                                          set_partner_half_FUSS, set_partner_half_MOSE
+  use hydraMF_Lib_Metrics,          only: FUSS_Wall_Half, MOSE_Wall_Half
 
   implicit none
   private
@@ -14,7 +16,10 @@ module hydraMF_Lib_Ghost
 contains
 
 
-  !> Fill the coupling ghost cells for entries this rank can serve locally.
+  !> Fill the coupling ghost cells for entries this rank can serve locally: the
+  !> temperatures of the partner cells across the face (Tg / Pg, 1..gc_) and the
+  !> half (A, Teff) of the interface balance of the partner face, computed in the
+  !> partner's own index frame with its own metric (hydraMF_Lib_Metrics).
   !>
   !> Driven by the per-rank type(103) lists rather than by a sweep of the whole
   !> bc array: the array is global and grows with the block count, so the old
@@ -28,12 +33,16 @@ contains
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
     integer, intent(in) :: level
     ! Local
-    integer :: k, n_F, n_M, i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
+    integer :: k, n_F, n_M, i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs
+    real(R8) :: A, Teff
     integer, pointer :: ownF(:), ownM(:)
 
     call own103_FUSS(level, n_F, ownF)
     call own103_MOSE(level, n_M, ownM)
 
+    ! FUSS: only fill locally when both Bm and Bs are owned by this rank.
+    ! Remote-Bs entries are handled by exchange_coupling_Tg_P (called beforehand),
+    ! and remote-Bm entries are not in ownF at all.
     if (n_F > 0) then
       !$omp parallel do schedule (static) &
       !$omp private(k, i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs)
@@ -56,8 +65,9 @@ contains
       enddo
       !$omp end parallel do
 
+      ! Half of the balance of the MOSE partner face
       !$omp parallel do schedule (static) &
-      !$omp private(k, i, Bs, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s)
+      !$omp private(k, i, Bs, Is, Js, Ks, Fs, A, Teff)
       do k = 1, n_F
         i = ownF(k)
         if (.not. is_FUSS_bc_local_local(FUSS_domain, i)) cycle
@@ -66,16 +76,13 @@ contains
         Js = FUSS_domain % bc(i) % js
         Ks = FUSS_domain % bc(i) % ks
         Fs = FUSS_domain % bc(i) % fs
-        d11s = FUSS_domain % bc(i) % d11
-        d12s = FUSS_domain % bc(i) % d12
-        d21s = FUSS_domain % bc(i) % d21
-        d22s = FUSS_domain % bc(i) % d22
-        call Fill_BC_Ghost_Coupling_FUSS ( Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, &
-                                           MOSE_domain % blk(Bs), FUSS_domain % bc(i) % Tg )
+        call MOSE_Wall_Half ( MOSE_domain % blk(Bs), Is, Js, Ks, Fs, A, Teff )
+        call set_partner_half_FUSS ( level, i, A, Teff )
       enddo
       !$omp end parallel do
     end if
 
+    ! MOSE: same guard -- skip entries whose secondary block is remote.
     if (n_M > 0) then
       !$omp parallel do schedule (static) &
       !$omp private(k, i, Bm, Im, Jm, Km, Fm, Bs, Is, Js, Ks, Fs)
@@ -98,8 +105,9 @@ contains
       enddo
       !$omp end parallel do
 
+      ! Half of the balance of the FUSS partner face
       !$omp parallel do schedule (static) &
-      !$omp private(k, i, Bs, Is, Js, Ks, Fs, d11s, d12s, d21s, d22s)
+      !$omp private(k, i, Bs, Is, Js, Ks, Fs, A, Teff)
       do k = 1, n_M
         i = ownM(k)
         if (.not. is_MOSE_bc_local_local(MOSE_domain, i)) cycle
@@ -108,12 +116,8 @@ contains
         Js = MOSE_domain % bc(i) % js
         Ks = MOSE_domain % bc(i) % ks
         Fs = MOSE_domain % bc(i) % fs
-        d11s = MOSE_domain % bc(i) % d11
-        d12s = MOSE_domain % bc(i) % d12
-        d21s = MOSE_domain % bc(i) % d21
-        d22s = MOSE_domain % bc(i) % d22
-        call Fill_BC_Ghost_Coupling_MOSE ( Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, &
-                                           FUSS_domain % blk(Bs), MOSE_domain % bc(i) % Pg )
+        call FUSS_Wall_Half ( FUSS_domain % blk(Bs), Is, Js, Ks, Fs, A, Teff )
+        call set_partner_half_MOSE ( level, i, A, Teff )
       enddo
       !$omp end parallel do
     end if
@@ -122,7 +126,7 @@ contains
 
 
   subroutine Ghost_Coupling_FUSS ( Im, Jm, Km, Fm, blkm, Is, Js, Ks, Fs, blks, Tg )
-    use FLINT_Lib_Thermodynamic
+    use FLINT_Lib_Thermodynamic, only: co_rotot_Rtot, EOS
     use MOSE_Global_m, only: nsc, np
     implicit none
     integer, intent(in)               :: Im, Jm, Km, Fm, Is, Js, Ks, Fs
@@ -139,9 +143,8 @@ contains
       Js_ = Js + guide_(Fs,2)*(g-1)
       Ks_ = Ks + guide_(Fs,3)*(g-1)
       
-      call co_rotot_Rtot ( blks % P (1:nsc,Is_,Js_,Ks_), rho, Rgas )
-      Ts = EOS( p=blks%P(np,Is_,Js_,Ks_), rho=rho, R=Rgas )
-      
+      call co_rotot_Rtot ( blks % P(1:nsc,Is_,Js_,Ks_), rho, Rgas )
+      Ts = EOS ( p=blks%P(np,Is_,Js_,Ks_), rho=rho, R=Rgas )
       Tg(g) = Ts
 
     enddo
@@ -149,78 +152,8 @@ contains
   end subroutine Ghost_Coupling_FUSS
   
 
-  subroutine Fill_BC_Ghost_Coupling_FUSS ( Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, blks, Tg )
-    use FLINT_Lib_Thermodynamic
-    use MOSE_Global_m, only: nsc, np
-    implicit none
-    integer, intent(in)               :: Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
-    type(MOSE_block_type), intent(in) :: blks
-    real(R8), intent(inout)           :: Tg(6)
-    ! Local
-    integer  :: i1, j1, k1, i2, j2, k2, i3, j3, k3, i4, j4, k4
-    real(R8) :: rho, Rgas, Ts1, Ts2, Ts3, Ts4
-
-    select case(Fs)
-      case(1:2)
-        i1 = Is
-        j1 = Js - d11s
-        k1 = Ks - d12s
-        i2 = Is
-        j2 = Js + d11s
-        k2 = Ks + d12s
-        i3 = Is
-        j3 = Js - d21s
-        k3 = Ks - d22s
-        i4 = Is
-        j4 = Js + d21s
-        k4 = Ks + d22s
-      case(3:4)
-        i1 = Is - d11s
-        j1 = Js 
-        k1 = Ks - d12s
-        i2 = Is + d11s
-        j2 = Js 
-        k2 = Ks + d12s
-        i3 = Is - d21s
-        j3 = Js
-        k3 = Ks - d22s
-        i4 = Is + d21s
-        j4 = Js 
-        k4 = Ks + d22s
-      case(5:6)
-        i1 = Is - d11s
-        j1 = Js - d12s
-        k1 = Ks 
-        i2 = Is + d11s
-        j2 = Js + d12s
-        k2 = Ks
-        i3 = Is - d21s
-        j3 = Js - d22s
-        k3 = Ks
-        i4 = Is + d21s
-        j4 = Js + d22s
-        k4 = Ks
-    end select
-
-    call co_rotot_Rtot ( blks % P (1:nsc,i1,j1,k1), rho, Rgas )
-    Ts1 = EOS( p=blks%P(np,i1,j1,k1), rho=rho, R=Rgas )
-    call co_rotot_Rtot ( blks % P (1:nsc,i2,j2,k2), rho, Rgas )
-    Ts2 = EOS( p=blks%P(np,i2,j2,k2), rho=rho, R=Rgas )
-    call co_rotot_Rtot ( blks % P (1:nsc,i3,j3,k3), rho, Rgas )
-    Ts3 = EOS( p=blks%P(np,i3,j3,k3), rho=rho, R=Rgas )
-    call co_rotot_Rtot ( blks % P (1:nsc,i4,j4,k4), rho, Rgas )
-    Ts4 = EOS( p=blks%P(np,i4,j4,k4), rho=rho, R=Rgas )
-
-    Tg (3) = Ts1
-    Tg (4) = Ts2
-    Tg (5) = Ts3
-    Tg (6) = Ts4
-
-  end subroutine Fill_BC_Ghost_Coupling_FUSS
-
-
   subroutine Ghost_Coupling_MOSE ( Im, Jm, Km, Fm, blkm, Is, Js, Ks, Fs, blks, Pg )
-    use FLINT_Lib_Thermodynamic
+    use FLINT_Lib_Thermodynamic, only: co_rotot_Rtot, EOS
     use MOSE_Global_m, only: nsc, np
     implicit none
     integer, intent(in)               :: Im, Jm, Km, Fm, Is, Js, Ks, Fs
@@ -243,61 +176,4 @@ contains
   end subroutine Ghost_Coupling_MOSE
 
 
-  subroutine Fill_BC_Ghost_Coupling_MOSE ( Is, Js, Ks, Fs, d11s, d12s, d21s, d22s, blks, Pg )
-    implicit none
-    integer, intent(in)               :: Is, Js, Ks, Fs, d11s, d12s, d21s, d22s
-    type(FUSS_block_type), intent(in) :: blks
-    real(R8), intent(inout)           :: Pg(1,6)
-    ! Local
-    integer  :: i1, j1, k1, i2, j2, k2, i3, j3, k3, i4, j4, k4
-    
-    select case(Fs)
-      case(1:2)
-        i1 = Is
-        j1 = Js - d11s
-        k1 = Ks - d12s
-        i2 = Is
-        j2 = Js + d11s
-        k2 = Ks + d12s
-        i3 = Is
-        j3 = Js - d21s
-        k3 = Ks - d22s
-        i4 = Is
-        j4 = Js + d21s
-        k4 = Ks + d22s
-      case(3:4)
-        i1 = Is - d11s
-        j1 = Js 
-        k1 = Ks - d12s
-        i2 = Is + d11s
-        j2 = Js 
-        k2 = Ks + d12s
-        i3 = Is - d21s
-        j3 = Js
-        k3 = Ks - d22s
-        i4 = Is + d21s
-        j4 = Js 
-        k4 = Ks + d22s
-      case(5:6)
-        i1 = Is - d11s
-        j1 = Js - d12s
-        k1 = Ks 
-        i2 = Is + d11s
-        j2 = Js + d12s
-        k2 = Ks
-        i3 = Is - d21s
-        j3 = Js - d22s
-        k3 = Ks
-        i4 = Is + d21s
-        j4 = Js + d22s
-        k4 = Ks
-    end select
-
-    Pg (1,3) = blks % T (i1,j1,k1)
-    Pg (1,4) = blks % T (i2,j2,k2)
-    Pg (1,5) = blks % T (i3,j3,k3)
-    Pg (1,6) = blks % T (i4,j4,k4)
-
-  end subroutine Fill_BC_Ghost_Coupling_MOSE
-    
 end module hydraMF_Lib_Ghost

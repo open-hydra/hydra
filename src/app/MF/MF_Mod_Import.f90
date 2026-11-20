@@ -12,6 +12,7 @@ contains
     use hydra_Get_File_List_m, only: Get_File_List
     use FUSS_Global_m, only: FUSS_phase_prefix
     use MOSE_Global_m, only: MOSE_phase_prefix
+    use MOSE_Mod_MPI, only: mpi_stop_all
     use strings, only: parse
     implicit none
     character(len=llen_)              :: filename, stringa(2), substringa(2), type
@@ -39,12 +40,11 @@ contains
         elseif (index(type,'ideal-gas')>0) then
           MOSE_phase_prefix = trim(substringa(2))//'-'
         elseif (index(type,'dispersed')>0) then
-          write(*,'(A)') '[ERROR] [MF] '//trim(filename)//' is a DISPERSED phase: hydra-MF has no '// &
-                         'dispersed-phase solver (use hydra-MI2)'
-          error stop 1
+          ! Every rank reads the same phase files: they stop here together, with exit code 1
+          call mpi_stop_all ( '[MF] '//trim(filename)//' is a DISPERSED phase: hydra-MF has no '// &
+                              'dispersed-phase solver (use hydra-MI2)' )
         else
-          write(*,'(A)') '[ERROR] [MF] unknown phase type on line 1 of '//trim(filename)//': "'//trim(type)//'"'
-          error stop 1
+          call mpi_stop_all ( '[MF] unknown phase type on line 1 of '//trim(filename)//': "'//trim(type)//'"' )
         endif
         close(u)
     endif

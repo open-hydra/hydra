@@ -1,32 +1,40 @@
-!> Type 104 (chimera coupling) as a non-conforming 103.
+!> Type 104 (chimera coupling) as a non-conforming 103, FUSS <-> MOSE.
 !>
-!> FUSS and MOSE meet along the interface without overlapping, so the coupling
-!> does not need the overset blend over the ghost cells. The interface is split
-!> into segments, the overlaps between one FUSS 104 face and one MOSE 104 face,
-!> and each segment is coupled as a 103 pair of faces:
+!> Port of hydraMF_Lib_Coupling_Segments. FUSS and MOSE meet along the interface
+!> without overlapping, so the coupling does not need the overset blend over the
+!> ghost cells. The interface is split into segments, the overlaps between one
+!> FUSS 104 face and one MOSE 104 face, and each segment is coupled as a 103 pair
+!> of faces:
 !>  - the 103 wall-temperature routines are called with the real partner cell,
 !>    the cell of the other solver that owns the other face of the segment;
 !>  - the energy flux of the segment is 0.5*own - 0.5*partner estimate on both
-!>    sides, so what leaves one solver enters the other exactly.
-!> On conforming faces there is one segment per face and the scheme is 103.
+!>    sides, so what leaves one solver enters the other exactly;
+!>  - as in 103, both sides build the interface temperature with the same fluid
+!>    wall conductivity k_l+k_t, the one the MOSE routine evaluated on the segment
+!>    at the previous call (kS, one per segment).
+!> Metric: each side enters the interface temperature through its half of the
+!> balance (A = 1/d, Teff, hydraMF_Lib_Metrics), computed in its own index frame,
+!> with its own metric and tangential neighbours, by the rank that owns the cell,
+!> and sent to the other side with the partner state; the orientation of the two
+!> meshes never enters. Both Teff are then moved from their face centre to the
+!> centroid of the segment with the gradient of the side in the plane of its face,
+!> so that each segment couples the two cells at the same point of the wall.
+!> On conforming faces there is one segment per face and the scheme is 103, at the
+!> centroid of the face instead of at the mean of its nodes: the same point when the
+!> face is a parallelogram, a shift of second order in the face size otherwise.
 !>
 !> MPI: every rank builds the same, whole segment list, from the face geometry
 !> summed over the ranks, and evaluates only the segments of the faces whose
 !> block it owns. FUSS and MOSE partition their blocks independently, so the two
 !> faces of a segment can live on different ranks: then the partner cell state
-!> (Update_Partners) and the two flux estimates (Exchange_Estimates) cross between
-!> the two owner ranks. With both faces on one rank the partner cell is read in
-!> place, as in serial.
-!>
-!> Still to come:
-!>  - partner metric: only the normal distance of the partner cell centre is
-!>    used, exact when the mesh is orthogonal at the interface; the partner
-!>    tangential terms are dropped. The full metric, oriented as
-!>    Setup_Coupled_Metrics does for 103, is the next step.
+!> (Update_Partners) and the two flux estimates, with kS, (Exchange_Estimates)
+!> cross between the two owner ranks. With both faces on one rank the partner
+!> cell is read in place, as in serial.
 module hydraMF_Lib_Coupling_Segments
   use iso_fortran_env, only: I4 => int32, R8 => real64
   use FUSS_Advanced_Types_m
   use MOSE_Advanced_Types_m
+  use hydraMF_Lib_Metrics, only: NHALF
 
   implicit none
   private
@@ -34,9 +42,11 @@ module hydraMF_Lib_Coupling_Segments
   public :: Segment_Wall_Output_FUSS, Segment_Wall_Output_MOSE
 
   integer, parameter :: max_levels = 16
-  integer, parameter :: NGEO = 20                ! reals of one face geometry, packed for the sum over the ranks
-  integer, parameter :: NXF  = 2                 ! FUSS partner state of a segment: T, matID
-  integer, parameter :: TAG_SEG_STATE = 7104     ! MPI tags, apart from the 103 ones (7001-7006)
+  integer, parameter :: NGEO = 19                ! reals of one face geometry, packed for the sum over the ranks
+  ! Partner state of a segment: T, the half of the balance (A, Teff, gradient in the plane
+  ! of the face) and then matID (FUSS cell) or P(1:nsc) (MOSE cell)
+  integer, parameter :: NXF  = 2 + NHALF         ! FUSS partner state: T, half, matID
+  integer, parameter :: TAG_SEG_STATE = 7104     ! MPI tags, apart from the 103 ones (7001-7007)
   integer, parameter :: TAG_SEG_FLUX  = 7105
 
   !> Segments split between this rank and one other rank, in increasing order
@@ -53,7 +63,7 @@ module hydraMF_Lib_Coupling_Segments
     integer :: ns = 0                            ! number of segments
     integer,  allocatable :: sF(:), sM(:)        ! FUSS / MOSE bc index of the two faces of the segment
     real(R8), allocatable :: wF(:), wM(:)        ! segment area over the FUSS / MOSE face area
-    real(R8), allocatable :: dF(:), dM(:)        ! distance of the FUSS / MOSE cell centre from the interface
+    real(R8), allocatable :: xsF(:,:), xsM(:,:)  ! centroid of the segment minus the FUSS / MOSE face centre (3, ns)
     integer :: nF = 0, nM = 0                    ! number of FUSS / MOSE 104 faces
     integer,  allocatable :: eF(:), eM(:)        ! bc index of each 104 face
     integer,  allocatable :: rowF(:), rowM(:)    ! 104 face number of a bc index, 0 if not a 104 face
@@ -61,12 +71,13 @@ module hydraMF_Lib_Coupling_Segments
     integer,  allocatable :: lF(:), lM(:)
     real(R8), allocatable :: qF(:)               ! FUSS estimate of the energy flux through the segment
     real(R8), allocatable :: fM(:,:)             ! MOSE estimate of the fluxes through the segment (nprim, ns)
+    real(R8), allocatable :: kS(:)               ! fluid wall conductivity k_l+k_t of the segment, lagged by one call
     ! MPI: the lists above are the same on every rank, each rank works on its own faces
     integer,  allocatable :: oF(:), oM(:)        ! rank owning the FUSS / MOSE face of the segment
     integer :: nmyF = 0, nmyM = 0                ! 104 faces of each solver on this rank
     integer,  allocatable :: myF(:), myM(:)      ! their 104 face numbers
-    real(R8), allocatable :: xM(:,:)             ! MOSE partner cell, as the FUSS face sees it: T, P(1:nsc) (1+nsc, ns)
-    real(R8), allocatable :: xF(:,:)             ! FUSS partner cell, as the MOSE face sees it: T, matID (NXF, ns)
+    real(R8), allocatable :: xM(:,:)             ! MOSE partner cell, as the FUSS face sees it: T, half, P(1:nsc) (1+NHALF+nsc, ns)
+    real(R8), allocatable :: xF(:,:)             ! FUSS partner cell, as the MOSE face sees it: T, half, matID (NXF, ns)
     integer :: npeer = 0                         ! ranks this one shares segments with
     type(peer_type), allocatable :: peer(:)
   end type segment_set_type
@@ -79,7 +90,6 @@ module hydraMF_Lib_Coupling_Segments
     real(R8) :: c(3)                             ! centre
     real(R8) :: n(3)                             ! unit normal, out of the own cell
     real(R8) :: d                                ! distance of the own cell centre, as the 103 routines see it
-    real(R8) :: ortho                            ! tangential / normal metric rows on the face normal
   end type face_geo_type
 
   type :: int_grid_type
@@ -91,13 +101,14 @@ contains
   !> Build the segments of the 104 interface of one level, once at setup.
   !> The partner faces of a FUSS 104 face are searched among the MOSE cells that
   !> ATLAS lists as donors of its first ghost row (the MOSE cells next to the
-  !> interface overlap that ghost cell); a MOSE 104 face of such a cell makes a
+  !> interface overlap that ghost cell); an MOSE 104 face of such a cell makes a
   !> segment when it looks at the FUSS face, lies on the same surface and the
   !> two faces overlap. Every 104 face must end up with at least one segment.
   !> Collective under MPI: every rank calls it and builds the same segments.
   subroutine Setup_Coupling_Segments ( FUSS_domain, MOSE_domain, level )
     use MOSE_Global_m, only: nprim, nsc
     use FUSS_Mod_MPI,  only: mpi_is_root, mpi_abort_all, mpi_rank_, mpi_allreduce_sum_r8_array
+    use hydraMF_Mod_CouplingExchange, only: K_WALL_UNSET
     implicit none
     type(FUSS_domain_type), intent(in) :: FUSS_domain
     type(MOSE_domain_type), intent(in) :: MOSE_domain
@@ -261,14 +272,17 @@ contains
       call mpi_abort_all(trim(msg))
     endif
 
-    allocate ( set%qF(set%ns), set%fM(nprim, set%ns), set%xM(1+nsc, set%ns), set%xF(NXF, set%ns) )
+    allocate ( set%qF(set%ns), set%fM(nprim, set%ns), set%kS(set%ns) )
+    allocate ( set%xM(1+NHALF+nsc, set%ns), set%xF(NXF, set%ns) )
     set%qF = 0d0
     set%fM = 0d0
+    ! No fluid wall conductivity yet: both wall routines fall back to their local estimate
+    set%kS = K_WALL_UNSET
     set%xM = 0d0
     set%xF = 0d0
 
     ! Ranks of the two faces of every segment, and what this rank shares with the others
-    call Setup_Ranks ( set, FUSS_domain, MOSE_domain, 1+nsc )
+    call Setup_Ranks ( set, FUSS_domain, MOSE_domain, 1+NHALF+nsc )
     set%ready = .true.
 
     if (mpi_is_root) then
@@ -279,10 +293,6 @@ contains
       if (any(set%oF /= set%oM)) then
         write(*,'(A,I0,A)') '   ', count(set%oF /= set%oM), ' segments have their two faces on different MPI ranks'
       endif
-      if (max(maxval(gF%ortho), maxval(gM%ortho)) > 1d-3) then
-        write(*,'(A,ES9.2,A)') '   WARNING: the mesh is not orthogonal at the 104 interface (tangential/normal metric ', &
-          max(maxval(gF%ortho), maxval(gM%ortho)), '): this version neglects the partner tangential terms.'
-      endif
     endif
 
   contains
@@ -290,21 +300,22 @@ contains
     !> Segment between FUSS face e and MOSE face m, if they overlap
     subroutine Try_Segment ( e, m )
       integer, intent(in) :: e, m
-      real(R8) :: As, AF, AM, tol
+      real(R8) :: As, AF, AM, tol, xs(3)
 
       ! The two faces must look at each other and lie on the same surface
       if (dot_product(gF(e)%n, gM(m)%n) > -0.5d0) return !  Le due facce si guardano?
       tol = 0.05d0 * (gF(e)%d + gM(m)%d)
       if (abs(dot_product(gM(m)%c - gF(e)%c, gF(e)%n)) > tol) return !   Le due facce sono sulla stessa superficie?
 
-      call Overlap_Area ( gM(m)%p, gF(e)%p, gF(e)%c, gF(e)%n, As, AM, AF ) ! Le due facce si sovrappongono
+      call Overlap_Area ( gM(m)%p, gF(e)%p, gF(e)%c, gF(e)%n, As, AM, AF, xs ) ! Le due facce si sovrappongono
       if (As <= 1d-9 * AF) return
 
       ! Overlap_Area funziona così:
       !proietta i due quadrilateri sul piano della faccia FUSS, usando una base 2D (e1, e2);
       !li orienta entrambi in senso antiorario;
       !ritaglia il quadrilatero MOSE con quello FUSS usando l'algoritmo di Sutherland–Hodgman;
-      !calcola con la formula di Gauss (shoelace) l'area dell'intersezione As e le aree proiettate AM e AF.
+      !calcola con la formula di Gauss (shoelace) l'area dell'intersezione As e le aree proiettate AM e AF,
+      !e il baricentro xs dell'intersezione (sul piano della faccia FUSS).
 
       if (set%ns == size(set%sF)) call Grow_Segments ( set, 2*size(set%sF) )
       set%ns = set%ns + 1
@@ -312,8 +323,8 @@ contains
       set%sM(set%ns) = set%eM(m)
       set%wF(set%ns) = As / AF
       set%wM(set%ns) = As / AM
-      set%dF(set%ns) = gF(e)%d
-      set%dM(set%ns) = gM(m)%d
+      set%xsF(:,set%ns) = xs - gF(e)%c
+      set%xsM(:,set%ns) = xs - gM(m)%c
     end subroutine Try_Segment
 
   end subroutine Setup_Coupling_Segments
@@ -394,13 +405,16 @@ contains
   end subroutine Setup_Ranks
 
 
-  !> Coupled fluxes of the 104 faces, replacing the per-face fluxes of the old
-  !> chimera blend. On every segment the FUSS and MOSE estimates come from the 103
-  !> routines with the partner cell; each face then takes, summed over its
-  !> segments, 0.5*own - 0.5*partner energy flux, as the 103 pair of faces does.
+  !> Coupled fluxes of the 104 faces. On every segment the FUSS and MOSE estimates
+  !> come from the 103 routines with the partner cell; each face then takes,
+  !> summed over its segments, 0.5*own - 0.5*partner energy flux, as the 103 pair
+  !> of faces does. As in Compute_FUSS_Flux / Compute_MOSE_Flux, the FUSS side
+  !> reads the fluid wall conductivity of the previous call and the MOSE side
+  !> reads the same value, then stores the one it has just evaluated.
   !> Each rank works on the faces it owns. Collective under MPI.
   subroutine Compute_Coupling_Segment_Fluxes ( FUSS_domain, MOSE_domain, level )
     use MOSE_Global_m, only: nprim, np
+    use hydraMF_Mod_CouplingExchange, only: K_WALL_UNSET
     implicit none
     type(FUSS_domain_type), intent(inout) :: FUSS_domain
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
@@ -408,7 +422,7 @@ contains
     ! Local
     type(segment_set_type), pointer :: set
     integer  :: m, e, k, sg
-    real(R8) :: flux, fluxv(nprim), acc, accv(nprim), accE, wsum
+    real(R8) :: flux, fluxv(nprim), acc, accv(nprim), accE, wsum, k_new
 
     if (level > max_levels) return
     set => segs(level)
@@ -429,19 +443,23 @@ contains
     enddo
     !$omp end parallel do
 
-    ! MOSE estimate on every segment (the MOSE routine also sets the RANS ghost of its face)
-    !$omp parallel do schedule (dynamic, 16) private(m, e, k, sg, fluxv)
+    ! MOSE estimate on every segment (the MOSE routine also sets the RANS ghost of its
+    ! face), then the fresh wall conductivity of the segment for the next call
+    !$omp parallel do schedule (dynamic, 16) private(m, e, k, sg, fluxv, k_new)
     do m = 1, set%nmyM
       e = set%myM(m)
       do k = set%pM(e), set%pM(e+1) - 1
         sg = set%lM(k)
-        call Eval_MOSE_Segment ( set, sg, MOSE_domain, fluxv )
+        k_new = K_WALL_UNSET
+        call Eval_MOSE_Segment ( set, sg, MOSE_domain, fluxv, k_new = k_new )
         set%fM(:,sg) = fluxv * set%wM(sg)
+        set%kS(sg) = k_new
       enddo
     enddo
     !$omp end parallel do
 
-    ! Segments split between two ranks: each side gets the estimate of the other
+    ! Segments split between two ranks: each side gets the estimate of the other,
+    ! the FUSS side also the fresh kS for the next call
     call Exchange_Estimates ( set )
 
     ! Exchange as in 103, segment by segment: what one side takes, the other gives
@@ -526,8 +544,9 @@ contains
   end subroutine Segment_Wall_Output_FUSS
 
 
-  !> Wall output of a MOSE 104 face of this rank: the wall variables of its
-  !> segments, averaged by area, with the partner cells of the last Update_Partners
+  !> Wall output of an MOSE 104 face of this rank: the wall variables of its
+  !> segments, averaged by area, with the partner cells of the last Update_Partners.
+  !> The stored wall conductivity is read, not advanced, as in MF_IO_Wall.
   subroutine Segment_Wall_Output_MOSE ( MOSE_domain, level, j, Ovar )
     use MOSE_Global_m, only: nprim
     implicit none
@@ -560,6 +579,9 @@ contains
 
   !> FUSS side of segment sg: the 103 routine with the MOSE cell of the segment as
   !> partner (its state in xM). new_flux is the flux through the whole FUSS face, as in 103.
+  !> Both halves of the balance are taken at the centroid of the segment: the MOSE one
+  !> moved there from the centre of its face with its gradient along the wall, the FUSS
+  !> one inside the wall routine (dx_seg).
   subroutine Eval_FUSS_Segment ( set, sg, FUSS_domain, new_flux, Ovar )
     use hydraMF_Lib_BC_Coupled_Wall_Temperature, only: FUSS_BC_Coupled_Wall_Temperature
     use MOSE_Global_m, only: nsc
@@ -570,9 +592,8 @@ contains
     real(R8), intent(out)                 :: new_flux
     real(R8), optional, intent(out)       :: Ovar(2)
     ! Local
-    integer  :: i, Bm, Im, Jm, Km, Fm, dir
-    real(R8) :: P_con(nsc), Tg(6)
-    type(FUSS_tensor_3D_type) :: Mcon
+    integer  :: i, Bm, Im, Jm, Km, Fm
+    real(R8) :: P_con(nsc), T_con, A_con, Teff_con
 
     i  = set%sF(sg)
     Bm = FUSS_domain % bc(i) % b
@@ -582,24 +603,23 @@ contains
     Fm = FUSS_domain % bc(i) % f
 
     ! Partner: the MOSE cell that owns the other face of the segment
-    Tg    = set%xM(1,sg)
-    P_con = set%xM(2:1+nsc,sg)
-
-    ! Partner metric, normal distance only: the normal row of the own cell rescaled
-    ! so that the routine sees the partner cell centre at dM; tangential rows zero
-    dir = (Fm+1)/2
-    Mcon%c = 0d0
-    Mcon%c(dir,:) = FUSS_domain % blk(Bm) % M(Im,Jm,Km) % c(dir,:) * set%dF(sg) / set%dM(sg)
+    T_con    = set%xM(1,sg)
+    A_con    = set%xM(2,sg)
+    Teff_con = set%xM(3,sg) + dot_product ( set%xM(4:6,sg), set%xsM(:,sg) )
+    P_con    = set%xM(2+NHALF:1+NHALF+nsc,sg)
 
     call FUSS_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, FUSS_domain % blk(Bm), &
-                                           0, 0, 0, 0, P_con, Mcon, Tg, new_flux, Ovar )
+                                           P_con, T_con, A_con, Teff_con, new_flux, Ovar, &
+                                           k_fluid_wall = set%kS(sg), dx_seg = set%xsF(:,sg) )
 
   end subroutine Eval_FUSS_Segment
 
 
   !> MOSE side of segment sg: the 103 routine with the FUSS cell of the segment as
-  !> partner (its state in xF). new_flux is the flux through the whole MOSE face, as in 103.
-  subroutine Eval_MOSE_Segment ( set, sg, MOSE_domain, new_flux, Ovar )
+  !> partner (its state in xF). new_flux is the flux through the whole MOSE face, as
+  !> in 103; k_new is the fluid wall conductivity the routine has just evaluated on
+  !> the segment.
+  subroutine Eval_MOSE_Segment ( set, sg, MOSE_domain, new_flux, Ovar, k_new )
     use hydraMF_Lib_BC_Coupled_Wall_Temperature, only: MOSE_BC_Coupled_Wall_Temperature
     use MOSE_Global_m, only: nprim
     implicit none
@@ -608,10 +628,10 @@ contains
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
     real(R8), intent(out)                 :: new_flux(nprim)
     real(R8), optional, intent(out)       :: Ovar(8)
+    real(R8), optional, intent(out)       :: k_new
     ! Local
-    integer  :: j, Bm, Im, Jm, Km, Fm, dir
-    real(R8) :: Pg(1,6), matID_con
-    type(MOSE_tensor_3D_type) :: Mcon
+    integer  :: j, Bm, Im, Jm, Km, Fm
+    real(R8) :: matID_con, T_con, A_con, Teff_con
 
     j  = set%sM(sg)
     Bm = MOSE_domain % bc(j) % b
@@ -620,26 +640,26 @@ contains
     Km = MOSE_domain % bc(j) % k
     Fm = MOSE_domain % bc(j) % f
 
-    ! Partner: the FUSS cell that owns the other face of the segment
-    Pg        = set%xF(1,sg)
-    matID_con = set%xF(2,sg)
-
-    ! Partner metric, normal distance only (see Eval_FUSS_Segment)
-    dir = (Fm+1)/2
-    Mcon%c = 0d0
-    Mcon%c(dir,:) = MOSE_domain % blk(Bm) % M(Im,Jm,Km) % c(dir,:) * set%dM(sg) / set%dF(sg)
+    ! Partner: the FUSS cell that owns the other face of the segment, its half of the
+    ! balance moved to the centroid of the segment (see Eval_FUSS_Segment)
+    T_con     = set%xF(1,sg)
+    A_con     = set%xF(2,sg)
+    Teff_con  = set%xF(3,sg) + dot_product ( set%xF(4:6,sg), set%xsF(:,sg) )
+    matID_con = set%xF(2+NHALF,sg)
 
     call MOSE_BC_Coupled_Wall_Temperature( Im, Jm, Km, Fm, MOSE_domain % blk(Bm), &
-                                           0, 0, 0, 0, matID_con, Mcon, Pg, new_flux, Ovar, &
-                                           k_rough = MOSE_domain % bc(j) % k_rough )
+                                           matID_con, T_con, A_con, Teff_con, new_flux, Ovar, &
+                                           k_fluid_wall = set%kS(sg), k_fluid_wall_new = k_new, &
+                                           dx_seg = set%xsM(:,sg), k_rough = MOSE_domain % bc(j) % k_rough )
 
   end subroutine Eval_MOSE_Segment
 
 
   !> Partner cell of every segment of the faces of this rank: a FUSS face reads
-  !> T and P(1:nsc) of the MOSE cell (xM), a MOSE face T and matID of the FUSS cell
-  !> (xF). The rank that owns the partner cell reads it: in place when both faces
-  !> of the segment are here, and sends it over when they are not.
+  !> T, the half of the balance and P(1:nsc) of the MOSE cell (xM), an MOSE face T,
+  !> the half of the balance and matID of the FUSS cell (xF). The rank that owns the
+  !> partner cell computes it: in place when both faces of the segment are here, and
+  !> sends it over when they are not.
   subroutine Update_Partners ( set, FUSS_domain, MOSE_domain )
     use MOSE_Global_m, only: nsc
     implicit none
@@ -649,7 +669,7 @@ contains
     ! Local
     integer :: m, e, k, sg, p, n, nxm
 
-    nxm = 1 + nsc
+    nxm = 1 + NHALF + nsc
 
     ! Both faces on this rank
     !$omp parallel do schedule (dynamic, 16) private(m, e, k, sg)
@@ -701,13 +721,14 @@ contains
 
 
   !> The estimate of the other side, for the segments split between two ranks:
-  !> the FUSS face gets the MOSE energy flux fM(np), the MOSE face the FUSS flux qF
+  !> the FUSS face gets the MOSE energy flux fM(np) and the fresh kS, the MOSE
+  !> face the FUSS flux qF
   subroutine Exchange_Estimates ( set )
     use MOSE_Global_m, only: np
     implicit none
     type(segment_set_type), intent(inout) :: set
     ! Local
-    integer :: p, k
+    integer :: p, k, n
 
     if (set%npeer == 0) return
 
@@ -716,21 +737,27 @@ contains
         do k = 1, size(pr%sFM)
           pr%sbuf(k) = set%qF(pr%sFM(k))
         enddo
+        n = size(pr%sFM)
         do k = 1, size(pr%sMF)
-          pr%sbuf(size(pr%sFM)+k) = set%fM(np,pr%sMF(k))
+          pr%sbuf(n+1) = set%fM(np,pr%sMF(k))
+          pr%sbuf(n+2) = set%kS(pr%sMF(k))
+          n = n + 2
         enddo
       end associate
     enddo
 
-    call Exchange ( set, 1, 1, TAG_SEG_FLUX )
+    call Exchange ( set, 1, 2, TAG_SEG_FLUX )
 
     do p = 1, set%npeer
       associate ( pr => set%peer(p) )
         do k = 1, size(pr%sMF)
           set%qF(pr%sMF(k)) = pr%rbuf(k)
         enddo
+        n = size(pr%sMF)
         do k = 1, size(pr%sFM)
-          set%fM(np,pr%sFM(k)) = pr%rbuf(size(pr%sMF)+k)
+          set%fM(np,pr%sFM(k)) = pr%rbuf(n+1)
+          set%kS(pr%sFM(k))    = pr%rbuf(n+2)
+          n = n + 2
         enddo
       end associate
     enddo
@@ -742,9 +769,9 @@ contains
   !> The message from rank a to rank b carries first the segments with the FUSS
   !> face on a and the MOSE face on b (sFM on a, sMF on b), then those with the
   !> MOSE face on a and the FUSS face on b (sMF on a, sFM on b): nf reals per
-  !> segment for what a FUSS face sends, nm for what a MOSE face sends. Both ranks
+  !> segment for what a FUSS face sends, na for what an MOSE face sends. Both ranks
   !> list the segments in increasing order, so the two sides line up.
-  subroutine Exchange ( set, nf, nm, tag )
+  subroutine Exchange ( set, nf, na, tag )
 #ifdef USE_MPI
     use mpi
     use FUSS_Mod_MPI,     only: check_mpi_error
@@ -752,7 +779,7 @@ contains
 #endif
     implicit none
     type(segment_set_type), intent(inout) :: set
-    integer, intent(in)                   :: nf, nm, tag
+    integer, intent(in)                   :: nf, na, tag
 #ifdef USE_MPI
     ! Local
     integer :: p, cnt, ierr
@@ -763,13 +790,13 @@ contains
 
     call timer_xchg_begin()
     do p = 1, set%npeer
-      cnt = nf * size(set%peer(p)%sMF) + nm * size(set%peer(p)%sFM)
+      cnt = nf * size(set%peer(p)%sMF) + na * size(set%peer(p)%sFM)
       call MPI_IRECV ( set%peer(p)%rbuf, cnt, MPI_DOUBLE_PRECISION, set%peer(p)%rank, tag, &
                        MPI_COMM_WORLD, req(p), ierr )
       call check_mpi_error ( ierr )
     enddo
     do p = 1, set%npeer
-      cnt = nf * size(set%peer(p)%sFM) + nm * size(set%peer(p)%sMF)
+      cnt = nf * size(set%peer(p)%sFM) + na * size(set%peer(p)%sMF)
       call MPI_ISEND ( set%peer(p)%sbuf, cnt, MPI_DOUBLE_PRECISION, set%peer(p)%rank, tag, &
                        MPI_COMM_WORLD, req(set%npeer+p), ierr )
       call check_mpi_error ( ierr )
@@ -779,50 +806,63 @@ contains
     call timer_xchg_end()
 #else
     ! Serial: no other rank, npeer is always 0
-    if (set%npeer > 0 .and. nf + nm + tag < 0) return
+    if (set%npeer > 0 .and. nf + na + tag < 0) return
 #endif
 
   end subroutine Exchange
 
 
-  !> State of the MOSE cell of 104 face j, as the FUSS side reads it: T, P(1:nsc)
+  !> State of the MOSE cell of 104 face j, as the FUSS side reads it: T, the half of the
+  !> balance of the face (A, Teff, gradient of T in the plane of the face), P(1:nsc)
   subroutine MOSE_State ( MOSE_domain, j, x )
     use MOSE_Global_m, only: nsc, np
     use FLINT_Lib_Thermodynamic, only: co_rotot_Rtot, EOS
+    use hydraMF_Lib_Metrics, only: MOSE_Wall_Half
     implicit none
     type(MOSE_domain_type), intent(in) :: MOSE_domain
     integer, intent(in)                :: j
     real(R8), intent(out)              :: x(:)
     ! Local
     integer  :: b, ic, jc, kc
-    real(R8) :: rho, Rgas
+    real(R8) :: A, Teff, gpar(3), rho, Rgas
 
     b  = MOSE_domain % bc(j) % b
     ic = MOSE_domain % bc(j) % i
     jc = MOSE_domain % bc(j) % j
     kc = MOSE_domain % bc(j) % k
-    x(2:1+nsc) = MOSE_domain % blk(b) % P (1:nsc,ic,jc,kc)
-    call co_rotot_Rtot ( x(2:1+nsc), rho, Rgas )
-    x(1) = EOS( p=MOSE_domain%blk(b)%P(np,ic,jc,kc), rho=rho, R=Rgas )
+    call MOSE_Wall_Half ( MOSE_domain % blk(b), ic, jc, kc, MOSE_domain % bc(j) % f, A, Teff, gpar )
+    call co_rotot_Rtot ( MOSE_domain % blk(b) % P(1:nsc,ic,jc,kc), rho, Rgas )
+    x(1)   = EOS ( p=MOSE_domain%blk(b)%P(np,ic,jc,kc), rho=rho, R=Rgas )
+    x(2)   = A
+    x(3)   = Teff
+    x(4:6) = gpar
+    x(2+NHALF:1+NHALF+nsc) = MOSE_domain % blk(b) % P (1:nsc,ic,jc,kc)
 
   end subroutine MOSE_State
 
 
-  !> State of the FUSS cell of 104 face i, as the MOSE side reads it: T, matID
+  !> State of the FUSS cell of 104 face i, as the MOSE side reads it: T, the half of the
+  !> balance of the face (A, Teff, gradient of T in the plane of the face), matID
   subroutine FUSS_State ( FUSS_domain, i, x )
+    use hydraMF_Lib_Metrics, only: FUSS_Wall_Half
     implicit none
     type(FUSS_domain_type), intent(in) :: FUSS_domain
     integer, intent(in)                :: i
     real(R8), intent(out)              :: x(:)
     ! Local
-    integer :: b, ic, jc, kc
+    integer  :: b, ic, jc, kc
+    real(R8) :: A, Teff, gpar(3)
 
     b  = FUSS_domain % bc(i) % b
     ic = FUSS_domain % bc(i) % i
     jc = FUSS_domain % bc(i) % j
     kc = FUSS_domain % bc(i) % k
-    x(1) = FUSS_domain % blk(b) % T     (ic,jc,kc)
-    x(2) = FUSS_domain % blk(b) % matID (ic,jc,kc)
+    call FUSS_Wall_Half ( FUSS_domain % blk(b), ic, jc, kc, FUSS_domain % bc(i) % f, A, Teff, gpar )
+    x(1)       = FUSS_domain % blk(b) % T     (ic,jc,kc)
+    x(2)       = A
+    x(3)       = Teff
+    x(4:6)     = gpar
+    x(2+NHALF) = FUSS_domain % blk(b) % matID (ic,jc,kc)
 
   end subroutine FUSS_State
 
@@ -919,14 +959,13 @@ contains
     integer,  intent(in) :: Fm
     type(face_geo_type)  :: geo
     ! Local
-    integer  :: dir, h, t1, t2
+    integer  :: dir, h
     real(R8) :: cc(3), mn
 
     ! p(3,4)	i 4 nodi della faccia, ordinati lungo il bordo
     ! c(3)	il centro della faccia (media dei nodi)
     ! n(3)	la normale unitaria, uscente dalla cella proprietaria
     ! d	la distanza centro cella–faccia, ricavata dalla metrica come nel 103
-    ! ortho	il peso dei termini tangenziali rispetto a quello normale (0 se la mesh è ortogonale)
 
     dir = (Fm+1)/2        ! Direzione normale alla faccia
     h   = 1 - mod(Fm,2)   ! 0 = faccia bassa/sinistra, 1 = faccia alta/destra
@@ -954,10 +993,7 @@ contains
     if (dot_product ( geo%n, geo%c - cc ) < 0d0) geo%n = -geo%n
 
     mn = abs ( dot_product ( M(dir,:), N ) )
-    geo%d = 0.5d0 / mn ! Distanza dal centro cella dal centro faccia
-    t1 = mod(dir,3) + 1
-    t2 = mod(dir+1,3) + 1
-    geo%ortho = max ( abs(dot_product(M(t1,:), N)), abs(dot_product(M(t2,:), N)) ) / mn ! indice non ortogonalità
+    geo%d = 0.5d0 / mn ! Distanza dal centro cella dal centro faccia (usata per la tolleranza di Try_Segment)
 
   end function Face_Geometry
 
@@ -972,7 +1008,6 @@ contains
     buf(13:15) = geo%c
     buf(16:18) = geo%n
     buf(19)    = geo%d
-    buf(20)    = geo%ortho
 
   end subroutine Pack_Geo
 
@@ -986,21 +1021,20 @@ contains
     geo%c     = buf(13:15)
     geo%n     = buf(16:18)
     geo%d     = buf(19)
-    geo%ortho = buf(20)
 
   end function Unpack_Geo
 
 
   !> Area of the overlap of two convex quads pa and pb, both projected on the plane
-  !> through c with normal n (Sutherland-Hodgman clipping of pa by pb), and the
-  !> projected areas of the two quads
-  subroutine Overlap_Area ( pa, pb, c, n, area, area_a, area_b )
+  !> through c with normal n (Sutherland-Hodgman clipping of pa by pb), the
+  !> projected areas of the two quads and the centroid of the overlap (on that plane)
+  subroutine Overlap_Area ( pa, pb, c, n, area, area_a, area_b, centre )
     implicit none
     real(R8), intent(in)  :: pa(3,4), pb(3,4), c(3), n(3)
-    real(R8), intent(out) :: area, area_a, area_b
+    real(R8), intent(out) :: area, area_a, area_b, centre(3)
     ! Local
-    real(R8) :: e1(3), e2(3), a(2,16), b(2,4), out(2,16), s(2), t(2), p(2), q(2), sp, sq
-    integer  :: na, no, k, m
+    real(R8) :: e1(3), e2(3), a(2,16), b(2,4), out(2,16), s(2), t(2), p(2), q(2), sp, sq, cr, g(2)
+    integer  :: na, no, k, m, kn
 
     e1 = pb(:,2) - pb(:,1)
     e1 = e1 - dot_product ( e1, n ) * n
@@ -1041,7 +1075,21 @@ contains
     enddo
 
     area = 0d0
-    if (na >= 3) area = Shoelace(a, na)
+    centre = c
+    if (na >= 3) then
+      area = Shoelace(a, na)
+      ! Centroid of the polygon: sum (a_k + a_k+1) (a_k x a_k+1) / (6 area)
+      if (abs(area) > 0d0) then
+        g = 0d0
+        do k = 1, na
+          kn = mod(k,na) + 1
+          cr = a(1,k)*a(2,kn) - a(1,kn)*a(2,k)
+          g  = g + ( a(:,k) + a(:,kn) ) * cr
+        enddo
+        g = g / ( 6d0 * area )
+        centre = c + g(1) * e1 + g(2) * e2
+      endif
+    endif
 
   end subroutine Overlap_Area
 
@@ -1079,18 +1127,18 @@ contains
     integer, intent(in)                   :: n
     ! Local
     integer,  allocatable :: itmp(:)
-    real(R8), allocatable :: rtmp(:)
+    real(R8), allocatable :: rtmp(:), rtmp2(:,:)
 
     if (.not. allocated(set%sF)) then
-      allocate ( set%sF(n), set%sM(n), set%wF(n), set%wM(n), set%dF(n), set%dM(n) )
+      allocate ( set%sF(n), set%sM(n), set%wF(n), set%wM(n), set%xsF(3,n), set%xsM(3,n) )
       return
     endif
     allocate ( itmp(n) ); itmp(1:set%ns) = set%sF(1:set%ns); call move_alloc ( itmp, set%sF )
     allocate ( itmp(n) ); itmp(1:set%ns) = set%sM(1:set%ns); call move_alloc ( itmp, set%sM )
     allocate ( rtmp(n) ); rtmp(1:set%ns) = set%wF(1:set%ns); call move_alloc ( rtmp, set%wF )
     allocate ( rtmp(n) ); rtmp(1:set%ns) = set%wM(1:set%ns); call move_alloc ( rtmp, set%wM )
-    allocate ( rtmp(n) ); rtmp(1:set%ns) = set%dF(1:set%ns); call move_alloc ( rtmp, set%dF )
-    allocate ( rtmp(n) ); rtmp(1:set%ns) = set%dM(1:set%ns); call move_alloc ( rtmp, set%dM )
+    allocate ( rtmp2(3,n) ); rtmp2(:,1:set%ns) = set%xsF(:,1:set%ns); call move_alloc ( rtmp2, set%xsF )
+    allocate ( rtmp2(3,n) ); rtmp2(:,1:set%ns) = set%xsM(:,1:set%ns); call move_alloc ( rtmp2, set%xsM )
 
   end subroutine Grow_Segments
 
@@ -1106,7 +1154,7 @@ contains
     set%nmyF = 0
     set%nmyM = 0
     set%npeer = 0
-    if (allocated(set%sF))   deallocate ( set%sF, set%sM, set%wF, set%wM, set%dF, set%dM )
+    if (allocated(set%sF))   deallocate ( set%sF, set%sM, set%wF, set%wM, set%xsF, set%xsM )
     if (allocated(set%eF))   deallocate ( set%eF )
     if (allocated(set%eM))   deallocate ( set%eM )
     if (allocated(set%rowF)) deallocate ( set%rowF )
@@ -1115,6 +1163,7 @@ contains
     if (allocated(set%pM))   deallocate ( set%pM, set%lM )
     if (allocated(set%qF))   deallocate ( set%qF )
     if (allocated(set%fM))   deallocate ( set%fM )
+    if (allocated(set%kS))   deallocate ( set%kS )
     if (allocated(set%oF))   deallocate ( set%oF, set%oM )
     if (allocated(set%myF))  deallocate ( set%myF, set%myM )
     if (allocated(set%xM))   deallocate ( set%xM, set%xF )
