@@ -250,9 +250,9 @@ Both variants track the correlation over the whole plate and across all three de
 
 | Variant | $k_s/k_f$ | $T_w(L/2)$ correlation | $T_w(L/2)$ Hydra | max $\lvert e \rvert$ | RMSE | max $\lvert e \rvert / \Delta T$ |
 |---|---:|---:|---:|---:|---:|---:|
-| `hydra-MF` | 40 | 363.796 K | 365.780 K | 2.009 K | 1.830 K | 2.0 % |
-| `hydra-MF` | 400 | 389.493 K | 389.852 K | 0.678 K | 0.362 K | 0.68 % |
-| `hydra-MF` | 4000 | 392.648 K | 392.684 K | 0.176 K | 0.047 K | 0.18 % |
+| `hydra-MF` | 40 | 363.796 K | 365.779 K | 2.007 K | 1.828 K | 2.0 % |
+| `hydra-MF` | 400 | 389.493 K | 389.852 K | 0.686 K | 0.362 K | 0.69 % |
+| `hydra-MF` | 4000 | 392.648 K | 392.684 K | 0.178 K | 0.047 K | 0.18 % |
 | `hydra-AF` | 40 | 363.796 K | 365.427 K | 1.651 K | 1.497 K | 1.7 % |
 | `hydra-AF` | 400 | 389.493 K | 389.804 K | 1.126 K | 0.357 K | 1.1 % |
 | `hydra-AF` | 4000 | 392.648 K | 392.679 K | 0.259 K | 0.053 K | 0.26 % |
@@ -273,14 +273,14 @@ The deviation is largest in the strongly conjugate case and falls by roughly an 
 
 | $k_s/k_f$ | `hydra-MF` | `hydra-AF` |
 |---:|---:|---:|
-| 40 | $2.8\times10^{-8}$ K | $1.1\times10^{-13}$ K |
-| 400 | $6.9\times10^{-10}$ K | $1.1\times10^{-13}$ K |
-| 4000 | $3.5\times10^{-11}$ K | $5.7\times10^{-14}$ K |
+| 40 | $1.1\times10^{-13}$ K | $1.1\times10^{-13}$ K |
+| 400 | $1.1\times10^{-13}$ K | $1.1\times10^{-13}$ K |
+| 4000 | $5.7\times10^{-14}$ K | $5.7\times10^{-14}$ K |
 
 Temperature continuity across the interface holds to round-off. This is the coupling's core invariant, and it is satisfied far below any physical or discretization error.
 
 !!! warning "Reading the solid-side zone"
-    Only `Tw` and `qw` are meaningful in the solid zone. Its `y+`, `tauX`, `tauY`, `tauZ` and `pw` columns are filled with the placeholder constant $1.78625\times10^{-7}$, since those quantities have no solid-side meaning. The interface heat flux `qw` is the shared coupled flux and is written identically to both zones, so it is not an independent continuity check.
+    Only `Tw` and `qw` are meaningful in the solid zone. Its `y+`, `tauX`, `tauY`, `tauZ` and `pw` columns are filled with the placeholder constant $1.78625\times10^{-7}$, since those quantities have no solid-side meaning. The interface heat flux `qw` is the shared coupled flux, written to both zones with opposite signs (each side's outward normal; the two columns sum to zero to 1e-9), so it is not an independent continuity check.
 
 ### Cross-solver consistency
 
@@ -294,9 +294,9 @@ This is the check only Hydra can perform. The two variants solve the same physic
 
 | $k_s/k_f$ | max $\lvert \Delta T_w \rvert$ | RMS $\Delta T_w$ | max $\lvert \Delta T_w \rvert / \Delta T$ |
 |---:|---:|---:|---:|
-| 40 | 0.668 K | 0.342 K | 0.67 % |
-| 400 | 0.693 K | 0.099 K | 0.69 % |
-| 4000 | 0.102 K | 0.013 K | 0.10 % |
+| 40 | 0.651 K | 0.340 K | 0.65 % |
+| 400 | 0.673 K | 0.097 K | 0.67 % |
+| 4000 | 0.099 K | 0.013 K | 0.10 % |
 
 ARES and MOSE agree on the interface temperature to better than 0.7 K out of a 100 K driving difference, everywhere outside the leading-edge cells (shaded; the $k_s/k_f = 40$ curve runs off-scale there). The difference is a smooth, small, negative offset — the real-fluid path runs marginally cooler — rather than a divergence that grows along the plate, which is what a coupling inconsistency would look like.
 
@@ -336,7 +336,7 @@ These are the observed margins rounded up, not tolerances derived from a formal 
 
 ## Reproducing the figures
 
-Every figure and number on this page is derived from the frozen wall solutions in each suite's `reference/` directory, so no solver run is required:
+Every figure and number on this page is derived from the frozen wall solutions in each suite's `reference/` directory, so no solver run is required. Both sets are runs of 2026-11-20 with the current coupling (each side of the interface with its own solver's diffusive metric): hydra-AF with ARES 1.0.0 and FUSS 1.0.0, hydra-MF with MOSE 1e5cc8d (FAS multigrid) and FUSS 1.0.0, 200 000 coupled steps per case.
 
 ```bash
 python3 test/make-vv-figures.py     # regenerates docs/vv/images/*.svg and prints the tables
