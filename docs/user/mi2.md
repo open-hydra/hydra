@@ -410,7 +410,10 @@ At each coupling step in which it runs, each condensed solver receives the gas s
   which scales a particle inlet that injects in proportion to the gas (particle boundary 401). The mass flow is the
   one MOSE computes at the face for gas boundaries 401, 402, 405, 406 and 407, and the prescribed mass flux times the
   face area for 403, 404 and 420 (for a solid-propellant grain in its inflow mode, the burn law's flux at the cell
-  pressure). A particle inlet 401 on a gas boundary of another kind stops the run.
+  pressure). A particle inlet 401 on a gas boundary of another kind stops the run. When IGLOO solves before MOSE's
+  first iteration of the run (`MOSE-iter = 0` in the first cycle, or a restart that runs IGLOO first), the coupler
+  first has MOSE evaluate the finest grid as an iteration does before its update (fluxes and boundary records, no
+  update, no condensed source): the mass flow is then that of the initial field.
 - **ICE**: density, velocity, temperature, gas constant, ratio of specific heats, viscosity and conductivity.
 
 When IGLOO runs, the gas boundary records of `INPUT/<gas>-bc.txt` must be grouped by block, then by face 1 to 6.

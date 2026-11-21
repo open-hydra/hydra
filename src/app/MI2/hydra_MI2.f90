@@ -98,6 +98,8 @@ program hydra_MI2_program
   integer :: level, levelSrc = 0
   type(coarse_src_t) :: coarseSrc
   logical :: fineStale = .false.
+  !> The finest grid's boundary records hold MOSE's evaluation of its gas (after an iteration there, or a fill)
+  logical :: gasEvaluated = .false.
 
   call Print_Build_Stamp()
 
@@ -444,6 +446,7 @@ program hydra_MI2_program
           ! on a coarse level, the condensed phases' sources restricted to it after they or the level changed
           if ( level > 1 .and. level /= levelSrc ) call Restrict_Sources()
           call MOSE%solve( MOSE_simulation, MOSE_external_routine )
+          if ( level == 1 ) gasEvaluated = .true.
           if ( lastIter ) then
             if ( level == 1 ) then
               MOSE_simulation%domain(1)%itermax = itermaxKept
@@ -523,7 +526,9 @@ program hydra_MI2_program
             call IGLOO%reset_state()
           endif
 
-          ! gas state in, then solve
+          ! gas state in, then solve; before MOSE's first iteration of the run its boundary records (the inflow mass
+          ! flow) are not computed yet
+          if ( .not. gasEvaluated ) call Evaluate_Finest_Grid()
           call MOSExIGLOO( MOSE_simulation%domain(1), IGLOO )
           if ( hydra_MI2_obj%report ) write(*,'(A,ES24.16,I10)') ' [MI2-report] igloo-inlet-mdot', &
                                                                  mdotHanded, nHanded
@@ -776,13 +781,9 @@ contains
   end subroutine MOSE_external_routine
 
 
-  !> The finest grid filled from the coarser level MOSE stepped: its state prolongated, then what an iteration there
-  !  computes before its update (derived variables, dtlocal, ghosts, fluxes, boundary records), without the sources.
+  !> The finest grid filled from the coarser level MOSE stepped: its state prolongated, then evaluated.
   subroutine Fill_Finest_Grid()
-    use MOSE_Mod_Multigrid,       only: Prolongation
-    use MOSE_Lib_Preconditioning, only: Update_Derived_Variables
-    use MOSE_Mod_dt,              only: Compute_dt
-    use MOSE_Mod_Explicit,        only: Assemble_Residual
+    use MOSE_Mod_Multigrid, only: Prolongation
     implicit none
     integer :: m
 
@@ -790,6 +791,20 @@ contains
     do m = MOSE_obj_multigrid%MG_level, 2, -1
       call Prolongation( Fine=MOSE_simulation%domain(m-1), Coarse=MOSE_simulation%domain(m) )
     enddo
+    call Evaluate_Finest_Grid()
+    fineStale = .false.
+
+  end subroutine Fill_Finest_Grid
+
+
+  !> What a MOSE iteration computes on the finest grid before its update (derived variables, dtlocal, ghosts, fluxes,
+  !  boundary records: the inflow mass flow IGLOO takes), without the condensed phases' sources.
+  subroutine Evaluate_Finest_Grid()
+    use MOSE_Lib_Preconditioning, only: Update_Derived_Variables
+    use MOSE_Mod_dt,              only: Compute_dt
+    use MOSE_Mod_Explicit,        only: Assemble_Residual
+    implicit none
+
     !$omp parallel
     call Update_Derived_Variables( MOSE_simulation%domain(1) )
     !$omp end parallel
@@ -799,9 +814,9 @@ contains
     !$omp parallel
     call Assemble_Residual( MOSE_simulation%domain(1), No_Source )
     !$omp end parallel
-    fineStale = .false.
+    gasEvaluated = .true.
 
-  end subroutine Fill_Finest_Grid
+  end subroutine Evaluate_Finest_Grid
 
 
   !> The external routine of the finest grid's residual when it is filled: no source.
