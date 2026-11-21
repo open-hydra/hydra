@@ -29,7 +29,8 @@ program hydra_MI2_program
                                      mdotHanded, nHanded, goneShare, Gone_Delivered, Gone_Stored, Gone_Clock, &
                                      Gone_To_Rate, Source_Clock, Source_Mean, &
                                      smokeIG, smokeIGOn, IGLOO_Smoke_Accumulate, IGLOO_Smoke_Deliver, nSmokeNoState, &
-                                     handRates, ICE_Exchange_File, Write_ICE_Exchange, Read_ICE_Exchange
+                                     handRates, ICE_Exchange_File, Write_ICE_Exchange, Read_ICE_Exchange, &
+                                     coarse_src_t, Restrict_IGLOO_Sources, Restrict_ICE_Sources
   use hydraMI2_Build_Stamp,    only: Print_Build_Stamp
   use Lib_ORION_data,          only: orion_data
 
@@ -90,6 +91,13 @@ program hydra_MI2_program
   integer :: nAuditSkipped      = 0        ! coupling steps whose sources were Eulerian, so not audited
   integer :: nRunMOSE           = 0        ! MOSE iterations of the block that ran: the share of ICE's removals delivered
   real(R8) :: momRep0(3), momRep1(3), enRep0 = 0._R8, enRep1 = 0._R8   ! gas totals around a MOSE block
+  !> MOSE starts on its coarse grids (a level<m>-iter > 0, m > 1) and works down to the finest, as it does alone
+  logical :: coarseStart = .false.
+  !> The level an iteration steps; levelSrc, the level coarseSrc holds sources for (0 after a condensed solve);
+  !  fineStale: the finest grid lags a coarser level MOSE stepped since its last fill
+  integer :: level, levelSrc = 0
+  type(coarse_src_t) :: coarseSrc
+  logical :: fineStale = .false.
 
   call Print_Build_Stamp()
 
@@ -133,25 +141,27 @@ program hydra_MI2_program
   ICE_obj_sim_param%twcoupled = hydra_MI2_obj%run_ICE
 
   call MOSE%setup( MOSE_simulation )
-  ! MOSE's grid levels: only the multigrid cycle is coupled. MOSE then steps its finest grid, the one the coupler hands
-  ! the condensed solvers, from the first iteration; a start on the coarse grids is refused
+  ! MOSE's grid levels: a start on the coarse grids runs as MOSE alone runs it; the multigrid cycle alone steps the
+  ! finest grid, the one the coupler hands the condensed solvers, from the first iteration
   if ( MOSE_obj_multigrid%MGL > 1 ) then
-    if ( trim(MOSE_obj_multigrid%cycle) == 'none' ) then
-      write(*,'(A,I0,A)') ' [ERROR] MI2: [MOSE-Multigrid] levels = ', MOSE_obj_multigrid%MGL, ' without a multigrid '// &
-        'cycle: MOSE would start on its coarse grids, while the coupler hands IGLOO and ICE the gas of MOSE''s finest '// &
-        'grid and adds their sources cell by cell of that grid. Set cycle = v or w (steady runs), or levels = 1'
-      error stop 1
-    endif
     if ( MOSE_obj_multigrid%iter_threshold(1) <= 0 ) then
       write(*,'(A)') ' [ERROR] MI2: [MOSE-Multigrid] level1-iter is not set: with levels > 1 MOSE takes the iteration '// &
         'limit of its finest grid from it, and with its default (0) the gas makes one iteration per coupling step. '// &
         'Set level1-iter (the value iter-threshold would have)'
       error stop 1
     endif
-    MOSE_obj_multigrid%MG_level = 1
-    write(*,'(A,I0,A)') ' MI2: MOSE''s multigrid cycle on ', MOSE_obj_multigrid%MGL, ' levels: MOSE steps its finest '// &
-      'grid from the first iteration; a coarse level takes IGLOO''s and ICE''s sources summed over its sub-cells, in '// &
-      'the residual MOSE restricts to it'
+    coarseStart = any( MOSE_obj_multigrid%iter_threshold(2:MOSE_obj_multigrid%MGL) > 0 )
+    if ( coarseStart ) then
+      call Check_Coarse_Start()
+      write(*,'(A,I0,A)') ' MI2: MOSE starts on its coarse grids (levels = ', MOSE_obj_multigrid%MGL, '): the coupler '// &
+        'hands IGLOO and ICE the gas of the finest grid, filled from the level MOSE steps, and adds their sources to '// &
+        'that level summed over its sub-cells'
+    else
+      MOSE_obj_multigrid%MG_level = 1
+      if ( trim(MOSE_obj_multigrid%cycle) /= 'none' ) write(*,'(A,I0,A)') ' MI2: MOSE''s multigrid cycle on ', &
+        MOSE_obj_multigrid%MGL, ' levels: MOSE steps its finest grid from the first iteration; a coarse level takes '// &
+        'IGLOO''s and ICE''s sources summed over its sub-cells, in the residual MOSE restricts to it'
+    endif
   endif
 
   ! ICE and IGLOO ingest the gas field as ORION data; each is set up only when enabled
@@ -426,25 +436,36 @@ program hydra_MI2_program
           ! the run's last MOSE iteration ends on MOSE's own iteration limit (TODO = 3), as a run of MOSE alone: its
           ! postprocess is the end-of-run output
           lastIter = Last_Of_Run( hydra_obj_sim_param%MOSE_iter, i_MOSE )
-          if ( lastIter ) then
+          level = MOSE_obj_multigrid%MG_level
+          if ( lastIter .and. level == 1 ) then
             itermaxKept = MOSE_simulation%domain(1)%itermax
             MOSE_simulation%domain(1)%itermax = MOSE_obj_sim_param%iter_from_call + 1
           endif
+          ! on a coarse level, the condensed phases' sources restricted to it after they or the level changed
+          if ( level > 1 .and. level /= levelSrc ) call Restrict_Sources()
           call MOSE%solve( MOSE_simulation, MOSE_external_routine )
           if ( lastIter ) then
-            MOSE_simulation%domain(1)%itermax = itermaxKept
+            if ( level == 1 ) then
+              MOSE_simulation%domain(1)%itermax = itermaxKept
+            else
+              ! MOSE ends a run on its finest grid only (a coarse level's limit switches levels): the coupler ends it
+              MOSE_obj_sim_param%TODO = 3
+            endif
             MOSE_ended = .true.
           endif
           nRunMOSE = nRunMOSE + 1
           if ( smokeIGOn .and. hydra_MI2_obj%run_IGLOO .and. IGLOO_has_sources .and. .not. IGLOO_src_eulerian ) &
-            call IGLOO_Smoke_Accumulate( MOSE_simulation%domain(1), IGLOO )
+            call IGLOO_Smoke_Accumulate( MOSE_simulation%domain(level), IGLOO, MOSE_simulation%domain(1), coarseSrc )
           if ( MOSE_obj_sim_param%TODO <= 2 ) call MOSE%postprocess( MOSE_simulation )
           if ( MOSE_obj_io%output_number /= MOSE_outNum ) then
             MOSE_outNum    = MOSE_obj_io%output_number
             MOSE_fieldIter = MOSE_obj_sim_param%iter_general
           endif
+          fineStale = level > 1
         endif
       enddo
+      ! the gas the coupler reads from here on is the finest grid's
+      call Fill_Finest_Grid()
       if ( goneShare > 0._R8 ) then
         block
           real(R8) :: Mg, Pg(3), Eg
@@ -511,6 +532,7 @@ program hydra_MI2_program
 
           ! IGLOO%source / %euler are valid from here until the next reset_state
           IGLOO_has_sources  = .true.
+          levelSrc           = 0
           IGLOO_src_eulerian = eulCoupling
           IGLOO_src_cycle    = n_cycle
           IGLOO_src_step     = n_couple
@@ -557,6 +579,7 @@ program hydra_MI2_program
             endif
             ! after a solve with twcoupled set, cond_phase%source holds the rates of ICE's step
             ICE_has_sources = .true.
+            levelSrc        = 0
             ICE_src_cycle   = n_cycle
             ICE_src_step    = n_couple
           endif
@@ -599,6 +622,8 @@ program hydra_MI2_program
   ! its final solution
   write(*,*)
   write(*,'(A)') ' HYDRA-MI2: FINAL POSTPROCESS'
+  ! a run that ends on a coarse level writes the finest grid filled from it
+  call Fill_Finest_Grid()
   ! a restarted solver that made no iteration: its end-of-run output is the one it restarted from, not written again
   MOSE_obj_sim_param%TODO = 3
   if ( .not. MOSE_obj_sim_param%newrun .and. MOSE_obj_sim_param%iter_general == MOSE_iter0 ) then
@@ -733,21 +758,97 @@ contains
     implicit none
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
 
-    ! a coarse level of MOSE's multigrid cycle: the sources reach it in the residual MOSE restricts from the finest grid
-    if ( MOSE_domain%mg_level /= 1 ) return
+    ! a level below the one MOSE steps, a coarse level of its multigrid cycle: the sources reach it in the residual
+    ! MOSE restricts to it
+    if ( MOSE_domain%mg_level /= MOSE_obj_multigrid%MG_level ) return
 
     if ( hydra_MI2_obj%run_IGLOO .and. IGLOO_has_sources ) then
       call IGLOOxMOSE( MOSE_domain, IGLOO, eulCoupling, hydra_MI2_obj%relaxation,          &
                        i_MOSE, hydra_obj_sim_param%MOSE_iter(n_cycle),                     &
-                       hydra_MI2_obj%relCoeff(n_cycle), oldResidual )
+                       hydra_MI2_obj%relCoeff(n_cycle), oldResidual, coarseSrc )
     endif
 
     ! MOSE_domain is the callback's argument, not the module-level simulation
     if ( hydra_MI2_obj%run_ICE .and. ICE_has_sources ) then
-      call ICExMOSE( MOSE_domain, ICE_simulation%domain(1) )
+      call ICExMOSE( MOSE_domain, ICE_simulation%domain(1), coarseSrc )
     endif
 
   end subroutine MOSE_external_routine
+
+
+  !> The finest grid filled from the coarser level MOSE stepped: its state prolongated, then what an iteration there
+  !  computes before its update (derived variables, dtlocal, ghosts, fluxes, boundary records), without the sources.
+  subroutine Fill_Finest_Grid()
+    use MOSE_Mod_Multigrid,       only: Prolongation
+    use MOSE_Lib_Preconditioning, only: Update_Derived_Variables
+    use MOSE_Mod_dt,              only: Compute_dt
+    use MOSE_Mod_Explicit,        only: Assemble_Residual
+    implicit none
+    integer :: m
+
+    if ( .not. fineStale ) return
+    do m = MOSE_obj_multigrid%MG_level, 2, -1
+      call Prolongation( Fine=MOSE_simulation%domain(m-1), Coarse=MOSE_simulation%domain(m) )
+    enddo
+    !$omp parallel
+    call Update_Derived_Variables( MOSE_simulation%domain(1) )
+    !$omp end parallel
+    MOSE_simulation%domain(1)%dtglobal = 1d5
+    call Compute_dt( MOSE_simulation%domain(1), MOSE_obj_time_scheme%cfl, MOSE_obj_time_scheme%vnn, &
+                     MOSE_obj_time_scheme%rampa_cfl_iter )
+    !$omp parallel
+    call Assemble_Residual( MOSE_simulation%domain(1), No_Source )
+    !$omp end parallel
+    fineStale = .false.
+
+  end subroutine Fill_Finest_Grid
+
+
+  !> The external routine of the finest grid's residual when it is filled: no source.
+  subroutine No_Source( MOSE_domain )
+    implicit none
+    type(MOSE_domain_type), intent(inout) :: MOSE_domain
+  end subroutine No_Source
+
+
+  !> The condensed phases' sources on the level MOSE steps, a coarser one than the finest grid: restricted from the
+  !  finest grid's as they stand (IGLOO's and ICE's last solves, the removals' rates of this block).
+  subroutine Restrict_Sources()
+    implicit none
+    integer :: lev
+
+    lev = MOSE_obj_multigrid%MG_level
+    if ( hydra_MI2_obj%run_IGLOO .and. IGLOO_has_sources ) &
+      call Restrict_IGLOO_Sources( coarseSrc, MOSE_simulation%domain(1), MOSE_simulation%domain(lev), IGLOO, &
+                                   hydra_MI2_obj%report )
+    if ( hydra_MI2_obj%run_ICE .and. ICE_has_sources ) &
+      call Restrict_ICE_Sources( coarseSrc, MOSE_simulation%domain(1), MOSE_simulation%domain(lev), &
+                                 ICE_simulation%domain(1), hydra_MI2_obj%report )
+    levelSrc = lev
+
+  end subroutine Restrict_Sources
+
+
+  !> Refuse a start on MOSE's coarse grids where the coupler does not follow it: a time-accurate run, and IGLOO's
+  !  relaxation (its store is cell by cell of the level MOSE steps).
+  subroutine Check_Coarse_Start()
+    implicit none
+    character(len=*), parameter :: E = ' [ERROR] MI2: [MOSE-Multigrid] level<m>-iter > 0 (m > 1) starts MOSE on its '// &
+                                       'coarse grids, '
+
+    if ( MOSE_obj_time_scheme%time_accurate .or. MOSE_obj_sim_param%HYDRA_time_accurate ) then
+      write(*,'(A)') E//'and the run is time-accurate ([MOSE-Numerics] time-accurate = true): MOSE does not carry the '// &
+        'physical time from one level to the next. Set level<m>-iter = 0 for every m > 1 (levels = 1), or run steady'
+      error stop 1
+    endif
+    if ( hydra_MI2_obj%run_IGLOO .and. hydra_MI2_obj%relaxation ) then
+      write(*,'(A)') E//'and relaxation = true blends each coupling step''s IGLOO sources with the last step''s, cell by '// &
+        'cell of the level MOSE steps, which changes at each switch of level. Set relaxation = false, or '// &
+        'level<m>-iter = 0 for every m > 1'
+      error stop 1
+    endif
+
+  end subroutine Check_Coarse_Start
 
 
   !> Whether iteration i of the current coupling step is the solver's last of the run: the step ends its cycle, i is
