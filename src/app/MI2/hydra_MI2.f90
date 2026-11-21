@@ -133,13 +133,25 @@ program hydra_MI2_program
   ICE_obj_sim_param%twcoupled = hydra_MI2_obj%run_ICE
 
   call MOSE%setup( MOSE_simulation )
-  ! MOSE's grid levels: the coupler hands the condensed solvers MOSE's finest grid and adds their sources, cell by cell
-  ! of that grid, to the level MOSE steps
+  ! MOSE's grid levels: only the multigrid cycle is coupled. MOSE then steps its finest grid, the one the coupler hands
+  ! the condensed solvers, from the first iteration; a start on the coarse grids is refused
   if ( MOSE_obj_multigrid%MGL > 1 ) then
-    write(*,'(A,I0,A)') ' [ERROR] MI2: [MOSE-Multigrid] levels = ', MOSE_obj_multigrid%MGL, ': the coupler hands '// &
-      'IGLOO and ICE the gas of MOSE''s finest grid and adds their sources, cell by cell of that grid, to the grid '// &
-      'MOSE steps, while MOSE steps its coarse levels on their own grids. Use levels = 1'
-    error stop 1
+    if ( trim(MOSE_obj_multigrid%cycle) == 'none' ) then
+      write(*,'(A,I0,A)') ' [ERROR] MI2: [MOSE-Multigrid] levels = ', MOSE_obj_multigrid%MGL, ' without a multigrid '// &
+        'cycle: MOSE would start on its coarse grids, while the coupler hands IGLOO and ICE the gas of MOSE''s finest '// &
+        'grid and adds their sources cell by cell of that grid. Set cycle = v or w (steady runs), or levels = 1'
+      error stop 1
+    endif
+    if ( MOSE_obj_multigrid%iter_threshold(1) <= 0 ) then
+      write(*,'(A)') ' [ERROR] MI2: [MOSE-Multigrid] level1-iter is not set: with levels > 1 MOSE takes the iteration '// &
+        'limit of its finest grid from it, and with its default (0) the gas makes one iteration per coupling step. '// &
+        'Set level1-iter (the value iter-threshold would have)'
+      error stop 1
+    endif
+    MOSE_obj_multigrid%MG_level = 1
+    write(*,'(A,I0,A)') ' MI2: MOSE''s multigrid cycle on ', MOSE_obj_multigrid%MGL, ' levels: MOSE steps its finest '// &
+      'grid from the first iteration; a coarse level takes IGLOO''s and ICE''s sources summed over its sub-cells, in '// &
+      'the residual MOSE restricts to it'
   endif
 
   ! ICE and IGLOO ingest the gas field as ORION data; each is set up only when enabled
@@ -720,6 +732,9 @@ contains
   subroutine MOSE_external_routine(MOSE_domain)
     implicit none
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
+
+    ! a coarse level of MOSE's multigrid cycle: the sources reach it in the residual MOSE restricts from the finest grid
+    if ( MOSE_domain%mg_level /= 1 ) return
 
     if ( hydra_MI2_obj%run_IGLOO .and. IGLOO_has_sources ) then
       call IGLOOxMOSE( MOSE_domain, IGLOO, eulCoupling, hydra_MI2_obj%relaxation,          &
