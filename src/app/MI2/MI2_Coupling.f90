@@ -47,6 +47,11 @@ module hydraMI2_Mod_Coupling
     real(R8), dimension(:,:,:,:), allocatable :: resBlock
   end type resField
 
+  !> A value per cell of a block (interior cells).
+  type :: vol_t
+    real(R8), allocatable :: v(:,:,:)
+  end type vol_t
+
   !> family -> parcel material id, built once after IGLOO setup (getSourceTerms needs it).
   integer, allocatable, private :: famMatID(:)
 
@@ -964,18 +969,10 @@ contains
 
   !> Inject IGLOO's reaction on the gas into MOSE's residual (R = R - S), from MOSE's per-RK-stage
   !  callback: runs inside MOSE's parallel region, orphaned !$OMP DO only.
-  !    source branch : source{Mass,Mom,En} are absolute rates (no *vol); mass through nu(m,s),
-  !                    plus the enthalpy-datum correction and the consumed-species floor guard
-  !    euler  branch : getSourceTerms is per unit volume (*vol); momentum and energy only
   subroutine IGLOOxMOSE ( MOSE_domain, IGLOO, eulCoupling, relaxation, iter, iMax, relCoeff, &
                           oldResidual )
     use MOSE_Advanced_Types_m,   only: MOSE_domain_type
-    use MOSE_Global_m,           only: nsc, nu, nw, np, nprim
-    use FLINT_Lib_Thermodynamic, only: EOS, co_rotot_Rtot, f_gamma, co_k_mi_lam_Wilke
     use IGLOO_module,            only: obj_IGLOO
-    use IGLOO_variables,         only: nfam, nm
-    use hydraMI2_Stoichiometry,  only: nu_gas => nu, has_stoichiometry, dhDatum, capped, nuCap, nuRel, dhProduct
-    use MOSE_Config_Types_m,     only: obj_chemistry
     implicit none
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
     type(obj_IGLOO),        intent(in)    :: IGLOO
@@ -983,6 +980,39 @@ contains
     integer,                intent(in)    :: iter, iMax
     real(R8),               intent(in)    :: relCoeff
     type(resField),         intent(inout) :: oldResidual(:)
+
+    call IGLOO_Residual( MOSE_domain, IGLOO, IGLOO%source, IGLOO%euler, eulCoupling, relaxation, iter, iMax, &
+                         relCoeff, oldResidual )
+
+  end subroutine IGLOOxMOSE
+
+
+  !> IGLOO's reaction on the gas into MOSE's residual, from the arrays given: src, the source branch's rates, eul, the
+  !  Eulerian fields, on the cells of MOSE_domain; volE, when given, the volume of each cell the Eulerian branch's
+  !  per-volume source is taken over, else the cell's own.
+  !    source branch : source{Mass,Mom,En} are absolute rates (no *vol); mass through nu(m,s),
+  !                    plus the enthalpy-datum correction and the consumed-species floor guard
+  !    euler  branch : getSourceTerms is per unit volume (*vol); momentum and energy only
+  subroutine IGLOO_Residual ( MOSE_domain, IGLOO, src, eul, eulCoupling, relaxation, iter, iMax, relCoeff, &
+                              oldResidual, volE )
+    use MOSE_Advanced_Types_m,   only: MOSE_domain_type
+    use MOSE_Global_m,           only: nsc, nu, nw, np, nprim
+    use FLINT_Lib_Thermodynamic, only: EOS, co_rotot_Rtot, f_gamma, co_k_mi_lam_Wilke
+    use IGLOO_module,            only: obj_IGLOO
+    use IGLOO_data_block,        only: obj_sourceblock, obj_eulerblock
+    use IGLOO_variables,         only: nfam, nm
+    use hydraMI2_Stoichiometry,  only: nu_gas => nu, has_stoichiometry, dhDatum, capped, nuCap, nuRel, dhProduct
+    use MOSE_Config_Types_m,     only: obj_chemistry
+    implicit none
+    type(MOSE_domain_type),             intent(inout) :: MOSE_domain
+    type(obj_IGLOO),                    intent(in)    :: IGLOO
+    type(obj_sourceblock), allocatable, intent(in)    :: src(:)
+    type(obj_eulerblock),  allocatable, intent(in)    :: eul(:,:)
+    logical,                            intent(in)    :: eulCoupling, relaxation
+    integer,                            intent(in)    :: iter, iMax
+    real(R8),                           intent(in)    :: relCoeff
+    type(resField),                     intent(inout) :: oldResidual(:)
+    type(vol_t),          optional,     intent(in)    :: volE(:)
     ! Local
     real(R8), parameter :: toll = 1.d-15
     logical  :: useRelax
@@ -991,7 +1021,7 @@ contains
     real(R8) :: partial_residuals(nprim), sources(4)
     real(R8) :: rhoi(nsc), rho, u(3), T, p, R, gam, kappa, mu, coeff
     integer  :: imat, isp
-    real(R8) :: dm, avail, dtStage, cr(4), srate(6,2)
+    real(R8) :: dm, avail, dtStage, cr(4), srate(6,2), vE
 
     ! relaxation ramp
     useRelax = (relCoeff > toll .and. relCoeff < (1.d0-toll)) .and. relaxation
@@ -1009,7 +1039,7 @@ contains
     do b = 1, size(MOSE_domain%blk)
 
       !$OMP DO COLLAPSE(3) PRIVATE(partial_residuals,sources,rhoi,rho,u,p,T,R,gam,kappa,mu,i,j,k,m, &
-      !$OMP&                       imat,isp,dm,avail,dtStage,cr,srate)
+      !$OMP&                       imat,isp,dm,avail,dtStage,cr,srate,vE)
       do k = 1, MOSE_domain%blk(b)%dim(3)
       do j = 1, MOSE_domain%blk(b)%dim(2)
       do i = 1, MOSE_domain%blk(b)%dim(1)
@@ -1029,28 +1059,30 @@ contains
           sources = 0._R8
           do m = 1, nfam
             sources = sources + IGLOO%getSourceTerms( [rho,u,T,gam,R,mu,kappa],      &
-                                    IGLOO%euler(b,m)%velocity(:,i,j,k),              &
-                                    IGLOO%euler(b,m)%temperature(i,j,k),             &
-                                    IGLOO%euler(b,m)%density(i,j,k),                 &
-                                    IGLOO%euler(b,m)%np(i,j,k), famMatID(m) )
+                                    eul(b,m)%velocity(:,i,j,k),                  &
+                                    eul(b,m)%temperature(i,j,k),                 &
+                                    eul(b,m)%density(i,j,k),                     &
+                                    eul(b,m)%np(i,j,k), famMatID(m) )
           enddo
           partial_residuals(nu:nw) = - sources(1:3)
           partial_residuals(np)    = - sources(4)
-          partial_residuals = partial_residuals * MOSE_domain%blk(b)%vol(i,j,k)
+          vE = MOSE_domain%blk(b)%vol(i,j,k)
+          if (present(volE)) vE = volE(b)%v(i,j,k)
+          partial_residuals = partial_residuals * vE
 
         else
 
-          partial_residuals(nu:nw) = IGLOO%source(b)%sourceMom(:,i,j,k)
-          partial_residuals(np)    = IGLOO%source(b)%sourceEn(i,j,k)
+          partial_residuals(nu:nw) = src(b)%sourceMom(:,i,j,k)
+          partial_residuals(np)    = src(b)%sourceEn(i,j,k)
 
           ! mass coupling: sourceMass per material, distributed over the gas species through nu
           if (has_stoichiometry) then
             do imat = 1, nm
-              dm = IGLOO%source(b)%sourceMass(imat,i,j,k)
+              dm = src(b)%sourceMass(imat,i,j,k)
               ! an oxide cap: the material burnt into gas species, the oxide the cap gained, the cap handed to the gas
               if (capped(imat)) then
-                cr = Cap_Rates( imat, dm, IGLOO%source(b)%sourceMass(nm+2*imat-1,i,j,k), &
-                                IGLOO%source(b)%sourceMass(nm+2*imat,i,j,k) )
+                cr = Cap_Rates( imat, dm, src(b)%sourceMass(nm+2*imat-1,i,j,k), &
+                                src(b)%sourceMass(nm+2*imat,i,j,k) )
                 do isp = 1, nsc
                   partial_residuals(isp) = partial_residuals(isp) + nu_gas(imat,isp)*cr(2) + nuCap(imat,isp)*cr(3) &
                                                                   + nuRel(imat,isp)*cr(4)
@@ -1070,7 +1102,7 @@ contains
             ! the smoke of a material that makes one is born in its ICE family: the gas receives IGLOO's books less it
             if (smokeIGOn) then
               do imat = 1, nm
-                call IGLOO_Smoke_Rates( IGLOO%source(b)%sourceMass(:,i,j,k), imat, srate )
+                call IGLOO_Smoke_Rates( src(b)%sourceMass(:,i,j,k), imat, srate )
                 partial_residuals(nu:nw) = partial_residuals(nu:nw) - srate(2:4,1) - srate(2:4,2)
                 partial_residuals(np)    = partial_residuals(np) - srate(5,1) - srate(5,2) &
                                            - smokeIG(imat)%dh(1)*srate(1,1) - smokeIG(imat)%dh(2)*srate(1,2)
@@ -1112,7 +1144,7 @@ contains
 
     enddo
 
-  end subroutine IGLOOxMOSE
+  end subroutine IGLOO_Residual
 
   !> Derived gas state (rhoi, vel, rho, R, gam, T, mu, kappa) from one MOSE primitive column.
   subroutine Gas_State_From_Prim ( prim, rhoi, vel, rho, R, gam, T, mu, kappa )
@@ -1559,13 +1591,27 @@ contains
 
 
   !> Inject ICE's reaction on the gas into MOSE's residual, from MOSE's per-RK-stage callback:
-  !  runs inside MOSE's parallel region, orphaned !$OMP DO only. cond_phase%source is the per-unit-
+  !  runs inside MOSE's parallel region, orphaned !$OMP DO only.
+  subroutine ICExMOSE ( MOSE_domain, ICE_domain )
+    use MOSE_Advanced_Types_m,  only: MOSE_domain_type
+    use ICE_Advanced_Types_m,   only: ICE_domain_type
+    implicit none
+    type(MOSE_domain_type), intent(inout) :: MOSE_domain
+    type(ICE_domain_type),  intent(in)    :: ICE_domain
+
+    call ICE_Residual( MOSE_domain, ICE_domain, goneRate )
+
+  end subroutine ICExMOSE
+
+
+  !> ICE's reaction on the gas into MOSE's residual, from the arrays given, on the cells of MOSE_domain: ICE_domain's
+  !  cond_phase and gr, the removals' rates of a steady run (goneRate). cond_phase%source is the per-unit-
   !  volume rate on the condensed phase over ICE's last step (its RK stages weighted as its update
   !  weighs them; over a time-accurate block of more than one step, the steps' weighted by their dt,
   !  Source_Mean), so the gas receives -source (times vol): source(2:4) the
   !  momentum, source(nbase-1) the energy, and for a material that converts source(1), the mass,
   !  through its row and with its datum offset.
-  subroutine ICExMOSE ( MOSE_domain, ICE_domain )
+  subroutine ICE_Residual ( MOSE_domain, ICE_domain, gr )
     use MOSE_Advanced_Types_m,  only: MOSE_domain_type
     use MOSE_Global_m,          only: nsc, nu, nw, np, nprim
     use ICE_Advanced_Types_m,   only: ICE_domain_type
@@ -1574,11 +1620,12 @@ contains
                                       nuSmokeICE
     use MOSE_Config_Types_m,    only: obj_chemistry
     implicit none
-    type(MOSE_domain_type), intent(inout) :: MOSE_domain
-    type(ICE_domain_type),  intent(in)    :: ICE_domain
+    type(MOSE_domain_type),         intent(inout) :: MOSE_domain
+    type(ICE_domain_type),          intent(in)    :: ICE_domain
+    type(gone_rate_t), allocatable, intent(in)    :: gr(:)
     ! Local
     integer  :: b, g, i, j, k, imat, isp, nshare
-    real(R8) :: partial_residuals(nprim), dm, avail, dtStage, dtIter, dmg, gr(5)
+    real(R8) :: partial_residuals(nprim), dm, avail, dtStage, dtIter, dmg, gn(5)
     logical  :: mapped, consumes
 
     ! the families whose material consumes a gas species share what a cell holds of it
@@ -1601,7 +1648,7 @@ contains
           if (mapped) consumes = any(nu_ice(imat,1:nsc) < 0._R8)
         endif
 
-        !$OMP DO COLLAPSE(3) PRIVATE(partial_residuals,i,j,k,isp,dm,avail,dtStage,dtIter,dmg,gr)
+        !$OMP DO COLLAPSE(3) PRIVATE(partial_residuals,i,j,k,isp,dm,avail,dtStage,dtIter,dmg,gn)
         do k = 1, MOSE_domain%blk(b)%dim(3)
         do j = 1, MOSE_domain%blk(b)%dim(2)
         do i = 1, MOSE_domain%blk(b)%dim(1)
@@ -1626,14 +1673,14 @@ contains
             ! iteration's share of the amounts, as a rate over its step (each stage of it and both Strang halves
             ! integrate a constant rate to rate*dtlocal)
             if (handRates) then
-              if (allocated(goneRate)) then
-                gr  = goneRate(b)%a(:,g,i,j,k)
-                dmg = gr(1)
+              if (allocated(gr)) then
+                gn  = gr(b)%a(:,g,i,j,k)
+                dmg = gn(1)
                 do isp = 1, nsc
                   partial_residuals(isp) = partial_residuals(isp) + nu_ice(imat,isp)*dmg
                 enddo
-                partial_residuals(nu:nw) = partial_residuals(nu:nw) + gr(2:4)
-                partial_residuals(np)    = partial_residuals(np) + gr(5) &
+                partial_residuals(nu:nw) = partial_residuals(nu:nw) + gn(2:4)
+                partial_residuals(np)    = partial_residuals(np) + gn(5) &
                                          + (dhDatumICE(imat) - nuSmokeICE(imat)*dhSmokeICE(imat))*dmg
               endif
             elseif (goneShare > 0._R8) then
@@ -1677,7 +1724,7 @@ contains
       enddo
     enddo
 
-  end subroutine ICExMOSE
+  end subroutine ICE_Residual
 
 
   !> What ICE's last coupling step hands the gas and leaves for its next step, kept for a restart: the source of its last
