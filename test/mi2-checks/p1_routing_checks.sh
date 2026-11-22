@@ -100,5 +100,9 @@ d=$(mk material-badkey);        sed -i '2s/.*/A 1 no-such-key=1/' "$d/INPUT/part
                                 sed -i 's/^\[IGLOO-General\]/[IGLOO-General]\nphase = part/' "$d/input.ini"
                                 run "$d" nz "unknown key \"no-such-key\"" "unknown material key refused"
 
+# 20 the schedule, read before the routing: every per-cycle list has one entry per MOSE-iter cycle
+d=$(mk schedule-length);        sed -i -e 's/^MOSE-iter *=.*/MOSE-iter     = 1 1/' -e 's/^IGLOO-iter *=.*/IGLOO-iter    = 1 1/' "$d/input.ini"
+                                run "$d" nz "N-coupling has 1 values but MOSE-iter has 2" "N-coupling shorter than MOSE-iter"
+
 echo "== $pass passed, $fail failed"
 [ $fail = 0 ]

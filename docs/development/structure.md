@@ -99,8 +99,17 @@ At a high level, `src/app/MF/hydra_MF.f90` does the following:
    (`MI2_Stoichiometry.f90`); set up the smoke families.
 5. Run the cycles: per coupling step a MOSE block (the condensed sources
    applied at every Runge-Kutta stage through MOSE's external routine), an
-   IGLOO solve, an ICE block (`MI2_Coupling.f90` holds the exchanges).
+   IGLOO solve, an ICE block.
 6. Final postprocess of each solver and the end-of-run balances.
+
+`hydra_MI2.f90` holds only that schedule. The rest of `src/app/MI2/`:
+
+| File | Holds |
+|---|---|
+| `MI2_Read_Ini.f90` | the input, and what MI2 refuses in the solvers' own sections once their setup has read them |
+| `MI2_Coupling.f90` | the exchange: each solver's coupling setup, the gas state to IGLOO and ICE, their sources into MOSE's residual (one cell kernel per source, shared with the books), and what lands between solver steps: ICE's stored removals, its mean source over a time-accurate block, IGLOO's smoke born in ICE |
+| `MI2_Restart.f90` | the restart rules and ICE's hand-off file |
+| `MI2_Report.f90` | the setup notices, the `[MI2-report]` lines, the run's mass and energy books and the end-of-run balances |
 
 `hydra_MI2` is OpenMP only: the top-level `CMakeLists.txt` stops the configure
 step when `USE_MPI` is set with `EXE_NAME=MI2`.

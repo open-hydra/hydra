@@ -1,5 +1,4 @@
 module hydraMI2_Read_Params
-  use iso_fortran_env, only: I4 => int32, R8 => real64
 
   implicit none
   private
@@ -7,8 +6,9 @@ module hydraMI2_Read_Params
 
 contains
 
-  !> Register the MI2-only keys under [HYDRA-Parameters]; all optional, an absent X-iter
-  !  disables that solver. The arrays must already be sized by Scan_Ini_MI2.
+  !> Register the MI2-only keys: the schedule under [HYDRA-Parameters] and the switches under
+  !  [MI2-Coupling]. All optional, an absent X-iter disables that solver. The arrays must already
+  !  be sized by Scan_Ini_MI2.
   subroutine Register_MI2_Params()
     use hydra_Input_Registry
     use hydraMI2_Config_Types_m, only: hydra_MI2_obj
@@ -31,6 +31,16 @@ contains
     call reg%add(section,'relaxation-coeff', hydra_MI2_obj%relCoeff_raw, '0.5', &
                  'Under-relaxation coefficient: one value, or one per coupling cycle', &
                  'real array', .false. )
+
+    section = 'MI2-Coupling'
+
+    call reg%add(section,'report', hydra_MI2_obj%report, '.false.', &
+                 'Print, at every coupling step, what the coupler hands the gas ([MI2-report] lines)', &
+                 'logical', .false. )
+
+    call reg%add(section,'datum-correction', hydra_MI2_obj%datum_correction, '.true.', &
+                 'Apply the enthalpy-datum offsets to the mass a condensed solver hands the gas '// &
+                 '(false: diagnostic use only)', 'logical', .false. )
 
   end subroutine Register_MI2_Params
 

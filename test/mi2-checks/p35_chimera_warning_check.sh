@@ -1,12 +1,12 @@
 #!/bin/bash
-# Overset-mesh warning check (hydra_MI2.f90 Report_Chimera): the coupler makes no correction for a chimera overlap,
+# Overset-mesh warning check (MI2_Report.f90 Report_Start): the coupler makes no correction for a chimera overlap,
 # and its sums over the domain count it once per block that covers it; a run on such a mesh must say so.
 #  chimera : MOSE's two-block overset case (its test/checks/connections/chimera-face, case plane: two blocks of
 #            8 x 6 cells overlapping by 4 cells in x, face 2 of block 1 and face 1 of block 2 of kind 102), run by
 #            hydra-MI2 with MOSE alone for one iteration: the run ends and prints the warning once, with the number
 #            of chimera boundary cells MOSE's own set-up table gives (12) on 2 blocks.
 #  control : the same generator's one-block case (wedgeref, no 102 face): the run ends without the warning.
-# RED on a build without Report_Chimera: the chimera run ends with no warning line.
+# RED on a build without the warning: the chimera run ends with no warning line.
 #   usage: p35_chimera_warning_check.sh [scratch-root] [exe]      (MOSE_DIR: the MOSE tree, default src/lib/MOSE)
 set -u
 T=${1:-${MI2_SCRATCH:-/tmp/mi2-checks-${USER:-$(id -un)}}/P35}
