@@ -7,14 +7,18 @@
 !  Removal_Cell: the injection applies them, IGLOO_Handed, ICE_Handed and the removals' totals sum them for the
 !  books and the report (hydraMI2_Report).
 !
-!  Between two MOSE blocks, what lands outside a solver's step:
-!    ICE's removals    (cond_phase%gone): what a converting material lost and the gas has not received yet
-!    ICE's mean source : a time-accurate ICE block of several steps hands the gas its steps' dt-weighted mean
-!    IGLOO's smoke     : the condensed product of IGLOO's burning, born in an ICE family instead of the gas
+!  What lands outside a solver's step goes through a channel (hydraMI2_Channels), one per route:
+!    removed(g)  ICE family g -> gas: what its burn-out removed (cond_phase%gone, drained after each ICE step), which
+!                the gas has not received yet
+!    iceMean(g)  ICE family g -> gas: a time-accurate ICE block of several steps hands the gas its steps' dt-weighted
+!                mean source
+!    smoke(c)    IGLOO material -> ICE family: the condensed product of IGLOO's burning, born in the family instead
+!                of the gas
 !  They go as rates when MOSE or ICE steps in pseudo-time (handRates: a converged steady field then holds per unit
 !  time), as amounts when both are time-accurate.
 module hydraMI2_Mod_Coupling
-  use iso_fortran_env, only: R8 => real64
+  use iso_fortran_env,   only: R8 => real64
+  use hydraMI2_Channels, only: channel_t
 
   implicit none
   private
@@ -24,7 +28,8 @@ module hydraMI2_Mod_Coupling
   public :: Gas_Field_For_IGLOO, MOSExIGLOO, MOSExICE, IGLOOxMOSE, ICExMOSE
   public :: Check_IGLOO_Sources, Check_ICE_Sources
   public :: IGLOO_Handed, ICE_Handed, Removals_Handed
-  public :: Open_Removals, Close_Removals, Gone_Rate_Setup, ICE_Step_Clocks, ICE_Block_Mean
+  public :: Removed_Store_Setup, Removals_Timed
+  public :: Open_Removals, Close_Removals, After_ICE_Step, ICE_Block_Mean
   public :: IGLOO_Smoke_Accumulate, IGLOO_Smoke_Deliver
 
   !> The sources a condensed solver last produced. They stay in force, and MOSE keeps reading them, until that
@@ -77,43 +82,26 @@ module hydraMI2_Mod_Coupling
   end type res_block_t
   type(res_block_t), allocatable :: oldResidual(:)
 
-  !> Amounts: the share of ICE's stored removals each MOSE iteration of the current block hands the gas, 1/MOSE-iter
-  !  while a block runs, 0 outside one.
-  real(R8) :: goneShare = 0._R8
+  !> removed(g): what the burn-out of ICE family g removed (mass, momentum (3), energy, per unit volume), from ICE to
+  !  the gas; the store of every family, though only a converting one hands it on. Under rates timed: the store over
+  !  the time it was made in is the rate in force, kept while ICE does not step, as its source is. Under amounts each
+  !  MOSE iteration takes its share. The store, its time and its rate are restored by the hand-off file of a restart.
+  type(channel_t), allocatable, public :: removed(:)
 
-  !> Rates, per block: a(5, ICE family, cell) the store ICE made over the time t(ICE family, cell) it was made in, as
-  !  a rate per unit volume (mass, momentum (3), energy), kept while ICE does not step, as its source is. Restored by
-  !  the hand-off file of a restart.
-  type, public :: gone_rate_t
-    real(R8), allocatable :: a(:,:,:,:,:), t(:,:,:,:)
-  end type gone_rate_t
-  type(gone_rate_t), allocatable, public :: goneRate(:)
+  !> iceMean(g): over a time-accurate ICE block, family g's dt*source, dt*heat, dt*birth (its components, in this
+  !  order) and dt, cell by cell (After_ICE_Step), made into the block's rates after it (ICE_Block_Mean) when it made
+  !  meanSteps > 1 steps.
+  type(channel_t), allocatable :: iceMean(:)
+  integer :: meanSteps = 0
 
-  !> A time-accurate ICE block of more than one step: per block and family, the sums over its steps of dt*source,
-  !  dt*heat, dt*birth and dt, cell by cell (ICE_Step_Clocks), turned into the block's rates after it (ICE_Block_Mean).
-  type :: src_sum_t
-    real(R8), allocatable :: s(:,:,:,:), h(:,:,:), t(:,:,:), b(:,:,:,:)
-  end type src_sum_t
-  type(src_sum_t), allocatable :: srcSum(:,:)
-  integer :: srcSteps = 0
-
-  !> The smoke of IGLOO's burning materials: per material, for the smoke of its combustion record (1) and the smoke
-  !  its cap oxide becomes when handed at burnout (2), the ICE family it is born in (0: none), kg per kg, the smoke's
-  !  datum offset; the material's d-smoke. smokeIGOn: one at least.
-  type :: igloo_smoke_t
-    integer  :: fam(2) = 0
-    real(R8) :: nu(2) = 0._R8, dh(2) = 0._R8, dSmoke = 0._R8
-  end type igloo_smoke_t
-  type(igloo_smoke_t), allocatable :: smokeIG(:)
-  logical, protected, public :: smokeIGOn = .false.
-
-  !> IGLOO's smoke the current MOSE block made, per block (6, ICE family, cell): mass, momentum (3), energy, number;
-  !  each smoke family's datum offset; the cells where a smoke was born with no parcel's state.
-  type :: smoke_block_t
-    real(R8), allocatable :: a(:,:,:,:,:)
-  end type smoke_block_t
-  type(smoke_block_t), allocatable :: smokeAcc(:)
-  real(R8),            allocatable :: dhSmokeFam(:)
+  !> smoke(c): the smoke of an IGLOO material (from), born in an ICE family (to): the smoke of its combustion record
+  !  (trigger SMOKE_OF_BURN) or of its cap oxide handed at burnout (SMOKE_OF_CAP); kg per kg, the smoke's datum
+  !  offset, the material's d-smoke. Its store: what the current MOSE block made (mass, momentum (3), energy on ICE's
+  !  datum, number). smokeIGOn: one at least. nSmokeNoState: the cells of the block's iterations where a smoke was
+  !  born with no parcel's state.
+  integer, parameter :: SMOKE_OF_BURN = 1, SMOKE_OF_CAP = 2
+  type(channel_t), allocatable :: smoke(:)
+  logical, protected, public   :: smokeIGOn = .false.
   integer :: nSmokeNoState = 0
 
   character(len=*), parameter :: E_ = ' [ERROR] MI2: '
@@ -125,16 +113,19 @@ contains
   ! ---------------------------------------------------------------------------------------------
 
   !> ICE's side of the coupler, after ICE%setup: how what lands between steps goes (handRates), material -> gas
-  !  species of ICE's phase from the file ATLAS writes, the smoke families, and the datum offsets. ICE credits a
-  !  material its energy at T_ref on its own datum: its table's, or cp*T.
-  subroutine Setup_ICE_Coupling ()
+  !  species of ICE's phase from the file ATLAS writes, the smoke families, the datum offsets, and the removals'
+  !  channels. ICE credits a material its energy at T_ref on its own datum: its table's, or cp*T.
+  subroutine Setup_ICE_Coupling ( ICE_domain )
     use MOSE_Config_Types_m,    only: MOSE_time_scheme => obj_time_scheme
+    use ICE_Advanced_Types_m,   only: ICE_domain_type
     use ICE_Global_m,           only: ICE_phase_prefix
     use ICE_Lib_Properties,     only: mat_e, mat_cp_const, mat_lv
     use ICE_Config_Types_m,     only: COMB_BECKSTEAD, ICE_condensed => obj_condensed, ICE_time_scheme => obj_time_scheme
+    use hydraMI2_Channels,      only: As_Rate
     use hydraMI2_Stoichiometry, only: Load_Species_Map, Report_Stoichiometry, Build_Datum_Offsets, Smoke_Record, &
-                                      Set_Smoke_Datum, MAP_ICE, T_datum_ref
+                                      Set_Smoke_Datum, MAP_ICE, T_datum_ref, productsICE
     implicit none
+    type(ICE_domain_type), intent(in) :: ICE_domain
     character(len=64), allocatable :: matnames(:)
     logical,           allocatable :: evap(:), burn(:), beck(:), Lvconst(:)
     real(R8),          allocatable :: eref(:), Lvmat(:), qmat(:), Thot(:), ehot(:), beta(:)
@@ -142,7 +133,7 @@ contains
     real(R8) :: snu, sh, dh
     integer  :: m, nm, gs
 
-    handRates = .not. (MOSE_time_scheme%time_accurate .and. ICE_time_scheme%time_accurate)
+    handRates = As_Rate( MOSE_time_scheme%time_accurate, ICE_time_scheme%time_accurate )
 
     nm = size(ICE_condensed)
     allocate(matnames(nm), evap(nm), burn(nm), beck(nm), Lvconst(nm))
@@ -191,7 +182,52 @@ contains
     call Report_Stoichiometry( MAP_ICE, matnames, nm )
     call Build_Datum_Offsets( MAP_ICE, matnames, nm, beck, beta, eref, Lvmat, qmat, Thot, ehot, Lvconst )
 
+    ! the removals reach the gas as the rate of their store, timed by ICE's steps, or as amounts
+    call Removed_Store_Setup( ICE_domain, timed = handRates .and. productsICE%active )
+    removed(:)%asRate = handRates
+
   end subroutine Setup_ICE_Coupling
+
+
+  !> The channels of ICE's removals, one per family (a restart may have opened them first): each store, and when timed
+  !  its time and rate too.
+  subroutine Removed_Store_Setup ( ICE_domain, timed )
+    use ICE_Advanced_Types_m, only: ICE_domain_type
+    use ICE_Global_m,         only: ngroups
+    use hydraMI2_Channels,    only: Open_Store
+    implicit none
+    type(ICE_domain_type), intent(in) :: ICE_domain
+    logical,               intent(in) :: timed
+    integer :: b, g, dims(3, ICE_domain%nb)
+
+    if (.not. allocated(removed)) then
+      allocate(removed(ngroups))
+      do g = 1, ngroups
+        removed(g)%name = 'ice-removed'
+        removed(g)%from = g
+      enddo
+    endif
+    do b = 1, ICE_domain%nb
+      dims(:,b) = ICE_domain%blk(b)%dim(1:3)
+    enddo
+    do g = 1, ngroups
+      call Open_Store( removed(g), dims, 5, timed=timed, rated=timed )
+    enddo
+
+  end subroutine Removed_Store_Setup
+
+
+  !> The removals' channels are timed (their rates kept by the coupler).
+  logical function Removals_Timed ()
+    implicit none
+
+    Removals_Timed = .false.
+    if (.not. allocated(removed)) return
+    if (size(removed) == 0) return
+    if (.not. allocated(removed(1)%blk)) return
+    Removals_Timed = allocated(removed(1)%blk(1)%r)
+
+  end function Removals_Timed
 
 
   !> IGLOO's side of the coupler, after IGLOO%setup: the family -> material map, material -> gas species of IGLOO's
@@ -258,7 +294,7 @@ contains
     enddo
 
     call Load_Species_Map( MAP_IGLOO, IGLOO_phase_prefix, matnames, evap, burn, oxide, handsCap, nuOx )
-    call Setup_IGLOO_Smoke( IGLOO, matnames )
+    call Setup_IGLOO_Smoke( MOSE_domain, IGLOO, matnames )
     call Report_Stoichiometry( MAP_IGLOO, matnames, nmat )
     call Build_Datum_Offsets( MAP_IGLOO, matnames, nmat, beck, beta, href, Lvmat, qmat, Thot, hhot, Lvconst )
 
@@ -284,30 +320,35 @@ contains
   end subroutine Setup_IGLOO_Coupling
 
 
-  !> The smoke of IGLOO's burning materials (the tail of a combustion record, and of the release record of a cap oxide
-  !  handed at burnout): ICE runs and holds its family, the coupling is not relaxed, the material gives d-smoke.
-  subroutine Setup_IGLOO_Smoke ( IGLOO, matnames )
+  !> The smoke channels of IGLOO's burning materials (the tail of a combustion record, and of the release record of a
+  !  cap oxide handed at burnout): ICE runs and holds its family, the coupling is not relaxed, the material gives
+  !  d-smoke. One channel per route, in the order of the materials, then of the records.
+  subroutine Setup_IGLOO_Smoke ( MOSE_domain, IGLOO, matnames )
+    use MOSE_Advanced_Types_m,   only: MOSE_domain_type
     use IGLOO_module,            only: obj_IGLOO
     use IGLOO_variables,         only: IGLOO_phase_prefix
     use hydraMI2_Config_Types_m, only: hydra_MI2_obj
+    use hydraMI2_Channels,       only: Open_Store
     use hydraMI2_Stoichiometry,  only: Smoke_Record, MAP_IGLOO
     implicit none
-    type(obj_IGLOO),  intent(in) :: IGLOO
-    character(len=*), intent(in) :: matnames(:)
+    type(MOSE_domain_type), intent(in) :: MOSE_domain
+    type(obj_IGLOO),        intent(in) :: IGLOO
+    character(len=*),       intent(in) :: matnames(:)
     character(len=64)  :: sname, sphase
     character(len=256) :: file
     character(len=:), allocatable :: who
     real(R8) :: snu, sh, dh
-    integer  :: m, p, gs, n
+    integer  :: m, p, gs, n, b, c, nc, dims(3, size(MOSE_domain%blk))
     logical  :: has
+    type(channel_t), allocatable :: found(:)
 
-    allocate(smokeIG(max(size(matnames),1)))
+    allocate(found(2*size(matnames)))
+    nc = 0
     file = 'INPUT/'//trim(IGLOO_phase_prefix)//'products.txt'
     do m = 1, size(matnames)
       who = 'the IGLOO material '//trim(matnames(m))
-      ! n = 1: the smoke of its combustion record; n = 2: the smoke of its cap oxide, handed at burnout
-      do n = 1, 2
-        if ( n == 1 ) then
+      do n = SMOKE_OF_BURN, SMOKE_OF_CAP
+        if ( n == SMOKE_OF_BURN ) then
           has = Smoke_Record( MAP_IGLOO, m, sname, snu, sh, sphase )
         else
           p   = IGLOO%material(m)%prodID
@@ -332,16 +373,32 @@ contains
           error stop 1
         endif
         call Smoke_Family( who, file, sname, sphase, sh, gs, dh )
-        smokeIG(m)%fam(n) = gs
-        smokeIG(m)%nu(n)  = snu
-        smokeIG(m)%dh(n)  = dh
-        smokeIG(m)%dSmoke = IGLOO%material(m)%dSmoke
-        smokeIGOn = .true.
+        nc = nc + 1
+        found(nc)%name    = 'igloo-smoke'
+        found(nc)%from    = m
+        found(nc)%to      = gs
+        found(nc)%trigger = n
+        found(nc)%nu      = snu
+        found(nc)%dh      = dh
+        found(nc)%d       = IGLOO%material(m)%dSmoke
+        found(nc)%asRate  = handRates
         write(*,'(A,I0,A,ES15.7,A,ES12.4,A,ES15.7,A)') ' [MI2] IGLOO material '//trim(matnames(m))//' '// &
-          trim(merge('burns into' // repeat(' ', 17), 'hands its cap at burnout to', n == 1))//' the smoke '// &
-          trim(sname)//' (ICE family ', gs, '): ', snu, ' kg per kg, d-smoke ', smokeIG(m)%dSmoke, &
-          ' m, datum offset ', dh, ' J/kg'
+          trim(merge('burns into' // repeat(' ', 17), 'hands its cap at burnout to', n == SMOKE_OF_BURN))// &
+          ' the smoke '//trim(sname)//' (ICE family ', gs, '): ', snu, ' kg per kg, d-smoke ', &
+          IGLOO%material(m)%dSmoke, ' m, datum offset ', dh, ' J/kg'
       enddo
+    enddo
+    allocate(smoke(nc))
+    do c = 1, nc
+      smoke(c) = found(c)
+    enddo
+    smokeIGOn = nc > 0
+    ! each channel's store: what a MOSE block's iterations make (mass, momentum (3), energy, number)
+    do b = 1, size(MOSE_domain%blk)
+      dims(:,b) = MOSE_domain%blk(b)%dim(1:3)
+    enddo
+    do c = 1, size(smoke)
+      call Open_Store( smoke(c), dims, 6, timed=.false., rated=.false. )
     enddo
     if ( smokeIGOn .and. handRates ) &
       write(*,'(A)') ' [MI2] IGLOO''s smoke reaches ICE as rates: a source of each smoke family over ICE''s own steps'
@@ -738,15 +795,15 @@ contains
           call ICE_Cell ( imat, mapped, ICE_domain%blk(b)%cond_phase(g)%source(:,i,j,k), nbase(g)-1, &
                           ICE_domain%blk(b)%cond_phase(g)%birth(:,i,j,k), r, datum )
           if (mapped) then
-            if (handRates) then
-              if (allocated(goneRate)) then
-                gr = goneRate(b)%a(:,g,i,j,k)
+            if (removed(g)%asRate) then
+              if (allocated(removed(g)%blk(b)%r)) then
+                gr = removed(g)%blk(b)%r(:,i,j,k)
                 call Removal_Cell ( imat, gr, r, datum )
               endif
-            elseif (goneShare > 0._R8) then
+            elseif (removed(g)%share > 0._R8) then
               dtIter = MOSE_domain%blk(b)%dtlocal(i,j,k)
               if (dtIter > 0._R8) then
-                gr = ICE_domain%blk(b)%cond_phase(g)%gone(:,i,j,k)*goneShare/dtIter
+                gr = removed(g)%blk(b)%a(:,i,j,k)*removed(g)%share/dtIter
                 call Removal_Cell ( imat, gr, r, datum )
               endif
             endif
@@ -800,8 +857,8 @@ contains
     real(R8), intent(in)    :: col(:)
     real(R8), intent(inout) :: r(:)
     real(R8), intent(out)   :: datum
-    integer  :: imat, isp
-    real(R8) :: dm, cr(4), srate(6,2)
+    integer  :: imat, isp, c
+    real(R8) :: dm, cr(4), sr(6)
 
     datum = 0._R8
     do imat = 1, nm
@@ -828,11 +885,11 @@ contains
 
     ! the smoke of a material that makes one is born in its ICE family: the gas receives IGLOO's books less it
     if (.not. smokeIGOn) return
-    do imat = 1, nm
-      call IGLOO_Smoke_Rates( col, imat, srate )
-      r(nu:nw) = r(nu:nw) - srate(2:4,1) - srate(2:4,2)
-      r(np)    = r(np) - srate(5,1) - srate(5,2) - smokeIG(imat)%dh(1)*srate(1,1) - smokeIG(imat)%dh(2)*srate(1,2)
-      datum    = datum - smokeIG(imat)%dh(1)*srate(1,1) - smokeIG(imat)%dh(2)*srate(1,2)
+    do c = 1, size(smoke)
+      call Smoke_Packet( smoke(c), col, sr )
+      r(nu:nw) = r(nu:nw) - sr(2:4)
+      r(np)    = r(np) - sr(5) - smoke(c)%dh*sr(1)
+      datum    = datum - smoke(c)%dh*sr(1)
     enddo
 
   end subroutine IGLOO_Mass_To_Gas
@@ -1158,17 +1215,15 @@ contains
   end function ICE_Handed
 
 
-  !> What the removals ICE stores times share (1: what they still hold), or (rate) the rates in force (goneRate),
-  !  hand the gas: Removal_Cell times the cell volume.
-  function Removals_Handed ( MOSE_domain, ICE_domain, share, rate ) result( h )
+  !> What the removals' stores times share (1: what they still hold), or (rate) the rates in force, hand the gas:
+  !  Removal_Cell times the cell volume.
+  function Removals_Handed ( MOSE_domain, share, rate ) result( h )
     use MOSE_Advanced_Types_m,  only: MOSE_domain_type
     use MOSE_Global_m,          only: nsc, np, nprim
-    use ICE_Advanced_Types_m,   only: ICE_domain_type
     use ICE_Global_m,           only: ngroups, mat_of
     use hydraMI2_Stoichiometry, only: productsICE
     implicit none
     type(MOSE_domain_type), intent(in) :: MOSE_domain
-    type(ICE_domain_type),  intent(in) :: ICE_domain
     real(R8),               intent(in) :: share
     logical, optional,      intent(in) :: rate
     type(handed_t) :: h
@@ -1190,9 +1245,9 @@ contains
         do i = 1, MOSE_domain%blk(b)%dim(1)
           vol = MOSE_domain%blk(b)%vol(i,j,k)
           if (asRate) then
-            gr = goneRate(b)%a(:,g,i,j,k)*vol
+            gr = removed(g)%blk(b)%r(:,i,j,k)*vol
           else
-            gr = ICE_domain%blk(b)%cond_phase(g)%gone(:,i,j,k)*share*vol
+            gr = removed(g)%blk(b)%a(:,i,j,k)*share*vol
           endif
           r = 0._R8; datum = 0._R8
           call Removal_Cell( mat_of(g), gr, r, datum )
@@ -1245,177 +1300,165 @@ contains
   ! ICE's removals, around a MOSE block. Outside any parallel region.
   ! ---------------------------------------------------------------------------------------------
 
-  !> At a MOSE block's start: how the removals ICE stores reach the gas over its nIter iterations (ICExMOSE reads
+  !> At a MOSE block's start: how the removals' channels reach the gas over its nIter iterations (ICExMOSE reads
   !  them). Rates: where ICE stepped since the last block, the store over the time it was made in becomes the rate
-  !  in force (goneRate), the store and its time emptied; rm holds the rates' totals. Amounts, once ICE has produced
-  !  sources (ready): each iteration hands 1/nIter of the store.
-  subroutine Open_Removals ( MOSE_domain, ICE_domain, ready, nIter, rm )
+  !  in force; rm holds the rates' totals. Amounts, once ICE has produced sources (ready): each iteration hands
+  !  1/nIter of the store.
+  subroutine Open_Removals ( MOSE_domain, ready, nIter, rm )
     use MOSE_Advanced_Types_m,  only: MOSE_domain_type
-    use ICE_Advanced_Types_m,   only: ICE_domain_type
     use ICE_Global_m,           only: ngroups, mat_of
+    use hydraMI2_Channels,      only: Store_To_Rate, Open_Share
     use hydraMI2_Stoichiometry, only: productsICE
     implicit none
-    type(MOSE_domain_type), intent(in)    :: MOSE_domain
-    type(ICE_domain_type),  intent(inout) :: ICE_domain
-    logical,                intent(in)    :: ready
-    integer,                intent(in)    :: nIter
-    type(removals_t),       intent(out)   :: rm
-    integer  :: b, g, i, j, k
-    real(R8) :: tg
+    type(MOSE_domain_type), intent(in)  :: MOSE_domain
+    logical,                intent(in)  :: ready
+    integer,                intent(in)  :: nIter
+    type(removals_t),       intent(out) :: rm
+    integer :: g
 
     if (.not. handRates) then
-      if (ready .and. nIter > 0) goneShare = 1._R8 / real(nIter, R8)
+      if (ready) then
+        do g = 1, ngroups
+          call Open_Share( removed(g), nIter )
+        enddo
+      endif
       return
     endif
 
     rm%asRate = .true.
     if (.not. productsICE%active) return
-    call Gone_Rate_Setup( ICE_domain )
-    do b = 1, size(MOSE_domain%blk)
-      do g = 1, ngroups
-        if (.not. Converts(mat_of(g))) cycle
-        do k = 1, MOSE_domain%blk(b)%dim(3)
-        do j = 1, MOSE_domain%blk(b)%dim(2)
-        do i = 1, MOSE_domain%blk(b)%dim(1)
-          tg = goneRate(b)%t(g,i,j,k)
-          if (.not. tg > 0._R8) cycle
-          goneRate(b)%a(:,g,i,j,k) = ICE_domain%blk(b)%cond_phase(g)%gone(:,i,j,k)/tg
-          ICE_domain%blk(b)%cond_phase(g)%gone(:,i,j,k) = 0._R8
-          goneRate(b)%t(g,i,j,k) = 0._R8
-        enddo; enddo; enddo
-      enddo
+    do g = 1, ngroups
+      if (Converts(mat_of(g))) call Store_To_Rate( removed(g) )
     enddo
-    rm%h = Removals_Handed( MOSE_domain, ICE_domain, 1._R8, rate=.true. )
+    rm%h = Removals_Handed( MOSE_domain, 1._R8, rate=.true. )
 
   end subroutine Open_Removals
 
 
-  !> After a MOSE block that made nRun of the iterations Open_Removals shared the store over (amounts): what they
-  !  handed (rm%h), taken out of the store; the share closed.
-  subroutine Close_Removals ( MOSE_domain, ICE_domain, nRun, rm )
+  !> After a MOSE block that made nRun of the iterations Open_Removals shared the stores over (amounts): what they
+  !  handed (rm%h), taken out of the stores; the shares closed.
+  subroutine Close_Removals ( MOSE_domain, nRun, rm )
     use MOSE_Advanced_Types_m, only: MOSE_domain_type
-    use ICE_Advanced_Types_m,  only: ICE_domain_type
     use ICE_Global_m,          only: ngroups, mat_of
+    use hydraMI2_Channels,     only: Close_Share, Keep
     implicit none
     type(MOSE_domain_type), intent(in)    :: MOSE_domain
-    type(ICE_domain_type),  intent(inout) :: ICE_domain
     integer,                intent(in)    :: nRun
     type(removals_t),       intent(inout) :: rm
-    integer  :: b, g
+    integer  :: g
     real(R8) :: frac
 
-    if (.not. goneShare > 0._R8) return
-    frac      = real(nRun, R8)*goneShare
-    goneShare = 0._R8
+    ! every family's share was opened alike
+    frac = 0._R8
+    do g = 1, ngroups
+      frac = Close_Share( removed(g), nRun )
+    enddo
+    if (.not. frac > 0._R8) return
     rm%shared = .true.
-    rm%h      = Removals_Handed( MOSE_domain, ICE_domain, frac )
-    do b = 1, size(MOSE_domain%blk)
-      do g = 1, ngroups
-        if (Converts(mat_of(g))) ICE_domain%blk(b)%cond_phase(g)%gone = ICE_domain%blk(b)%cond_phase(g)%gone*(1._R8 - frac)
-      enddo
+    rm%h      = Removals_Handed( MOSE_domain, frac )
+    do g = 1, ngroups
+      if (Converts(mat_of(g))) call Keep( removed(g), 1._R8 - frac )
     enddo
 
   end subroutine Close_Removals
 
 
-  !> The arrays of goneRate, allocated at the first call and zero.
-  subroutine Gone_Rate_Setup ( ICE_domain )
-    use ICE_Advanced_Types_m, only: ICE_domain_type
-    use ICE_Global_m,         only: ngroups
-    implicit none
-    type(ICE_domain_type), intent(in) :: ICE_domain
-    integer :: b, n(3)
-
-    if (allocated(goneRate)) return
-    allocate(goneRate(ICE_domain%nb))
-    do b = 1, ICE_domain%nb
-      n = ICE_domain%blk(b)%dim(1:3)
-      allocate(goneRate(b)%a(5, ngroups, n(1), n(2), n(3)), goneRate(b)%t(ngroups, n(1), n(2), n(3)), source=0._R8)
-    enddo
-
-  end subroutine Gone_Rate_Setup
-
-
   ! ---------------------------------------------------------------------------------------------
-  ! ICE's clocks, after each of its steps and after its block. Outside any parallel region.
+  ! ICE's channels, after each of its steps and after its block. Outside any parallel region.
   ! ---------------------------------------------------------------------------------------------
 
-  !> After an ICE iteration. A steady run (handRates): each converting family's dt added, cell by cell, to the time
-  !  its store of removals is being made over. A time-accurate ICE: each family's dt*source, dt*heat, dt*birth (a
-  !  family that makes a smoke) and dt added to the block's sums.
-  subroutine ICE_Step_Clocks ( ICE_domain )
+  !> After an ICE iteration: what each family's burn-out removed (cond_phase%gone) moved into its channel, and under
+  !  rates each converting family's dt added, cell by cell, to the time its store is being made over. A
+  !  time-accurate ICE: each family's dt*source, dt*heat, dt*birth and dt added to the block's mean channel.
+  subroutine After_ICE_Step ( ICE_domain )
     use ICE_Advanced_Types_m,   only: ICE_domain_type
     use ICE_Global_m,           only: ngroups, mat_of
     use ICE_Config_Types_m,     only: ICE_time_scheme => obj_time_scheme
+    use hydraMI2_Channels,      only: Open_Store, Clock
     use hydraMI2_Stoichiometry, only: productsICE
     implicit none
-    type(ICE_domain_type), intent(in) :: ICE_domain
-    integer :: b, g, i, j, k
+    type(ICE_domain_type), intent(inout) :: ICE_domain
+    integer :: b, g, i, j, k, ns, dims(3, ICE_domain%nb)
 
-    if (handRates .and. productsICE%active) then
-      call Gone_Rate_Setup( ICE_domain )
-      do b = 1, ICE_domain%nb
-        do g = 1, ngroups
-          if (Converts(mat_of(g))) goneRate(b)%t(g,:,:,:) = goneRate(b)%t(g,:,:,:) + ICE_domain%blk(b)%cond_phase(g)%dt
-        enddo
-      enddo
-    endif
-
-    if (.not. ICE_time_scheme%time_accurate) return
-    if (.not. allocated(srcSum)) allocate(srcSum(ICE_domain%nb, ngroups))
     do b = 1, ICE_domain%nb
       do g = 1, ngroups
-        associate (cp => ICE_domain%blk(b)%cond_phase(g), sm => srcSum(b,g))
-          if (.not. allocated(sm%s)) then
-            allocate(sm%s, mold=cp%source); allocate(sm%h, mold=cp%heat); allocate(sm%t, mold=cp%heat)
-            allocate(sm%b, mold=cp%birth)
-            sm%s = 0._R8; sm%h = 0._R8; sm%t = 0._R8; sm%b = 0._R8
-          endif
-          do k = 1, ICE_domain%blk(b)%dim(3)
-          do j = 1, ICE_domain%blk(b)%dim(2)
-          do i = 1, ICE_domain%blk(b)%dim(1)
-            sm%s(:,i,j,k) = sm%s(:,i,j,k) + cp%dt(i,j,k)*cp%source(:,i,j,k)
-            sm%h(i,j,k)   = sm%h(i,j,k)   + cp%dt(i,j,k)*cp%heat(i,j,k)
-            sm%t(i,j,k)   = sm%t(i,j,k)   + cp%dt(i,j,k)
-            sm%b(:,i,j,k) = sm%b(:,i,j,k) + cp%dt(i,j,k)*cp%birth(:,i,j,k)
-          enddo; enddo; enddo
-        end associate
+        removed(g)%blk(b)%a = removed(g)%blk(b)%a + ICE_domain%blk(b)%cond_phase(g)%gone
+        ICE_domain%blk(b)%cond_phase(g)%gone = 0._R8
+        if (handRates .and. productsICE%active .and. Converts(mat_of(g))) &
+          call Clock( removed(g), b, ICE_domain%blk(b)%cond_phase(g)%dt )
       enddo
     enddo
-    srcSteps = srcSteps + 1
 
-  end subroutine ICE_Step_Clocks
+    if (.not. ICE_time_scheme%time_accurate) return
+    if (.not. allocated(iceMean)) then
+      allocate(iceMean(ngroups))
+      do b = 1, ICE_domain%nb
+        dims(:,b) = ICE_domain%blk(b)%dim(1:3)
+      enddo
+      do g = 1, ngroups
+        iceMean(g)%name = 'ice-mean'
+        iceMean(g)%from = g
+        call Open_Store( iceMean(g), dims, Mean_Size(g), timed=.true., rated=.false. )
+      enddo
+    endif
+    do b = 1, ICE_domain%nb
+      do g = 1, ngroups
+        ns = size(ICE_domain%blk(b)%cond_phase(g)%source, 1)
+        do k = 1, ICE_domain%blk(b)%dim(3)
+        do j = 1, ICE_domain%blk(b)%dim(2)
+        do i = 1, ICE_domain%blk(b)%dim(1)
+          associate (a => iceMean(g)%blk(b)%a, dt => ICE_domain%blk(b)%cond_phase(g)%dt(i,j,k))
+            a(1:ns,i,j,k)       = a(1:ns,i,j,k)       + dt*ICE_domain%blk(b)%cond_phase(g)%source(:,i,j,k)
+            a(ns+1,i,j,k)       = a(ns+1,i,j,k)       + dt*ICE_domain%blk(b)%cond_phase(g)%heat(i,j,k)
+            a(ns+2:ns+6,i,j,k)  = a(ns+2:ns+6,i,j,k)  + dt*ICE_domain%blk(b)%cond_phase(g)%birth(:,i,j,k)
+          end associate
+        enddo; enddo; enddo
+        call Clock( iceMean(g), b, ICE_domain%blk(b)%cond_phase(g)%dt )
+      enddo
+    enddo
+    meanSteps = meanSteps + 1
+
+  contains
+
+    !> The components of family g's mean channel: its source, its heat, its birth (5).
+    integer function Mean_Size ( g )
+      integer, intent(in) :: g
+      Mean_Size = size(ICE_domain%blk(1)%cond_phase(g)%source, 1) + 6
+    end function Mean_Size
+
+  end subroutine After_ICE_Step
 
 
   !> After a time-accurate ICE block: where it made more than one step, each family's source, heat and birth become
-  !  the block's rates, the sums of ICE_Step_Clocks divided by the time; the sums cleared.
+  !  the block's rates, its mean channel's store over its time; the channels emptied.
   subroutine ICE_Block_Mean ( ICE_domain )
     use ICE_Advanced_Types_m, only: ICE_domain_type
     use ICE_Global_m,         only: ngroups
+    use hydraMI2_Channels,    only: Empty
     implicit none
     type(ICE_domain_type), intent(inout) :: ICE_domain
-    integer :: b, g, i, j, k
+    integer  :: b, g, i, j, k, ns
+    real(R8) :: t
 
-    if (.not. allocated(srcSum)) return
-    do b = 1, ICE_domain%nb
-      do g = 1, ngroups
-        associate (cp => ICE_domain%blk(b)%cond_phase(g), sm => srcSum(b,g))
-          if (srcSteps > 1) then
-            do k = 1, ICE_domain%blk(b)%dim(3)
-            do j = 1, ICE_domain%blk(b)%dim(2)
-            do i = 1, ICE_domain%blk(b)%dim(1)
-              if (sm%t(i,j,k) > 0._R8) then
-                cp%source(:,i,j,k) = sm%s(:,i,j,k)/sm%t(i,j,k)
-                cp%heat(i,j,k)     = sm%h(i,j,k)/sm%t(i,j,k)
-                cp%birth(:,i,j,k)  = sm%b(:,i,j,k)/sm%t(i,j,k)
-              endif
-            enddo; enddo; enddo
-          endif
-          sm%s = 0._R8; sm%h = 0._R8; sm%t = 0._R8; sm%b = 0._R8
-        end associate
-      enddo
+    if (.not. allocated(iceMean)) return
+    do g = 1, ngroups
+      if (meanSteps > 1) then
+        do b = 1, ICE_domain%nb
+          ns = size(ICE_domain%blk(b)%cond_phase(g)%source, 1)
+          do k = 1, ICE_domain%blk(b)%dim(3)
+          do j = 1, ICE_domain%blk(b)%dim(2)
+          do i = 1, ICE_domain%blk(b)%dim(1)
+            t = iceMean(g)%blk(b)%t(i,j,k)
+            if (.not. t > 0._R8) cycle
+            ICE_domain%blk(b)%cond_phase(g)%source(:,i,j,k) = iceMean(g)%blk(b)%a(1:ns,i,j,k)/t
+            ICE_domain%blk(b)%cond_phase(g)%heat(i,j,k)     = iceMean(g)%blk(b)%a(ns+1,i,j,k)/t
+            ICE_domain%blk(b)%cond_phase(g)%birth(:,i,j,k)  = iceMean(g)%blk(b)%a(ns+2:ns+6,i,j,k)/t
+          enddo; enddo; enddo
+        enddo
+      endif
+      call Empty( iceMean(g) )
     enddo
-    srcSteps = 0
+    meanSteps = 0
 
   end subroutine ICE_Block_Mean
 
@@ -1424,35 +1467,38 @@ contains
   ! IGLOO's smoke, from the gas's share to ICE
   ! ---------------------------------------------------------------------------------------------
 
-  !> The smoke an IGLOO material's burning makes in a cell, as rates [per s, the cell's]: (:,1) the smoke of its
-  !  combustion record, (:,2) the smoke its cap oxide handed at burnout becomes; mass, momentum (3), energy on ICE's
-  !  datum with the kinetic part, number (each drop at d-smoke); born with the parcels' velocity and temperature
-  !  weighted by what they burnt there (IGLOO's columns). col: the cell's column of IGLOO's mass source. Thread-safe.
-  subroutine IGLOO_Smoke_Rates ( col, imat, rate, nostate )
+  !> The smoke channel ch makes in a cell, as a rate [per s, the cell's]: mass, momentum (3), energy on ICE's datum
+  !  with the kinetic part, number (each drop at the channel's d); born with the parcels' velocity and temperature
+  !  weighted by what they burnt there (IGLOO's columns). col: the cell's column of IGLOO's mass source. nostate: a
+  !  smoke born where no parcel's columns gave its state. Thread-safe.
+  subroutine Smoke_Packet ( ch, col, rate, nostate )
     use IGLOO_variables,        only: nm, smokeRow
     use ICE_Config_Types_m,     only: ICE_condensed => obj_condensed
     use ICE_Global_m,           only: mat_of
     use ICE_Lib_Properties,     only: mat_rho, mat_e, mat_cp_const
     use hydraMI2_Stoichiometry, only: productsIGLOO, Cap_Rates, T_datum_ref
     implicit none
-    real(R8), intent(in)  :: col(:)
-    integer,  intent(in)  :: imat
-    real(R8), intent(out) :: rate(6,2)
-    logical,  intent(out), optional :: nostate      !> a smoke born where no parcel's columns gave its state
+    type(channel_t),   intent(in)  :: ch
+    real(R8),          intent(in)  :: col(:)
+    real(R8),          intent(out) :: rate(6)
+    logical, optional, intent(out) :: nostate
     real(R8), parameter :: pi = 3.14159265358979323846_R8
-    real(R8) :: md(2), w, u(3), T, es, cr(4)
-    integer  :: n, ms
+    real(R8) :: md, w, u(3), T, es, cr(4)
+    integer  :: imat, ms
 
     rate = 0._R8
     if (present(nostate)) nostate = .false.
-    if (all(smokeIG(imat)%fam == 0)) return
+    imat = ch%from
+    ! the mass that makes it: the material burnt into its combustion record, or its cap oxide handed at burnout
     if (productsIGLOO%capped(imat)) then
       cr = Cap_Rates( imat, col(imat), col(nm+2*imat-1), col(nm+2*imat) )
-      md = [smokeIG(imat)%nu(1)*cr(2), smokeIG(imat)%nu(2)*cr(4)]
+      md = ch%nu*merge(cr(2), cr(4), ch%trigger == SMOKE_OF_BURN)
+    elseif (ch%trigger == SMOKE_OF_BURN) then
+      md = ch%nu*col(imat)
     else
-      md = [smokeIG(imat)%nu(1)*col(imat), 0._R8]
+      md = 0._R8
     endif
-    if (all(md == 0._R8)) return
+    if (md == 0._R8) return
     w = col(smokeRow(imat,1))
     if (w > 0._R8) then
       u = col(smokeRow(imat,2):smokeRow(imat,4))/w
@@ -1462,51 +1508,49 @@ contains
       T = T_datum_ref
       if (present(nostate)) nostate = .true.
     endif
-    do n = 1, 2
-      if (md(n) == 0._R8 .or. smokeIG(imat)%fam(n) == 0) cycle
-      ms = mat_of(smokeIG(imat)%fam(n))
-      if (ICE_condensed(ms)%cs_varies) then
-        es = mat_e(ICE_condensed(ms), T)
-      else
-        es = mat_cp_const(ICE_condensed(ms))*T
-      endif
-      rate(1,n)   = md(n)
-      rate(2:4,n) = md(n)*u
-      rate(5,n)   = md(n)*(es + 0.5_R8*dot_product(u, u))
-      rate(6,n)   = md(n)/(pi/6._R8*mat_rho(ICE_condensed(ms), T)*smokeIG(imat)%dSmoke**3)
-    enddo
+    ms = mat_of(ch%to)
+    if (ICE_condensed(ms)%cs_varies) then
+      es = mat_e(ICE_condensed(ms), T)
+    else
+      es = mat_cp_const(ICE_condensed(ms))*T
+    endif
+    rate(1)   = md
+    rate(2:4) = md*u
+    rate(5)   = md*(es + 0.5_R8*dot_product(u, u))
+    rate(6)   = md/(pi/6._R8*mat_rho(ICE_condensed(ms), T)*ch%d**3)
 
-  end subroutine IGLOO_Smoke_Rates
+  end subroutine Smoke_Packet
 
 
-  !> After a MOSE iteration: the smoke rates of IGLOO's materials times the iteration's dtlocal, added cell by cell to
-  !  the amounts of the block (the gas received the same rates less, over the same step). Outside any parallel region.
+  !> After a MOSE iteration: each smoke channel's rate times the iteration's dtlocal, added cell by cell to its store
+  !  (the gas received the same rates less, over the same step). A cell where a material's smoke had no parcel's state
+  !  counts once. Outside any parallel region.
   subroutine IGLOO_Smoke_Accumulate ( MOSE_domain, IGLOO )
     use MOSE_Advanced_Types_m, only: MOSE_domain_type
     use IGLOO_module,          only: obj_IGLOO
-    use IGLOO_variables,       only: nm
     implicit none
     type(MOSE_domain_type), intent(in) :: MOSE_domain
     type(obj_IGLOO),        intent(in) :: IGLOO
-    integer  :: b, i, j, k, imat, n, f
-    real(R8) :: srate(6,2), dt
+    integer  :: b, i, j, k, c, mNoState
+    real(R8) :: sr(6), dt
     logical  :: nostate
 
-    call Smoke_Acc_Setup( MOSE_domain )
     do b = 1, size(MOSE_domain%blk)
       if (.not. allocated(IGLOO%source(b)%sourceMass)) cycle
       do k = 1, MOSE_domain%blk(b)%dim(3)
       do j = 1, MOSE_domain%blk(b)%dim(2)
       do i = 1, MOSE_domain%blk(b)%dim(1)
         dt = MOSE_domain%blk(b)%dtlocal(i,j,k)
-        do imat = 1, nm
-          call IGLOO_Smoke_Rates( IGLOO%source(b)%sourceMass(:,i,j,k), imat, srate, nostate )
-          if (nostate) nSmokeNoState = nSmokeNoState + 1
-          do n = 1, 2
-            if (srate(1,n) == 0._R8) cycle
-            f = smokeIG(imat)%fam(n)
-            smokeAcc(b)%a(:,f,i,j,k) = smokeAcc(b)%a(:,f,i,j,k) + srate(:,n)*dt
-          enddo
+        mNoState = 0
+        do c = 1, size(smoke)
+          call Smoke_Packet( smoke(c), IGLOO%source(b)%sourceMass(:,i,j,k), sr, nostate )
+          ! the channels of a material are consecutive
+          if (nostate .and. smoke(c)%from /= mNoState) then
+            nSmokeNoState = nSmokeNoState + 1
+            mNoState      = smoke(c)%from
+          endif
+          if (sr(1) == 0._R8) cycle
+          smoke(c)%blk(b)%a(:,i,j,k) = smoke(c)%blk(b)%a(:,i,j,k) + sr*dt
         enddo
       enddo; enddo; enddo
     enddo
@@ -1514,39 +1558,15 @@ contains
   end subroutine IGLOO_Smoke_Accumulate
 
 
-  !> The smoke amounts of the MOSE blocks and each smoke family's datum offset, allocated at the first call, zero.
-  subroutine Smoke_Acc_Setup ( MOSE_domain )
-    use MOSE_Advanced_Types_m, only: MOSE_domain_type
-    use ICE_Global_m,          only: ngroups
-    implicit none
-    type(MOSE_domain_type), intent(in) :: MOSE_domain
-    integer :: b, imat, n
-
-    if (allocated(smokeAcc)) return
-    allocate(smokeAcc(size(MOSE_domain%blk)), dhSmokeFam(ngroups))
-    dhSmokeFam = 0._R8
-    do imat = 1, size(smokeIG)
-      do n = 1, 2
-        if (smokeIG(imat)%fam(n) > 0) dhSmokeFam(smokeIG(imat)%fam(n)) = smokeIG(imat)%dh(n)
-      enddo
-    enddo
-    do b = 1, size(MOSE_domain%blk)
-      allocate(smokeAcc(b)%a(6, ngroups, MOSE_domain%blk(b)%dim(1), MOSE_domain%blk(b)%dim(2), &
-                             MOSE_domain%blk(b)%dim(3)), source=0._R8)
-    enddo
-
-  end subroutine Smoke_Acc_Setup
-
-
-  !> After a MOSE block: the smoke it made (IGLOO_Smoke_Accumulate), which the gas did not get, handed to ICE in the
-  !  form of handRates. Amounts: added to ICE's state cell by cell (per volume). Rates: the rates of IGLOO's sources as
-  !  they stand (srcOn; else 0), per volume, set as the source of each smoke family (cond_phase%ext). sm: the totals,
-  !  energies on the gas's formation scale; the amounts emptied. Outside any parallel region.
+  !> After a MOSE block: the smoke its iterations made (IGLOO_Smoke_Accumulate), which the gas did not get, handed to
+  !  each ICE family a smoke channel feeds, in the channels' form (every smoke channel steps on MOSE's clock into
+  !  ICE's). Amounts: added to ICE's state cell by cell (per volume). Rates: the rates of IGLOO's sources as they stand
+  !  (srcOn; else 0), per volume, set as the family's source (cond_phase%ext). sm: the totals, energies on the gas's
+  !  formation scale; the stores emptied. Outside any parallel region.
   subroutine IGLOO_Smoke_Deliver ( MOSE_domain, ICE_domain, IGLOO, srcOn, sm )
     use MOSE_Advanced_Types_m, only: MOSE_domain_type
     use ICE_Advanced_Types_m,  only: ICE_domain_type
     use IGLOO_module,          only: obj_IGLOO
-    use IGLOO_variables,       only: nm
     use ICE_Global_m,          only: ngroups, mat_of, nbase, ncond
     use ICE_Config_Types_m,    only: ICE_condensed => obj_condensed
     use ICE_Lib_Model,         only: prim_2_cons, cons_2_prim, assign_prim_2_cons, assign_cons_2_prim
@@ -1556,23 +1576,28 @@ contains
     type(obj_IGLOO),        intent(in)    :: IGLOO
     logical,                intent(in)    :: srcOn
     type(smoke_t),          intent(out)   :: sm
-    integer  :: b, g, i, j, k, ns, imat, n
-    real(R8) :: vol, ac(6), srate(6,2), sr(6)
-    real(R8), allocatable :: c(:)
+    integer  :: b, g, i, j, k, ns, c
+    real(R8) :: vol, ac(6), sr(6), pk(6), dhg
+    real(R8), allocatable :: q(:)
+    logical  :: asRate
 
     sm%nNoState   = nSmokeNoState
     nSmokeNoState = 0
-    call Smoke_Acc_Setup( MOSE_domain )
+    asRate = smoke(1)%asRate
     do b = 1, size(MOSE_domain%blk)
       do g = 1, ngroups
-        if (.not. any(smokeIG(:)%fam(1) == g .or. smokeIG(:)%fam(2) == g)) cycle
+        if (.not. any(smoke(:)%to == g)) cycle
+        ! the smoke family's datum offset: its material's, whichever channel feeds it
+        do c = 1, size(smoke)
+          if (smoke(c)%to == g) dhg = smoke(c)%dh
+        enddo
         ! the conversions of family g's closure (ICE points them at the family it last stepped)
         call assign_prim_2_cons(g)
         call assign_cons_2_prim(g)
         ns = nbase(g)
-        if (allocated(c)) deallocate(c)
-        allocate(c(ncond(g)))
-        if (handRates) then
+        if (allocated(q)) deallocate(q)
+        allocate(q(ncond(g)))
+        if (asRate) then
           if (.not. allocated(ICE_domain%blk(b)%cond_phase(g)%ext)) &
             allocate(ICE_domain%blk(b)%cond_phase(g)%ext(ncond(g), ICE_domain%blk(b)%dim(1), &
                      ICE_domain%blk(b)%dim(2), ICE_domain%blk(b)%dim(3)))
@@ -1583,38 +1608,42 @@ contains
         do i = 1, MOSE_domain%blk(b)%dim(1)
           vol = MOSE_domain%blk(b)%vol(i,j,k)
           ! rates: the source of family g from IGLOO's sources as they stand
-          if (handRates .and. srcOn) then
+          if (asRate .and. srcOn) then
             if (allocated(IGLOO%source(b)%sourceMass)) then
               sr = 0._R8
-              do imat = 1, nm
-                call IGLOO_Smoke_Rates( IGLOO%source(b)%sourceMass(:,i,j,k), imat, srate )
-                do n = 1, 2
-                  if (smokeIG(imat)%fam(n) == g) sr = sr + srate(:,n)
-                enddo
+              do c = 1, size(smoke)
+                if (smoke(c)%to /= g) cycle
+                call Smoke_Packet( smoke(c), IGLOO%source(b)%sourceMass(:,i,j,k), pk )
+                sr = sr + pk
               enddo
-              c = 0._R8
-              c(1:4)  = sr(1:4)/vol
-              c(ns-1) = sr(5)/vol
-              c(ns)   = sr(6)/vol
-              ICE_domain%blk(b)%cond_phase(g)%ext(:,i,j,k) = c
+              q = 0._R8
+              q(1:4)  = sr(1:4)/vol
+              q(ns-1) = sr(5)/vol
+              q(ns)   = sr(6)/vol
+              ICE_domain%blk(b)%cond_phase(g)%ext(:,i,j,k) = q
               sm%rate(1:4) = sm%rate(1:4) + sr(1:4)
-              sm%rate(5)   = sm%rate(5) + sr(5) + dhSmokeFam(g)*sr(1)
+              sm%rate(5)   = sm%rate(5) + sr(5) + dhg*sr(1)
               sm%rate(6)   = sm%rate(6) + sr(6)
             endif
           endif
           ! the amounts of the block: out of the gas's share, and into ICE's state when they go as amounts
-          ac = smokeAcc(b)%a(:,g,i,j,k)
+          ac = 0._R8
+          do c = 1, size(smoke)
+            if (smoke(c)%to == g) ac = ac + smoke(c)%blk(b)%a(:,i,j,k)
+          enddo
           if (all(ac == 0._R8)) cycle
-          if (.not. handRates) then
-            c = prim_2_cons(ICE_domain%blk(b)%cond_phase(g)%prim(:,i,j,k), ICE_condensed(mat_of(g)))
-            c(1:4)  = c(1:4)  + ac(1:4)/vol
-            c(ns-1) = c(ns-1) + ac(5)/vol
-            c(ns)   = c(ns)   + ac(6)/vol
-            ICE_domain%blk(b)%cond_phase(g)%prim(:,i,j,k) = cons_2_prim(c, ICE_condensed(mat_of(g)))
+          if (.not. asRate) then
+            q = prim_2_cons(ICE_domain%blk(b)%cond_phase(g)%prim(:,i,j,k), ICE_condensed(mat_of(g)))
+            q(1:4)  = q(1:4)  + ac(1:4)/vol
+            q(ns-1) = q(ns-1) + ac(5)/vol
+            q(ns)   = q(ns)   + ac(6)/vol
+            ICE_domain%blk(b)%cond_phase(g)%prim(:,i,j,k) = cons_2_prim(q, ICE_condensed(mat_of(g)))
           endif
           sm%amount(1:4) = sm%amount(1:4) + ac(1:4)
-          sm%amount(5)   = sm%amount(5) + ac(5) + dhSmokeFam(g)*ac(1)
-          smokeAcc(b)%a(:,g,i,j,k) = 0._R8
+          sm%amount(5)   = sm%amount(5) + ac(5) + dhg*ac(1)
+          do c = 1, size(smoke)
+            if (smoke(c)%to == g) smoke(c)%blk(b)%a(:,i,j,k) = 0._R8
+          enddo
         enddo; enddo; enddo
       enddo
     enddo

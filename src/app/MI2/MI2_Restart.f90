@@ -38,7 +38,7 @@ module hydraMI2_Restart
   integer :: MOSE_iter0 = 0, ICE_iter0 = 0
 
   !> A variable of the hand-off file: its name, what it holds (XS source, XH heat, XB birth, XG the removals' store,
-  !  XU the relaxation time, XR a smoke family's srate, XA and XT goneRate's a and t), family, component.
+  !  XU the relaxation time, XR a smoke family's srate, XA and XT the removals' rate and time), family, component.
   type :: xvar_t
     character(len=32) :: name = ''
     integer :: what = 0, g = 0, n = 0
@@ -390,7 +390,8 @@ contains
 
 
   !> The variables of ICE_Exchange_File, family by family: source, heat, birth, the removals' store, the relaxation time
-  !  that bounds the next step; srate where a smoke family holds one (srate(g)), goneRate where the coupler keeps it.
+  !  that bounds the next step; srate where a smoke family holds one (srate(g)), the removals' rate and time where
+  !  the coupler keeps them (rate).
   subroutine Exchange_Vars ( srate, rate, xv )
     use ICE_Global_m, only: ngroups, ncond
     implicit none
@@ -438,7 +439,7 @@ contains
   subroutine Exchange_Slot ( ICE_domain, b, v, i, j, k, x, put )
     use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_positive_inf
     use ICE_Advanced_Types_m,  only: ICE_domain_type
-    use hydraMI2_Mod_Coupling, only: goneRate
+    use hydraMI2_Mod_Coupling, only: removed
     implicit none
     type(ICE_domain_type), intent(inout) :: ICE_domain
     integer,               intent(in)    :: b, i, j, k
@@ -452,11 +453,11 @@ contains
         case (XS); cp%source(n,i,j,k)      = x
         case (XH); cp%heat(i,j,k)          = x
         case (XB); cp%birth(n,i,j,k)       = x
-        case (XG); cp%gone(n,i,j,k)        = x
+        case (XG); removed(g)%blk(b)%a(n,i,j,k) = x
         case (XU); cp%tau(i,j,k)           = merge(ieee_value(1._R8, ieee_positive_inf), x, x == -1._R8)
         case (XR); cp%srate(n,i,j,k)       = x
-        case (XA); goneRate(b)%a(n,g,i,j,k) = x
-        case (XT); goneRate(b)%t(g,i,j,k)   = x
+        case (XA); removed(g)%blk(b)%r(n,i,j,k) = x
+        case (XT); removed(g)%blk(b)%t(i,j,k)   = x
         end select
       else
         x = 0._R8
@@ -464,11 +465,11 @@ contains
         case (XS); x = cp%source(n,i,j,k)
         case (XH); x = cp%heat(i,j,k)
         case (XB); x = cp%birth(n,i,j,k)
-        case (XG); x = cp%gone(n,i,j,k)
+        case (XG); x = removed(g)%blk(b)%a(n,i,j,k)
         case (XU); x = merge(-1._R8, cp%tau(i,j,k), cp%tau(i,j,k) > huge(x))
         case (XR); if (allocated(cp%srate)) x = cp%srate(n,i,j,k)
-        case (XA); x = goneRate(b)%a(n,g,i,j,k)
-        case (XT); x = goneRate(b)%t(g,i,j,k)
+        case (XA); x = removed(g)%blk(b)%r(n,i,j,k)
+        case (XT); x = removed(g)%blk(b)%t(i,j,k)
         end select
       endif
     end associate
@@ -487,7 +488,7 @@ contains
     use ICE_Config_Types_m,   only: ice_sim_param => obj_sim_param
     use Lib_ORION_data,       only: orion_data, copyORION
     use Lib_Tecplot,          only: tec_write_structured_multiblock
-    use hydraMI2_Mod_Coupling, only: goneRate
+    use hydraMI2_Mod_Coupling, only: Removals_Timed
     implicit none
     type(ICE_simulation_type), intent(inout) :: ICE_sim
     logical,                   intent(in) :: hasSources
@@ -502,7 +503,7 @@ contains
     do g = 1, ngroups
       srate(g) = any([(allocated(ICE_sim%domain(1)%blk(b)%cond_phase(g)%srate), b = 1, ICE_sim%domain(1)%nb)])
     enddo
-    call Exchange_Vars( srate, allocated(goneRate), xv )
+    call Exchange_Vars( srate, Removals_Timed(), xv )
     call copyORION( ICE_sim%ODP(1), io )
     io%tec%format = 'ascii'; io%tec%node = .false.; io%tec%bc = .false.
     names = ''
@@ -552,7 +553,7 @@ contains
     use ICE_Config_Types_m,    only: ice_sim_param => obj_sim_param
     use Lib_ORION_data,        only: orion_data
     use Lib_Tecplot,           only: tec_read_structured_multiblock
-    use hydraMI2_Mod_Coupling, only: Gone_Rate_Setup
+    use hydraMI2_Mod_Coupling, only: Removed_Store_Setup
     implicit none
     type(ICE_simulation_type), intent(inout) :: ICE_sim
     integer,                   intent(in)    :: iterMOSE
@@ -635,7 +636,7 @@ contains
       endif
     enddo
 
-    if (rate) call Gone_Rate_Setup( ICE_sim%domain(1) )
+    call Removed_Store_Setup( ICE_sim%domain(1), timed=rate )
     do b = 1, ICE_sim%domain(1)%nb
       do g = 1, ngroups
         if (srate(g) .and. .not. allocated(ICE_sim%domain(1)%blk(b)%cond_phase(g)%srate)) &

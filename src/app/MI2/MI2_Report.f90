@@ -262,7 +262,7 @@ contains
       call Report_Values( 'ice-to-gas', [hICE%mom, hICE%energy, tau] )
       if ( productsICE%active ) then
         call Report_Values( 'ice-to-gas-mass', [Mass_Of(hICE)] )
-        call Report_Handed( 'ice-removed-stored', Removals_Handed( MOSE_domain, ICE_simulation%domain(1), 1._R8 ) )
+        call Report_Handed( 'ice-removed-stored', Removals_Handed( MOSE_domain, 1._R8 ) )
       endif
     endif
     if ( iglooSrc ) call Report_Values( 'igloo-to-gas', [hIGLOO%mom, hIGLOO%energy, Mass_Of(hIGLOO)] )

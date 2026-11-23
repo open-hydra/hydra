@@ -27,7 +27,7 @@ program hydra_MI2_program
   use hydraMI2_Mod_Coupling,   only: source_state_t, removals_t, smoke_t, handRates, smokeIGOn, mdotHanded, nHanded, &
                                      Setup_ICE_Coupling, Setup_IGLOO_Coupling, Set_IGLOO_Switches, Gas_Field_For_IGLOO, &
                                      MOSExIGLOO, MOSExICE, IGLOOxMOSE, ICExMOSE, Check_IGLOO_Sources, Check_ICE_Sources, &
-                                     Open_Removals, Close_Removals, ICE_Step_Clocks, ICE_Block_Mean,                   &
+                                     Open_Removals, Close_Removals, After_ICE_Step, ICE_Block_Mean,                   &
                                      IGLOO_Smoke_Accumulate, IGLOO_Smoke_Deliver
   use hydraMI2_Restart,        only: Setup_Restart, Remove_Stale_Handoff, Note_Outputs, Save_Handoff_If_Fields_Current, &
                                      Write_ICE_Exchange, Made_No_Iteration
@@ -143,7 +143,7 @@ contains
 
     call Setup_Restart( ICE_simulation, ICE_src%ready )
 
-    if ( hydra_MI2_obj%run_ICE ) call Setup_ICE_Coupling()
+    if ( hydra_MI2_obj%run_ICE ) call Setup_ICE_Coupling( ICE_simulation%domain(1) )
 
     ! IGLOO%setup includes the reset_state of the first sweep
     if ( hydra_MI2_obj%run_IGLOO ) then
@@ -177,7 +177,7 @@ contains
     ! the removals ICE stores reach the gas over this block (ICExMOSE): as the rate of the store, or 1/nIter of it per
     ! iteration when both solvers are time-accurate
     if ( hydra_MI2_obj%run_ICE ) &
-      call Open_Removals( MOSE_simulation%domain(1), ICE_simulation%domain(1), ICE_src%ready, nIter, removals )
+      call Open_Removals( MOSE_simulation%domain(1), ICE_src%ready, nIter, removals )
 
     if ( MOSE_ended .and. nIter > 0 ) call Resumed( 'MOSE', MOSE_ended )
     MOSE_obj_sim_param%TODO = 1
@@ -203,7 +203,7 @@ contains
       call Note_Outputs()
     enddo
 
-    if ( hydra_MI2_obj%run_ICE ) call Close_Removals( MOSE_simulation%domain(1), ICE_simulation%domain(1), nRun, removals )
+    if ( hydra_MI2_obj%run_ICE ) call Close_Removals( MOSE_simulation%domain(1), nRun, removals )
 
     ! the smoke IGLOO's burning made over this block, which the gas did not get, to ICE
     if ( smokeIGOn ) call IGLOO_Smoke_Deliver( MOSE_simulation%domain(1), ICE_simulation%domain(1), IGLOO, &
@@ -289,8 +289,8 @@ contains
         ICE_simulation%domain(1)%itermax = itermaxKept
         ICE_ended = .true.
       endif
-      ! the time the removals of this iteration were made over (steady), the block's mean source (time-accurate)
-      call ICE_Step_Clocks( ICE_simulation%domain(1) )
+      ! what this iteration removed, and the time it was made over (steady), or the block's mean source (time-accurate)
+      call After_ICE_Step( ICE_simulation%domain(1) )
       if ( ICE_obj_sim_param%TODO <= 2 ) call ICE%postprocess( ICE_simulation )
       call Note_Outputs()
       ! after a solve with twcoupled set, cond_phase%source holds the rates of ICE's step
