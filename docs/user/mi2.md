@@ -249,17 +249,36 @@ relaxation    = false
 time-accurate = false
 ```
 
+### MOSE's grid levels
+
+`[MOSE-Multigrid] levels` above 1 needs ATLAS's coarse boundary files (`[ATLAS-Parameters] MG-levels`) and
+`level1-iter`, MOSE's iteration limit of the finest grid when `levels` is above 1 (the value `iter-threshold` would
+have): without it the run stops after MOSE's set-up. IGLOO and ICE always see the finest grid.
+
+- Start on the coarse grids (`level<m>-iter` > 0 for an m > 1; steady runs): MOSE steps its coarsest level first and
+  works down to the finest, as it does alone (a level until its `level<m>-iter`, or until its density residual has
+  fallen by `res-threshold`). `MOSE-iter` counts the iterations of every level. Before each hand-off, report and the
+  end-of-run output the coupler fills the finest grid from the level MOSE steps: MOSE's prolongation level by level,
+  then the finest grid's derived variables, local time step, ghost cells, fluxes and boundary records (the inflow mass
+  flow IGLOO takes), with no time step and without the condensed phases' sources. On the level MOSE steps the coupler
+  adds the finest grid's sources summed over each coarse cell's sub-cells: IGLOO's rates summed; ICE's per-volume
+  rates times the sub-cells' volumes (on a curved mesh a coarse cell's own volume is not its sub-cells'); IGLOO's
+  Eulerian field (`IGLOO-iter = 2`) as density and number per volume, velocity and temperature per mass, evaluated with
+  the coarse gas. The level's totals are the finest grid's (for a material whose cp varies with T, those of
+  density x temperature, not of its enthalpy). A run that ends on a coarse level writes the finest grid, filled, under
+  the name MOSE gives that level's output (`gas-field-level<m>.tec`; its diagnostic holds the filled grid's residual
+  without the condensed sources). Refused at set-up: a time-accurate run (MOSE does not carry the physical time from
+  one level to the next), and `relaxation = true` (it blends two steps' sources cell by cell of the stepped level).
+- Multigrid cycle (`cycle = v` or `w`, every `level<m>-iter` = 0 for m > 1; MOSE has it for steady runs without
+  chemistry): MOSE steps its finest grid from the first iteration. A coarse level of the cycle takes IGLOO's and ICE's
+  sources summed over its sub-cells in the residual MOSE restricts to it, and the converged gas is the one of a run
+  without the cycle. With a coarse start, the cycle's levels below the one MOSE steps get nothing more either.
+
 ### Other refusals
 
 - Multigrid: `[HYDRA-Multigrid] levels` above 1 stops the run (IGLOO has no grid levels).
-- `[MOSE-Multigrid] levels` above 1: only MOSE's multigrid cycle is coupled (`cycle = v` or `w`; MOSE has it for
-  steady runs without chemistry). MOSE then steps its finest grid from the first iteration, without its start on the
-  coarse grids. On a coarse level the coupler adds nothing: the level takes IGLOO's and ICE's sources summed over its
-  sub-cells, in the residual MOSE restricts to it, and the converged gas is the one of a run without the cycle. The
-  run needs ATLAS's coarse boundary files (`[ATLAS-Parameters] MG-levels`) and `level1-iter`, MOSE's iteration limit
-  of the finest grid when `levels` is above 1 (the value `iter-threshold` would have): without it the run stops after
-  MOSE's set-up. So does `levels` above 1 with `cycle = none`: MOSE would start on its coarse grids, while the
-  coupler hands IGLOO and ICE the gas of the finest grid and adds their sources cell by cell of that grid.
+- `[MOSE-Multigrid]`: a start on the coarse grids in a time-accurate run or with `relaxation = true`, and
+  `levels` above 1 without `level1-iter` ([MOSE's grid levels](#moses-grid-levels)).
 - `[ICE-Multigrid] levels` above 1 stops the run: the coupler hands the gas to ICE's finest grid and takes ICE's source
   from it, while ICE steps a coarse level on that level's own grid (and needs ATLAS's `<name>-bc<level>.txt` for it).
 - `IGLOO-iter = 2` in any cycle while an IGLOO material evaporates or burns: the Eulerian coupling hands the gas
@@ -601,8 +620,9 @@ table quotes their characteristic words.
 | setup | `the smoke has no family: ICE is not run`; `relaxation = true blends two coupling steps` | smoke of an IGLOO material |
 | setup | `cycle <c> advances MOSE and ICE together with time-accurate on` | [time modes](#steady-and-time-accurate-runs) |
 | setup | `ICE restarts ([ICE-Parameters] newrun = false) and its hand-off cannot be used: ...` (a time-accurate continuation, or ICE in no cycle) | [restart](#a-restart-that-cannot-be-continued-exactly) |
-| setup | `[MOSE-Multigrid] levels = <n> without a multigrid cycle: MOSE would start on its coarse grids ...` | only MOSE's multigrid cycle is coupled: set `cycle = v` or `w`, or `levels = 1` |
-| setup | `[MOSE-Multigrid] level1-iter is not set: with levels > 1 MOSE takes the iteration limit of its finest grid from it ...` | set `level1-iter` (the value `iter-threshold` would have) |
+| setup | `[MOSE-Multigrid] level<m>-iter > 0 (m > 1) starts MOSE on its coarse grids, and the run is time-accurate ...` | run steady, or set `level<m>-iter = 0` for every m > 1 |
+| setup | `[MOSE-Multigrid] level<m>-iter > 0 (m > 1) starts MOSE on its coarse grids, and relaxation = true ...` | set `relaxation = false`, or `level<m>-iter = 0` for every m > 1 |
+| setup | `[MOSE-Multigrid] level1-iter is not set: with levels > 1 it is the iteration limit of MOSE's finest grid ...` | set `level1-iter` (the value `iter-threshold` would have) |
 | setup | `[ICE-Multigrid] levels = <n>: the coupler hands the gas to ICE's finest grid ...` | ICE's coarse levels are not coupled: use `levels = 1` |
 | setup | `newrun = false with IGLOO, and IGLOO iterates in cycle <c>, a time-accurate cycle` | a cold IGLOO start does not continue a time-accurate run: start a new run from the fields ([restart](#a-restart-that-cannot-be-continued-exactly)) |
 | step | `MOSExIGLOO: IGLOO gasblock <b> extends beyond MOSE's ghosted range` | the gas and particle meshes disagree |

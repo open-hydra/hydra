@@ -107,7 +107,7 @@ At a high level, `src/app/MF/hydra_MF.f90` does the following:
 | File | Holds |
 |---|---|
 | `MI2_Read_Ini.f90` | the input, and what MI2 refuses in the solvers' own sections once their setup has read them |
-| `MI2_Coupling.f90` | the exchange: each solver's coupling setup, the gas state to IGLOO and ICE, their sources into MOSE's residual (one cell kernel per source, shared with the books), and the channels of what lands between solver steps: ICE's removals, its mean source over a time-accurate block, IGLOO's smoke born in ICE |
+| `MI2_Coupling.f90` | the exchange: each solver's coupling setup, the gas state to IGLOO and ICE, their sources into MOSE's residual (one cell kernel per source, shared with the books), and the channels of what lands between solver steps: ICE's removals, its mean source over a time-accurate block, IGLOO's smoke born in ICE; when MOSE starts on its coarse grids, the finest grid filled from the level MOSE steps and the condensed sources restricted to that level |
 | `MI2_Channels.f90` | the channel: a store per route of what a sender made over its clock, handed to the receiver as a rate or as amounts; it knows no solver |
 | `MI2_Restart.f90` | the restart rules and ICE's hand-off file |
 | `MI2_Report.f90` | the setup notices, the `[MI2-report]` lines, the run's mass and energy books and the end-of-run balances |

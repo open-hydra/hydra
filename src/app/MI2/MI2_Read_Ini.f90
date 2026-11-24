@@ -233,30 +233,59 @@ contains
   ! The solvers' own sections, after their setup
   ! ---------------------------------------------------------------------------------------------
 
-  !> MOSE's grid levels, after MOSE's setup: only the multigrid cycle is coupled, and MOSE then steps its finest grid,
-  !  the one the coupler hands the condensed solvers, from the first iteration; a start on the coarse grids is refused.
+  !> MOSE's grid levels, after MOSE's setup. A start on its coarse grids (a level<m>-iter > 0, m > 1) runs as MOSE
+  !  alone runs it: the coupler hands the condensed solvers the finest grid filled from the level MOSE steps and adds
+  !  their sources to that level (coarse_start). Otherwise MOSE steps its finest grid, the one the coupler hands the
+  !  condensed solvers, from the first iteration (its multigrid cycle alone).
   subroutine Check_MOSE_Grid_Levels ()
-    use MOSE_Config_Types_m, only: MOSE_multigrid => obj_multigrid
+    use MOSE_Config_Types_m,     only: MOSE_multigrid => obj_multigrid
+    use hydraMI2_Config_Types_m, only: hydra_MI2_obj
     implicit none
 
     if ( MOSE_multigrid%MGL <= 1 ) return
-    if ( trim(MOSE_multigrid%cycle) == 'none' ) then
-      write(*,'(A,I0,A)') ' [ERROR] MI2: [MOSE-Multigrid] levels = ', MOSE_multigrid%MGL, ' without a multigrid '// &
-        'cycle: MOSE would start on its coarse grids, while the coupler works on its finest. Set cycle = v or w '// &
-        '(steady runs), or levels = 1'
-      error stop 1
-    endif
     if ( MOSE_multigrid%iter_threshold(1) <= 0 ) then
       write(*,'(A)') ' [ERROR] MI2: [MOSE-Multigrid] level1-iter is not set: with levels > 1 it is the iteration '// &
         'limit of MOSE''s finest grid, and with its default (0) the gas makes one iteration per coupling step'
       error stop 1
     endif
+    hydra_MI2_obj%coarse_start = any( MOSE_multigrid%iter_threshold(2:MOSE_multigrid%MGL) > 0 )
+    if ( hydra_MI2_obj%coarse_start ) then
+      call Check_Coarse_Start()
+      write(*,'(A,I0,A)') ' MI2: MOSE starts on its coarse grids (levels = ', MOSE_multigrid%MGL, '): the coupler '// &
+        'hands IGLOO and ICE the gas of the finest grid, filled from the level MOSE steps, and adds their sources to '// &
+        'that level summed over its sub-cells'
+      return
+    endif
     MOSE_multigrid%MG_level = 1
-    write(*,'(A,I0,A)') ' MI2: MOSE''s multigrid cycle on ', MOSE_multigrid%MGL, ' levels: MOSE steps its finest '// &
-      'grid from the first iteration; a coarse level takes the condensed solvers'' sources in the residual MOSE '// &
-      'restricts to it'
+    if ( trim(MOSE_multigrid%cycle) /= 'none' ) write(*,'(A,I0,A)') ' MI2: MOSE''s multigrid cycle on ', &
+      MOSE_multigrid%MGL, ' levels: MOSE steps its finest grid from the first iteration; a coarse level takes the '// &
+      'condensed solvers'' sources in the residual MOSE restricts to it'
 
   end subroutine Check_MOSE_Grid_Levels
+
+
+  !> A start on MOSE's coarse grids where the coupler does not follow it: a time-accurate run (MOSE does not carry the
+  !  physical time across levels), and IGLOO's relaxation (its store is cell by cell of the level MOSE steps).
+  subroutine Check_Coarse_Start ()
+    use MOSE_Config_Types_m,     only: MOSE_time_scheme => obj_time_scheme, MOSE_sim => obj_sim_param
+    use hydraMI2_Config_Types_m, only: hydra_MI2_obj
+    implicit none
+    character(len=*), parameter :: E = ' [ERROR] MI2: [MOSE-Multigrid] level<m>-iter > 0 (m > 1) starts MOSE on its '// &
+                                       'coarse grids, '
+
+    if ( MOSE_time_scheme%time_accurate .or. MOSE_sim%HYDRA_time_accurate ) then
+      write(*,'(A)') E//'and the run is time-accurate ([MOSE-Numerics] time-accurate = true): MOSE does not carry the '// &
+        'physical time from one level to the next. Set level<m>-iter = 0 for every m > 1 (levels = 1), or run steady'
+      error stop 1
+    endif
+    if ( hydra_MI2_obj%run_IGLOO .and. hydra_MI2_obj%relaxation ) then
+      write(*,'(A)') E//'and relaxation = true blends each coupling step''s IGLOO sources with the last step''s, cell by '// &
+        'cell of the level MOSE steps, which changes at each switch of level. Set relaxation = false, or '// &
+        'level<m>-iter = 0 for every m > 1'
+      error stop 1
+    endif
+
+  end subroutine Check_Coarse_Start
 
 
   !> ICE's grid levels, after ICE's setup: the coupler hands the gas to ICE's finest level and takes ICE's source from

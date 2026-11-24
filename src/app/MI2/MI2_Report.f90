@@ -1,7 +1,8 @@
 !> What the coupling amounts to, for the log. Nothing here acts on the solution.
 !    setup         : what got built, the overset-mesh warning, the gas inventory the books start from (Report_Start)
 !    every block   : the frozen-source notices; the books of what the block handed the gas and, under [MI2-Coupling]
-!                    report, its [MI2-report] lines (Report_Block_Start ... Report_Block_End)
+!                    report, its [MI2-report] lines (Report_Block_Start ... Report_Block_End); on a start on MOSE's
+!                    coarse grids, the totals of each restriction of the condensed sources (Report_Coarse_Sources)
 !    end of run    : the floor-guard count and the closed-domain mass and energy balances (Report_End)
 !  What a solver hands the gas is summed by hydraMI2_Mod_Coupling (IGLOO_Handed, ICE_Handed, Removals_Handed),
 !  from the same cell kernels the injection applies.
@@ -13,7 +14,7 @@ module hydraMI2_Report
   private
 
   public :: Report_Start, Report_Frozen_Sources, Report_Values, Report_Inlet
-  public :: Report_Block_Start, Report_Block_End, Report_End
+  public :: Report_Block_Start, Report_Block_End, Report_End, Report_Coarse_Sources
 
   !> The books: the mass of each gas species [kg] (allocated by the first block or delivery that carries a mass
   !  coupling), the energy [J] and its datum-offset part, handed to the gas over the run.
@@ -268,6 +269,38 @@ contains
     if ( iglooSrc ) call Report_Values( 'igloo-to-gas', [hIGLOO%mom, hIGLOO%energy, Mass_Of(hIGLOO)] )
 
   end subroutine Report_Block_End
+
+
+  !> Under report, after the condensed sources were restricted to level, the one MOSE steps on a start on its coarse
+  !  grids (Before_MOSE_Iteration): per block and quantity, the finest grid's total, the coarse level's, the sum of
+  !  magnitudes on the finest grid.
+  subroutine Report_Coarse_Sources ( level, IGLOO_src, ICE_src )
+    use hydraMI2_Config_Types_m, only: hydra_MI2_obj
+    use hydraMI2_Mod_Coupling,   only: source_state_t, restricted_t, Restricted_Totals
+    implicit none
+    integer,              intent(in) :: level
+    type(source_state_t), intent(in) :: IGLOO_src, ICE_src
+    type(restricted_t), allocatable :: t(:)
+
+    if ( .not. hydra_MI2_obj%report ) return
+    t = Restricted_Totals()
+    if ( IGLOO_src%ready ) call Lines( 'IGLOO' )
+    if ( ICE_src%ready )   call Lines( 'ICE' )
+
+  contains
+
+    subroutine Lines ( who )
+      character(len=*), intent(in) :: who
+      integer :: n
+      write(*,'(A,I0)') ' [MI2-report] restricted '//who//' to level ', level
+      do n = 1, size(t)
+        if ( trim(t(n)%who) /= who ) cycle
+        write(*,'(A,I0,1X,A,3ES24.16)') ' [MI2-report] restricted block ', t(n)%b, trim(t(n)%what), t(n)%onFine, &
+          t(n)%onCoarse, t(n)%magnitude
+      enddo
+    end subroutine Lines
+
+  end subroutine Report_Coarse_Sources
 
 
   !> Add what h hands the gas, over dt (1 for an amount), to the books. A mass coupling opens the mass books.
