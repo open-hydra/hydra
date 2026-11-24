@@ -82,6 +82,11 @@ module hydraMI2_Mod_Coupling
   end type res_block_t
   type(res_block_t), allocatable :: oldResidual(:)
 
+  !> A value per cell of a block (interior cells).
+  type :: vol_t
+    real(R8), allocatable :: v(:,:,:)
+  end type vol_t
+
   !> removed(g): what the burn-out of ICE family g removed (mass, momentum (3), energy, per unit volume), from ICE to
   !  the gas; the store of every family, though only a converting one hands it on. Under rates timed: the store over
   !  the time it was made in is the rate in force, kept while ICE does not step, as its source is. Under amounts each
@@ -685,36 +690,58 @@ contains
   ! orphaned !$OMP DO only, no ASSOCIATE, and cell kernels that write only their arguments.
   ! ---------------------------------------------------------------------------------------------
 
-  !> Inject IGLOO's reaction on the gas into MOSE's residual (R = R - S).
-  !    source branch : source{Mass,Mom,En} are absolute rates; their mass through IGLOO_Mass_To_Gas, under the
-  !                    consumed-species floor guard
-  !    euler  branch : getSourceTerms is per unit volume (*vol); momentum and energy only
+  !> Inject IGLOO's reaction on the gas into MOSE's residual (R = R - S), from IGLOO's own arrays.
   !  iter of iMax is the MOSE iteration within its block and relCoeff the cycle's under-relaxation coefficient
   !  (1: the source is injected as it is).
   subroutine IGLOOxMOSE ( MOSE_domain, IGLOO, eulerian, iter, iMax, relCoeff )
-    use MOSE_Advanced_Types_m,  only: MOSE_domain_type
-    use MOSE_Global_m,          only: nsc, nu, nw, np, nprim
-    use MOSE_Config_Types_m,    only: obj_chemistry
-    use IGLOO_module,           only: obj_IGLOO
-    use IGLOO_variables,        only: nfam
-    use hydraMI2_Stoichiometry, only: productsIGLOO
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    use IGLOO_module,          only: obj_IGLOO
     implicit none
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
     type(obj_IGLOO),        intent(in)    :: IGLOO
     logical,                intent(in)    :: eulerian
     integer,                intent(in)    :: iter, iMax
     real(R8),               intent(in)    :: relCoeff
+
+    call IGLOO_Residual( MOSE_domain, IGLOO, IGLOO%source, IGLOO%euler, eulerian, iter, iMax, relCoeff )
+
+  end subroutine IGLOOxMOSE
+
+
+  !> IGLOO's reaction on the gas into MOSE's residual, from the arrays given on the cells of MOSE_domain: src the
+  !  source mode's rates, eul the Eulerian fields; volE, when given, the volume the Eulerian branch's per-volume source
+  !  is taken over, else the cell's own.
+  !    source branch : source{Mass,Mom,En} are absolute rates; their mass through IGLOO_Mass_To_Gas, under the
+  !                    consumed-species floor guard
+  !    euler  branch : getSourceTerms is per unit volume (*vol); momentum and energy only
+  subroutine IGLOO_Residual ( MOSE_domain, IGLOO, src, eul, eulerian, iter, iMax, relCoeff, volE )
+    use MOSE_Advanced_Types_m,  only: MOSE_domain_type
+    use MOSE_Global_m,          only: nsc, nu, nw, np, nprim
+    use MOSE_Config_Types_m,    only: obj_chemistry
+    use IGLOO_module,           only: obj_IGLOO
+    use IGLOO_data_block,       only: obj_sourceblock, obj_eulerblock
+    use IGLOO_variables,        only: nfam
+    use hydraMI2_Stoichiometry, only: productsIGLOO
+    implicit none
+    type(MOSE_domain_type),             intent(inout) :: MOSE_domain
+    type(obj_IGLOO),                    intent(in)    :: IGLOO
+    type(obj_sourceblock), allocatable, intent(in)    :: src(:)
+    type(obj_eulerblock),  allocatable, intent(in)    :: eul(:,:)
+    logical,                            intent(in)    :: eulerian
+    integer,                            intent(in)    :: iter, iMax
+    real(R8),                           intent(in)    :: relCoeff
+    type(vol_t),          optional,     intent(in)    :: volE(:)
     logical  :: blend
     integer  :: b, i, j, k, m
     ! res mirrors blk%R(1:nprim): species 1:nsc, momentum nu:nw, energy np, then soot/passive/RANS (left at zero)
-    real(R8) :: res(nprim), sources(4), datum
+    real(R8) :: res(nprim), sources(4), datum, vE
     real(R8) :: rhoi(nsc), rho, u(3), T, R, gam, kappa, mu, coeff
 
     call Relaxation_Weight ( iter, iMax, relCoeff, coeff, blend )
 
     do b = 1, size(MOSE_domain%blk)
 
-      !$OMP DO COLLAPSE(3) PRIVATE(res,sources,datum,rhoi,rho,u,T,R,gam,kappa,mu,i,j,k,m)
+      !$OMP DO COLLAPSE(3) PRIVATE(res,sources,datum,rhoi,rho,u,T,R,gam,kappa,mu,i,j,k,m,vE)
       do k = 1, MOSE_domain%blk(b)%dim(3)
       do j = 1, MOSE_domain%blk(b)%dim(2)
       do i = 1, MOSE_domain%blk(b)%dim(1)
@@ -725,19 +752,21 @@ contains
           sources = 0._R8
           do m = 1, nfam
             sources = sources + IGLOO%getSourceTerms( [rho,u,T,gam,R,mu,kappa],      &
-                                    IGLOO%euler(b,m)%velocity(:,i,j,k),              &
-                                    IGLOO%euler(b,m)%temperature(i,j,k),             &
-                                    IGLOO%euler(b,m)%density(i,j,k),                 &
-                                    IGLOO%euler(b,m)%np(i,j,k), famMatID(m) )
+                                    eul(b,m)%velocity(:,i,j,k),                      &
+                                    eul(b,m)%temperature(i,j,k),                     &
+                                    eul(b,m)%density(i,j,k),                         &
+                                    eul(b,m)%np(i,j,k), famMatID(m) )
           enddo
           res(nu:nw) = - sources(1:3)
           res(np)    = - sources(4)
-          res = res * MOSE_domain%blk(b)%vol(i,j,k)
+          vE = MOSE_domain%blk(b)%vol(i,j,k)
+          if (present(volE)) vE = volE(b)%v(i,j,k)
+          res = res * vE
         else
-          res(nu:nw) = IGLOO%source(b)%sourceMom(:,i,j,k)
-          res(np)    = IGLOO%source(b)%sourceEn(i,j,k)
+          res(nu:nw) = src(b)%sourceMom(:,i,j,k)
+          res(np)    = src(b)%sourceEn(i,j,k)
           if (productsIGLOO%active) then
-            call IGLOO_Mass_To_Gas ( IGLOO%source(b)%sourceMass(:,i,j,k), res, datum )
+            call IGLOO_Mass_To_Gas ( src(b)%sourceMass(:,i,j,k), res, datum )
             call Floor_Guard ( res(1:nsc), MOSE_domain%blk(b)%P(1:nsc,i,j,k), MOSE_domain%blk(b)%vol(i,j,k), &
                                MOSE_domain%blk(b)%dtlocal(i,j,k) * obj_chemistry%strangcoeff )
           endif
@@ -755,14 +784,28 @@ contains
 
     enddo
 
-  end subroutine IGLOOxMOSE
+  end subroutine IGLOO_Residual
 
 
-  !> Inject ICE's reaction on the gas into MOSE's residual: what each family's source hands the gas (ICE_Cell) and the
-  !  removals ICE stores (Removal_Cell: a steady run, the rate of the store; a time-accurate one, this MOSE
-  !  iteration's share of it as a rate over its step, which each stage and both Strang halves integrate to
-  !  rate*dtlocal), under the consumed-species floor guard, times the cell volume.
+  !> Inject ICE's reaction on the gas into MOSE's residual, from ICE's own arrays and the removals' channels.
   subroutine ICExMOSE ( MOSE_domain, ICE_domain )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    use ICE_Advanced_Types_m,  only: ICE_domain_type
+    implicit none
+    type(MOSE_domain_type), intent(inout) :: MOSE_domain
+    type(ICE_domain_type),  intent(in)    :: ICE_domain
+
+    call ICE_Residual( MOSE_domain, ICE_domain, removed )
+
+  end subroutine ICExMOSE
+
+
+  !> ICE's reaction on the gas into MOSE's residual, from the arrays given on the cells of MOSE_domain: what each
+  !  family's source in ICE_domain hands the gas (ICE_Cell) and the removals of the channels rem (Removal_Cell: a
+  !  steady run, the rate of the store; a time-accurate one, this MOSE iteration's share of it as a rate over its step,
+  !  which each stage and both Strang halves integrate to rate*dtlocal), under the consumed-species floor guard, times
+  !  the cell volume.
+  subroutine ICE_Residual ( MOSE_domain, ICE_domain, rem )
     use MOSE_Advanced_Types_m,  only: MOSE_domain_type
     use MOSE_Global_m,          only: nsc, nprim
     use MOSE_Config_Types_m,    only: obj_chemistry
@@ -772,6 +815,7 @@ contains
     implicit none
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
     type(ICE_domain_type),  intent(in)    :: ICE_domain
+    type(channel_t),        intent(in)    :: rem(:)
     integer  :: b, g, i, j, k, imat, nshare
     real(R8) :: r(nprim), dtIter, datum, gr(5)
     logical  :: mapped, consumes
@@ -795,15 +839,15 @@ contains
           call ICE_Cell ( imat, mapped, ICE_domain%blk(b)%cond_phase(g)%source(:,i,j,k), nbase(g)-1, &
                           ICE_domain%blk(b)%cond_phase(g)%birth(:,i,j,k), r, datum )
           if (mapped) then
-            if (removed(g)%asRate) then
-              if (allocated(removed(g)%blk(b)%r)) then
-                gr = removed(g)%blk(b)%r(:,i,j,k)
+            if (rem(g)%asRate) then
+              if (allocated(rem(g)%blk(b)%r)) then
+                gr = rem(g)%blk(b)%r(:,i,j,k)
                 call Removal_Cell ( imat, gr, r, datum )
               endif
-            elseif (removed(g)%share > 0._R8) then
+            elseif (rem(g)%share > 0._R8) then
               dtIter = MOSE_domain%blk(b)%dtlocal(i,j,k)
               if (dtIter > 0._R8) then
-                gr = removed(g)%blk(b)%a(:,i,j,k)*removed(g)%share/dtIter
+                gr = rem(g)%blk(b)%a(:,i,j,k)*rem(g)%share/dtIter
                 call Removal_Cell ( imat, gr, r, datum )
               endif
             endif
@@ -830,7 +874,7 @@ contains
       if (Converts(imat)) Consumes_Gas = any(productsICE%nu(imat,1:nsc) < 0._R8)
     end function Consumes_Gas
 
-  end subroutine ICExMOSE
+  end subroutine ICE_Residual
 
 
   !> ICE material imat converts: it has a record in the products file, whose mass the gas receives.
