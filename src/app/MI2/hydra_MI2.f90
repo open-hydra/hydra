@@ -30,7 +30,8 @@ program hydra_MI2_program
                                      Gone_To_Rate, Source_Clock, Source_Mean, &
                                      smokeIG, smokeIGOn, IGLOO_Smoke_Accumulate, IGLOO_Smoke_Deliver, nSmokeNoState, &
                                      handRates, ICE_Exchange_File, Write_ICE_Exchange, Read_ICE_Exchange, &
-                                     coarse_src_t, Restrict_IGLOO_Sources, Restrict_ICE_Sources
+                                     coarse_src_t, Restrict_IGLOO_Sources, Restrict_ICE_Sources, &
+                                     Residual_Probe, Report_Probe
   use hydraMI2_Build_Stamp,    only: Print_Build_Stamp
   use Lib_ORION_data,          only: orion_data
 
@@ -146,12 +147,7 @@ program hydra_MI2_program
   ! MOSE's grid levels: a start on the coarse grids runs as MOSE alone runs it; the multigrid cycle alone steps the
   ! finest grid, the one the coupler hands the condensed solvers, from the first iteration
   if ( MOSE_obj_multigrid%MGL > 1 ) then
-    if ( MOSE_obj_multigrid%iter_threshold(1) <= 0 ) then
-      write(*,'(A)') ' [ERROR] MI2: [MOSE-Multigrid] level1-iter is not set: with levels > 1 MOSE takes the iteration '// &
-        'limit of its finest grid from it, and with its default (0) the gas makes one iteration per coupling step. '// &
-        'Set level1-iter (the value iter-threshold would have)'
-      error stop 1
-    endif
+    call Check_Level1_Iter()
     coarseStart = any( MOSE_obj_multigrid%iter_threshold(2:MOSE_obj_multigrid%MGL) > 0 )
     if ( coarseStart ) then
       call Check_Coarse_Start()
@@ -405,7 +401,10 @@ program hydra_MI2_program
 
       ! Hot re-read of input.ini, so a long run can be steered without restarting
       if ( hydra_obj_io%ini_diter > 0 ) then
-        if ( mod(n_couple, hydra_obj_io%ini_diter) == 0 ) call Read_Inifile_MI2_Runtime()
+        if ( mod(n_couple, hydra_obj_io%ini_diter) == 0 ) then
+          call Read_Inifile_MI2_Runtime()
+          if ( coarseStart ) call Check_Coarse_Start()
+        endif
       endif
 
       ! --- MOSE ---------------------------------------------------------------
@@ -460,6 +459,8 @@ program hydra_MI2_program
           if ( smokeIGOn .and. hydra_MI2_obj%run_IGLOO .and. IGLOO_has_sources .and. .not. IGLOO_src_eulerian ) &
             call IGLOO_Smoke_Accumulate( MOSE_simulation%domain(level), IGLOO, MOSE_simulation%domain(1), coarseSrc )
           if ( MOSE_obj_sim_param%TODO <= 2 ) call MOSE%postprocess( MOSE_simulation )
+          ! MOSE's postprocess reads input.ini again at its own interval
+          if ( MOSE_obj_multigrid%MGL > 1 ) call Check_Level1_Iter()
           if ( MOSE_obj_io%output_number /= MOSE_outNum ) then
             MOSE_outNum    = MOSE_obj_io%output_number
             MOSE_fieldIter = MOSE_obj_sim_param%iter_general
@@ -840,12 +841,41 @@ contains
       call Restrict_ICE_Sources( coarseSrc, MOSE_simulation%domain(1), MOSE_simulation%domain(lev), &
                                  ICE_simulation%domain(1), hydra_MI2_obj%report )
     levelSrc = lev
+    if ( hydra_MI2_obj%report ) call Report_Residual_Totals()
 
   end subroutine Restrict_Sources
 
 
-  !> Refuse a start on MOSE's coarse grids where the coupler does not follow it: a time-accurate run, and IGLOO's
-  !  relaxation (its store is cell by cell of the level MOSE steps).
+  !> [MI2-Coupling] report: what IGLOO's and ICE's per-stage routines subtract from the residual of the level MOSE steps
+  !  and of the finest grid, on copies of both (Residual_Probe); relaxation off, as a coarse start has it.
+  subroutine Report_Residual_Totals()
+    implicit none
+    type(MOSE_domain_type) :: coarse, fine
+
+    call Residual_Probe( MOSE_simulation%domain(MOSE_obj_multigrid%MG_level), coarse )
+    call Residual_Probe( MOSE_simulation%domain(1), fine )
+    if ( hydra_MI2_obj%run_IGLOO .and. IGLOO_has_sources ) then
+      !$omp parallel
+      call IGLOOxMOSE( fine, IGLOO, eulCoupling, .false., i_MOSE, hydra_obj_sim_param%MOSE_iter(n_cycle), &
+                       hydra_MI2_obj%relCoeff(n_cycle), oldResidual, coarseSrc )
+      call IGLOOxMOSE( coarse, IGLOO, eulCoupling, .false., i_MOSE, hydra_obj_sim_param%MOSE_iter(n_cycle), &
+                       hydra_MI2_obj%relCoeff(n_cycle), oldResidual, coarseSrc )
+      !$omp end parallel
+      call Report_Probe( trim(merge('igloo-euler ', 'igloo-source', eulCoupling)), fine, coarse )
+    endif
+    if ( hydra_MI2_obj%run_ICE .and. ICE_has_sources ) then
+      !$omp parallel
+      call ICExMOSE( fine, ICE_simulation%domain(1), coarseSrc )
+      call ICExMOSE( coarse, ICE_simulation%domain(1), coarseSrc )
+      !$omp end parallel
+      call Report_Probe( 'ice', fine, coarse )
+    endif
+
+  end subroutine Report_Residual_Totals
+
+
+  !> Refuse a start on MOSE's coarse grids where the coupler does not follow it: a time-accurate run, IGLOO's relaxation
+  !  (its store is cell by cell of the level MOSE steps), a restart (MOSE reads a field the run may not have written).
   subroutine Check_Coarse_Start()
     implicit none
     character(len=*), parameter :: E = ' [ERROR] MI2: [MOSE-Multigrid] level<m>-iter > 0 (m > 1) starts MOSE on its '// &
@@ -862,8 +892,28 @@ contains
         'level<m>-iter = 0 for every m > 1'
       error stop 1
     endif
+    if ( .not. MOSE_obj_sim_param%newrun ) then
+      write(*,'(A)') E//'and newrun = false: a run that ends on a coarse level writes its final field as '// &
+        '<prefix>field-level<m>.tec, while MOSE restarts from <prefix>field.tec. Set newrun = true, or level<m>-iter = 0 '// &
+        'for every m > 1 to restart on the finest grid'
+      error stop 1
+    endif
 
   end subroutine Check_Coarse_Start
+
+
+  !> Refuse MOSE's grid levels without level1-iter (at set-up, and after MOSE reads input.ini again).
+  subroutine Check_Level1_Iter()
+    implicit none
+
+    if ( MOSE_obj_multigrid%iter_threshold(1) <= 0 ) then
+      write(*,'(A)') ' [ERROR] MI2: [MOSE-Multigrid] level1-iter is not set: with levels > 1 MOSE takes the iteration '// &
+        'limit of its finest grid from it, and with its default (0) the gas makes one iteration per coupling step. '// &
+        'Set level1-iter (the value iter-threshold would have)'
+      error stop 1
+    endif
+
+  end subroutine Check_Level1_Iter
 
 
   !> Whether iteration i of the current coupling step is the solver's last of the run: the step ends its cycle, i is
