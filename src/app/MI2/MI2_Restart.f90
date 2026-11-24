@@ -56,9 +56,9 @@ contains
   ! Setup
   ! ---------------------------------------------------------------------------------------------
 
-  !> After the solvers' setup: whether each solver continues the run it restarts from, IGLOO's restart rule, and an
-  !  ICE restart's hand-off read back (ICE_has_sources: whether it held sources MOSE may read); then the iteration
-  !  and output count each solver starts from.
+  !> After the solvers' setup: a restart of MOSE on a start on its coarse grids refused; whether each solver continues
+  !  the run it restarts from, IGLOO's restart rule, and an ICE restart's hand-off read back (ICE_has_sources: whether
+  !  it held sources MOSE may read); then the iteration and output count each solver starts from.
   subroutine Setup_Restart ( ICE_simulation, ICE_has_sources )
     use hydraMI2_Config_Types_m, only: hydra_MI2_obj
     use MOSE_Config_Types_m,     only: MOSE_sim => obj_sim_param, MOSE_io => obj_io
@@ -67,6 +67,8 @@ contains
     implicit none
     type(ICE_simulation_type), intent(inout) :: ICE_simulation
     logical,                   intent(inout) :: ICE_has_sources
+
+    if ( hydra_MI2_obj%coarse_start .and. .not. MOSE_sim%newrun ) call Refuse_Coarse_Restart()
 
     MOSE_continues = .not. MOSE_sim%newrun .and. MOSE_io%restart%found .and. &
                      MOSE_sim%iter_general == MOSE_io%restart%cycle
@@ -145,6 +147,20 @@ contains
   ! ---------------------------------------------------------------------------------------------
   ! The rules of a restart that cannot continue exactly
   ! ---------------------------------------------------------------------------------------------
+
+  !> newrun = false on a start on MOSE's coarse grids, refused: a run that ends on a coarse level writes its final
+  !  field under that level's name, while MOSE restarts from the finest grid's (absent, or an older run's).
+  subroutine Refuse_Coarse_Restart ()
+    implicit none
+
+    write(*,'(A)') ' [ERROR] MI2: [MOSE-Multigrid] level<m>-iter > 0 (m > 1) starts MOSE on its coarse grids, and '// &
+      'newrun = false: a run that ends on a coarse level writes its final field as <prefix>field-level<m>.tec, while '// &
+      'MOSE restarts from <prefix>field.tec. Set newrun = true, or level<m>-iter = 0 for every m > 1 to restart on the '// &
+      'finest grid'
+    error stop 1
+
+  end subroutine Refuse_Coarse_Restart
+
 
   !> newrun = false with IGLOO: IGLOO keeps neither its parcels nor the sources it hands the gas from one run to the
   !  next, so it starts empty on the restored fields. Stop when a cycle in which IGLOO iterates continues a

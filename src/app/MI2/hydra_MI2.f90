@@ -23,7 +23,7 @@ program hydra_MI2_program
   use hydraMI2_Config_Types_m, only: hydra_MI2_obj
   use hydraMI2_Build_Stamp,    only: Print_Build_Stamp
   use hydraMI2_Read_Ini,       only: Read_Inifile_MI2, Read_Inifile_MI2_Runtime, Check_MOSE_Grid_Levels,    &
-                                     Check_ICE_Grid_Levels, Check_Coupled_Inputs
+                                     Check_ICE_Grid_Levels, Check_Coupled_Inputs, Check_MOSE_Level1_Iter
   use hydraMI2_Mod_Import,     only: Assign_Phases
   use hydraMI2_Mod_Coupling,   only: source_state_t, removals_t, smoke_t, handRates, smokeIGOn, mdotHanded, nHanded, &
                                      Setup_ICE_Coupling, Setup_IGLOO_Coupling, Set_IGLOO_Switches, Gas_Field_For_IGLOO, &
@@ -197,7 +197,7 @@ contains
       endif
       ! on a coarse level, the condensed sources in force restricted to it when they or the level changed
       call Before_MOSE_Iteration( MOSE_simulation, IGLOO, ICE_simulation, IGLOO_src, ICE_src, rebuilt )
-      if ( rebuilt ) call Report_Coarse_Sources( level, IGLOO_src, ICE_src )
+      if ( rebuilt ) call Report_Coarse_Sources( MOSE_simulation, level, IGLOO, ICE_simulation, IGLOO_src, ICE_src )
       call MOSE%solve( MOSE_simulation, MOSE_external_routine )
       if ( lastIter ) then
         if ( level == 1 ) then
@@ -212,6 +212,8 @@ contains
       if ( smokeIGOn .and. IGLOO_src%ready .and. .not. IGLOO_src%eulerian ) &
         call IGLOO_Smoke_Accumulate( MOSE_simulation%domain(level), IGLOO )
       if ( MOSE_obj_sim_param%TODO <= 2 ) call MOSE%postprocess( MOSE_simulation )
+      ! MOSE's postprocess reads input.ini again at its own interval
+      call Check_MOSE_Level1_Iter()
       call Note_Outputs()
     enddo
 

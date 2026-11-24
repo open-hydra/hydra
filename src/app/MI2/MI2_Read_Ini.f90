@@ -7,7 +7,7 @@ module hydraMI2_Read_Ini
   implicit none
   private
   public :: Read_Inifile_MI2, Read_Inifile_MI2_Runtime
-  public :: Check_MOSE_Grid_Levels, Check_ICE_Grid_Levels, Check_Coupled_Inputs
+  public :: Check_MOSE_Grid_Levels, Check_ICE_Grid_Levels, Check_Coupled_Inputs, Check_MOSE_Level1_Iter
 
 contains
 
@@ -59,10 +59,11 @@ contains
   !  can be steered without restarting: refreshes the values of the registered keys (sizes are not
   !  re-scanned).
   subroutine Read_Inifile_MI2_Runtime(n_couple)
-    use Finer,                only: file_ini
-    use hydra_Backend_INI,    only: Load_Ini
-    use hydra_Config_Types_m, only: hydra_obj_io
-    use hydra_Input_Registry, only: Validate_Registry
+    use Finer,                   only: file_ini
+    use hydra_Backend_INI,       only: Load_Ini
+    use hydra_Config_Types_m,    only: hydra_obj_io
+    use hydra_Input_Registry,    only: Validate_Registry
+    use hydraMI2_Config_Types_m, only: hydra_MI2_obj
     implicit none
     integer, intent(in) :: n_couple      !> coupling step of the cycle
     type(file_ini) :: fini
@@ -80,6 +81,8 @@ contains
     endif
 
     call Normalize_MI2_Params()
+    ! relaxation read again under a start on MOSE's coarse grids
+    if (hydra_MI2_obj%coarse_start) call Check_Coarse_Start()
 
   end subroutine Read_Inifile_MI2_Runtime
 
@@ -243,11 +246,7 @@ contains
     implicit none
 
     if ( MOSE_multigrid%MGL <= 1 ) return
-    if ( MOSE_multigrid%iter_threshold(1) <= 0 ) then
-      write(*,'(A)') ' [ERROR] MI2: [MOSE-Multigrid] level1-iter is not set: with levels > 1 it is the iteration '// &
-        'limit of MOSE''s finest grid, and with its default (0) the gas makes one iteration per coupling step'
-      error stop 1
-    endif
+    call Check_MOSE_Level1_Iter()
     hydra_MI2_obj%coarse_start = any( MOSE_multigrid%iter_threshold(2:MOSE_multigrid%MGL) > 0 )
     if ( hydra_MI2_obj%coarse_start ) then
       call Check_Coarse_Start()
@@ -264,8 +263,24 @@ contains
   end subroutine Check_MOSE_Grid_Levels
 
 
+  !> MOSE's grid levels without level1-iter, refused: at MOSE's set-up, and after MOSE reads input.ini again.
+  subroutine Check_MOSE_Level1_Iter ()
+    use MOSE_Config_Types_m, only: MOSE_multigrid => obj_multigrid
+    implicit none
+
+    if ( MOSE_multigrid%MGL <= 1 ) return
+    if ( MOSE_multigrid%iter_threshold(1) <= 0 ) then
+      write(*,'(A)') ' [ERROR] MI2: [MOSE-Multigrid] level1-iter is not set: with levels > 1 it is the iteration '// &
+        'limit of MOSE''s finest grid, and with its default (0) the gas makes one iteration per coupling step'
+      error stop 1
+    endif
+
+  end subroutine Check_MOSE_Level1_Iter
+
+
   !> A start on MOSE's coarse grids where the coupler does not follow it: a time-accurate run (MOSE does not carry the
-  !  physical time across levels), and IGLOO's relaxation (its store is cell by cell of the level MOSE steps).
+  !  physical time across levels), and IGLOO's relaxation (its store is cell by cell of the level MOSE steps). At
+  !  MOSE's set-up, and after input.ini is read again.
   subroutine Check_Coarse_Start ()
     use MOSE_Config_Types_m,     only: MOSE_time_scheme => obj_time_scheme, MOSE_sim => obj_sim_param
     use hydraMI2_Config_Types_m, only: hydra_MI2_obj

@@ -264,11 +264,15 @@ have): without it the run stops after MOSE's set-up. IGLOO and ICE always see th
   adds the finest grid's sources summed over each coarse cell's sub-cells: IGLOO's rates summed; ICE's per-volume
   rates times the sub-cells' volumes (on a curved mesh a coarse cell's own volume is not its sub-cells'); IGLOO's
   Eulerian field (`IGLOO-iter = 2`) as density and number per volume, velocity and temperature per mass, evaluated with
-  the coarse gas. The level's totals are the finest grid's (for a material whose cp varies with T, those of
-  density x temperature, not of its enthalpy). A run that ends on a coarse level writes the finest grid, filled, under
-  the name MOSE gives that level's output (`gas-field-level<m>.tec`; its diagnostic holds the filled grid's residual
-  without the condensed sources). Refused at set-up: a time-accurate run (MOSE does not carry the physical time from
-  one level to the next), and `relaxation = true` (it blends two steps' sources cell by cell of the stepped level).
+  the coarse gas; the smoke of an IGLOO material withheld from the gas with the rates of each sub-cell, summed (they
+  are not linear in IGLOO's columns). The level's totals are the finest grid's (for a material whose cp varies with
+  T, those of density x temperature, not of its enthalpy). A run that ends on a coarse level writes its final field,
+  on the finest grid's cells (filled), as `<prefix>field-level<m>.tec`, the name MOSE gives that level's output (its
+  diagnostic holds the filled grid's residual without the condensed sources); MOSE's restart reads
+  `<prefix>field.tec`. Refused at set-up: a time-accurate run (MOSE does not carry the physical time from one level to
+  the next), `relaxation = true` (it blends two steps' sources cell by cell of the stepped level), and a restart
+  (`[MOSE-Parameters] newrun = false`: set `newrun = true`, or `level<m>-iter = 0` for every m > 1 to restart on the
+  finest grid). `relaxation = true` read again during the run stops it the same way.
 - Multigrid cycle (`cycle = v` or `w`, every `level<m>-iter` = 0 for m > 1; MOSE has it for steady runs without
   chemistry): MOSE steps its finest grid from the first iteration. A coarse level of the cycle takes IGLOO's and ICE's
   sources summed over its sub-cells in the residual MOSE restricts to it, and the converged gas is the one of a run
@@ -277,8 +281,9 @@ have): without it the run stops after MOSE's set-up. IGLOO and ICE always see th
 ### Other refusals
 
 - Multigrid: `[HYDRA-Multigrid] levels` above 1 stops the run (IGLOO has no grid levels).
-- `[MOSE-Multigrid]`: a start on the coarse grids in a time-accurate run or with `relaxation = true`, and
-  `levels` above 1 without `level1-iter` ([MOSE's grid levels](#moses-grid-levels)).
+- `[MOSE-Multigrid]`: a start on the coarse grids in a time-accurate run, with `relaxation = true` or with
+  `newrun = false`, and `levels` above 1 without `level1-iter`, also when MOSE reads `input.ini` again during the run
+  ([MOSE's grid levels](#moses-grid-levels)).
 - `[ICE-Multigrid] levels` above 1 stops the run: the coupler hands the gas to ICE's finest grid and takes ICE's source
   from it, while ICE steps a coarse level on that level's own grid (and needs ATLAS's `<name>-bc<level>.txt` for it).
 - `IGLOO-iter = 2` in any cycle while an IGLOO material evaporates or burns: the Eulerian coupling hands the gas
@@ -590,6 +595,8 @@ interior cells):
 | `igloo-smoke-withheld`, `igloo-smoke-rate` | steady run: the smoke kept out of the gas over the block; the rates handed to ICE (mass, momentum (3), energy, number) |
 | `igloo-smoke-delivered` | time-accurate run: the smoke added to ICE after the block |
 | `igloo-inlet-mdot` | the gas inflow handed to IGLOO [kg/s] and the number of face records |
+| `restricted block <b> <quantity>` | start on the coarse grids, at each rebuild of the coarse level's sources: the finest grid's total, the coarse level's, the sum of magnitudes |
+| `residual level <m> <routine> row <q>` | the same: what IGLOO's (`igloo-source`, `igloo-euler`) or ICE's (`ice`) per-stage routine subtracts from row q of the residual on copies of the finest grid and of level m, with the floor guard off, and the sum of magnitudes on the finest grid |
 | `ice-time` | steady run: ICE's time at the start and end of its block |
 
 ---
@@ -624,8 +631,9 @@ table quotes their characteristic words.
 | setup | `cycle <c> advances MOSE and ICE together with time-accurate on` | [time modes](#steady-and-time-accurate-runs) |
 | setup | `ICE restarts ([ICE-Parameters] newrun = false) and its hand-off cannot be used: ...` (a time-accurate continuation, or ICE in no cycle) | [restart](#a-restart-that-cannot-be-continued-exactly) |
 | setup | `[MOSE-Multigrid] level<m>-iter > 0 (m > 1) starts MOSE on its coarse grids, and the run is time-accurate ...` | run steady, or set `level<m>-iter = 0` for every m > 1 |
-| setup | `[MOSE-Multigrid] level<m>-iter > 0 (m > 1) starts MOSE on its coarse grids, and relaxation = true ...` | set `relaxation = false`, or `level<m>-iter = 0` for every m > 1 |
-| setup | `[MOSE-Multigrid] level1-iter is not set: with levels > 1 it is the iteration limit of MOSE's finest grid ...` | set `level1-iter` (the value `iter-threshold` would have) |
+| setup, step | `[MOSE-Multigrid] level<m>-iter > 0 (m > 1) starts MOSE on its coarse grids, and relaxation = true ...` | set `relaxation = false`, or `level<m>-iter = 0` for every m > 1 |
+| setup | `[MOSE-Multigrid] level<m>-iter > 0 (m > 1) starts MOSE on its coarse grids, and newrun = false ...` | set `newrun = true`, or `level<m>-iter = 0` for every m > 1 to restart on the finest grid |
+| setup, step | `[MOSE-Multigrid] level1-iter is not set: with levels > 1 it is the iteration limit of MOSE's finest grid ...` | set `level1-iter` (the value `iter-threshold` would have) |
 | setup | `[ICE-Multigrid] levels = <n>: the coupler hands the gas to ICE's finest grid ...` | ICE's coarse levels are not coupled: use `levels = 1` |
 | setup | `newrun = false with IGLOO, and IGLOO iterates in cycle <c>, a time-accurate cycle` | a cold IGLOO start does not continue a time-accurate run: start a new run from the fields ([restart](#a-restart-that-cannot-be-continued-exactly)) |
 | step | `MOSExIGLOO: IGLOO gasblock <b> extends beyond MOSE's ghosted range` | the gas and particle meshes disagree |

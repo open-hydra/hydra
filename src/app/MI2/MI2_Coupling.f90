@@ -93,15 +93,24 @@ module hydraMI2_Mod_Coupling
     real(R8), allocatable :: v(:,:,:)
   end type vol_t
 
+  !> IGLOO's smoke on the cells of a coarse level, per block: r(6, channel, cell) the sum over the cell's sub-cells of
+  !  each smoke channel's rate (Smoke_Packet), nostate(cell) the sub-cells, once per material, whose smoke took no
+  !  parcel's state.
+  type :: smoke_rate_t
+    real(R8), allocatable :: r(:,:,:,:,:)
+    integer,  allocatable :: nostate(:,:,:)
+  end type smoke_rate_t
+
   !> The condensed solvers' sources restricted from the finest grid to the coarser level MOSE steps (held, 0: none),
-  !  from the sources in force iglooAt and iceAt: IGLOO's rates and Eulerian fields, ICE's per-volume rates, and the
-  !  removals' channels on the coarse cells. ratio, the sub-cells per coarse cell along i, j, k, and vol, their volume,
-  !  are those of the level they were set up for (level).
+  !  from the sources in force iglooAt and iceAt: IGLOO's rates, its smoke's and its Eulerian fields, ICE's per-volume
+  !  rates, and the removals' channels on the coarse cells. ratio, the sub-cells per coarse cell along i, j, k, and
+  !  vol, their volume, are those of the level they were set up for (level).
   type :: coarse_src_t
     integer :: level = 0, held = 0
     integer,               allocatable :: ratio(:,:)
     type(vol_t),           allocatable :: vol(:)
     type(obj_sourceblock), allocatable :: src(:)
+    type(smoke_rate_t),    allocatable :: smk(:)
     type(obj_eulerblock),  allocatable :: eul(:,:)
     type(ICE_domain_type)              :: ice
     type(channel_t),       allocatable :: removed(:)
@@ -810,19 +819,20 @@ contains
     if (MOSE_domain%mg_level == 1) then
       call IGLOO_Residual( MOSE_domain, IGLOO, IGLOO%source, IGLOO%euler, eulerian, iter, iMax, relCoeff )
     else
-      call IGLOO_Residual( MOSE_domain, IGLOO, coarse%src, coarse%eul, eulerian, iter, iMax, relCoeff, coarse%vol )
+      call IGLOO_Residual( MOSE_domain, IGLOO, coarse%src, coarse%eul, eulerian, iter, iMax, relCoeff, coarse%vol, &
+                           coarse%smk )
     endif
 
   end subroutine IGLOOxMOSE
 
 
   !> IGLOO's reaction on the gas into MOSE's residual, from the arrays given on the cells of MOSE_domain: src the
-  !  source mode's rates, eul the Eulerian fields; volE, when given, the volume the Eulerian branch's per-volume source
-  !  is taken over, else the cell's own.
+  !  source mode's rates, eul the Eulerian fields; when given, volE the volume the Eulerian branch's per-volume source
+  !  is taken over (else the cell's own) and smk the smoke's rates (else those of the cell's column).
   !    source branch : source{Mass,Mom,En} are absolute rates; their mass through IGLOO_Mass_To_Gas, under the
   !                    consumed-species floor guard
   !    euler  branch : getSourceTerms is per unit volume (*vol); momentum and energy only
-  subroutine IGLOO_Residual ( MOSE_domain, IGLOO, src, eul, eulerian, iter, iMax, relCoeff, volE )
+  subroutine IGLOO_Residual ( MOSE_domain, IGLOO, src, eul, eulerian, iter, iMax, relCoeff, volE, smk )
     use MOSE_Advanced_Types_m,  only: MOSE_domain_type
     use MOSE_Global_m,          only: nsc, nu, nw, np, nprim
     use MOSE_Config_Types_m,    only: obj_chemistry
@@ -838,6 +848,7 @@ contains
     integer,                            intent(in)    :: iter, iMax
     real(R8),                           intent(in)    :: relCoeff
     type(vol_t),          optional,     intent(in)    :: volE(:)
+    type(smoke_rate_t),   optional,     intent(in)    :: smk(:)
     logical  :: blend
     integer  :: b, i, j, k, m
     ! res mirrors blk%R(1:nprim): species 1:nsc, momentum nu:nw, energy np, then soot/passive/RANS (left at zero)
@@ -873,7 +884,11 @@ contains
           res(nu:nw) = src(b)%sourceMom(:,i,j,k)
           res(np)    = src(b)%sourceEn(i,j,k)
           if (productsIGLOO%active) then
-            call IGLOO_Mass_To_Gas ( src(b)%sourceMass(:,i,j,k), res, datum )
+            if (present(smk) .and. smokeIGOn) then
+              call IGLOO_Mass_To_Gas ( src(b)%sourceMass(:,i,j,k), res, datum, smk(b)%r(:,:,i,j,k) )
+            else
+              call IGLOO_Mass_To_Gas ( src(b)%sourceMass(:,i,j,k), res, datum )
+            endif
             call Floor_Guard ( res(1:nsc), MOSE_domain%blk(b)%P(1:nsc,i,j,k), MOSE_domain%blk(b)%vol(i,j,k), &
                                MOSE_domain%blk(b)%dtlocal(i,j,k) * obj_chemistry%strangcoeff )
           endif
@@ -1002,16 +1017,18 @@ contains
 
   !> What IGLOO's mass source in one cell (col, IGLOO%source(b)%sourceMass(:,i,j,k)) hands the gas, added to r (the
   !  residual's layout) as absolute rates: each material through its row (a capped material through its three, with
-  !  Cap_Rates) with its datum offset, less the smoke born in ICE. datum: the offsets' part of what it adds to the
-  !  energy. Thread-safe.
-  subroutine IGLOO_Mass_To_Gas ( col, r, datum )
+  !  Cap_Rates) with its datum offset, less the smoke born in ICE: the rates of each smoke channel smk(:, channel) when
+  !  given (a coarse cell's, summed over its sub-cells), else Smoke_Packet's of col. datum: the offsets' part of what
+  !  it adds to the energy. Thread-safe.
+  subroutine IGLOO_Mass_To_Gas ( col, r, datum, smk )
     use MOSE_Global_m,          only: nsc, nu, nw, np
     use IGLOO_variables,        only: nm
     use hydraMI2_Stoichiometry, only: productsIGLOO, Cap_Rates
     implicit none
-    real(R8), intent(in)    :: col(:)
-    real(R8), intent(inout) :: r(:)
-    real(R8), intent(out)   :: datum
+    real(R8),           intent(in)    :: col(:)
+    real(R8),           intent(inout) :: r(:)
+    real(R8),           intent(out)   :: datum
+    real(R8), optional, intent(in)    :: smk(:,:)
     integer  :: imat, isp, c
     real(R8) :: dm, cr(4), sr(6)
 
@@ -1041,7 +1058,11 @@ contains
     ! the smoke of a material that makes one is born in its ICE family: the gas receives IGLOO's books less it
     if (.not. smokeIGOn) return
     do c = 1, size(smoke)
-      call Smoke_Packet( smoke(c), col, sr )
+      if (present(smk)) then
+        sr = smk(:,c)
+      else
+        call Smoke_Packet( smoke(c), col, sr )
+      endif
       r(nu:nw) = r(nu:nw) - sr(2:4)
       r(np)    = r(np) - sr(5) - smoke(c)%dh*sr(1)
       datum    = datum - smoke(c)%dh*sr(1)
@@ -1718,32 +1739,26 @@ contains
   end subroutine IGLOO_Smoke_Accumulate
 
 
-  !> IGLOO_Smoke_Accumulate on a coarse level, from IGLOO's columns restricted to it; a coarse cell's amounts go to the
-  !  store of its first sub-cell (only totals are read in a steady run).
+  !> IGLOO_Smoke_Accumulate on a coarse level, from the smoke's rates restricted to it (each sub-cell's, summed); a
+  !  coarse cell's amounts go to the store of its first sub-cell (only totals are read in a steady run).
   subroutine Smoke_Accumulate_Coarse ( MOSE_domain )
     use MOSE_Advanced_Types_m, only: MOSE_domain_type
     implicit none
     type(MOSE_domain_type), intent(in) :: MOSE_domain
-    integer  :: b, i, j, k, c, mNoState, f(3)
-    real(R8) :: sr(6), dt
-    logical  :: nostate
+    integer  :: b, i, j, k, c, f(3)
+    real(R8) :: dt
 
     do b = 1, size(MOSE_domain%blk)
-      if (.not. allocated(coarse%src(b)%sourceMass)) cycle
+      if (.not. allocated(coarse%smk(b)%r)) cycle
       do k = 1, MOSE_domain%blk(b)%dim(3)
       do j = 1, MOSE_domain%blk(b)%dim(2)
       do i = 1, MOSE_domain%blk(b)%dim(1)
         f  = ([i, j, k] - 1)*coarse%ratio(:,b) + 1
         dt = MOSE_domain%blk(b)%dtlocal(i,j,k)
-        mNoState = 0
+        nSmokeNoState = nSmokeNoState + coarse%smk(b)%nostate(i,j,k)
         do c = 1, size(smoke)
-          call Smoke_Packet( smoke(c), coarse%src(b)%sourceMass(:,i,j,k), sr, nostate )
-          if (nostate .and. smoke(c)%from /= mNoState) then
-            nSmokeNoState = nSmokeNoState + 1
-            mNoState      = smoke(c)%from
-          endif
-          if (sr(1) == 0._R8) cycle
-          smoke(c)%blk(b)%a(:,f(1),f(2),f(3)) = smoke(c)%blk(b)%a(:,f(1),f(2),f(3)) + sr*dt
+          if (coarse%smk(b)%r(1,c,i,j,k) == 0._R8) cycle
+          smoke(c)%blk(b)%a(:,f(1),f(2),f(3)) = smoke(c)%blk(b)%a(:,f(1),f(2),f(3)) + coarse%smk(b)%r(:,c,i,j,k)*dt
         enddo
       enddo; enddo; enddo
     enddo
@@ -1976,8 +1991,9 @@ contains
   end subroutine Check_Cells
 
 
-  !> IGLOO's sources restricted to the coarse level crs: rates summed over the sub-cells, Eulerian fields weighted as
-  !  IGLOO's normalizeEUL defines them (density, number by volume; velocity, temperature by mass).
+  !> IGLOO's sources restricted to the coarse level crs: rates summed over the sub-cells (the smoke's too, each
+  !  sub-cell's: they are not linear in IGLOO's columns), Eulerian fields weighted as IGLOO's normalizeEUL defines them
+  !  (density, number by volume; velocity, temperature by mass).
   subroutine Restrict_IGLOO_Sources ( fine, crs, IGLOO )
     use MOSE_Advanced_Types_m, only: MOSE_domain_type
     use IGLOO_module,          only: obj_IGLOO
@@ -1986,14 +2002,16 @@ contains
     type(MOSE_domain_type), intent(in) :: fine, crs
     type(obj_IGLOO),        intent(in) :: IGLOO
     character(len=6), parameter :: EUL_NAME(6) = [character(len=6) :: 'mass', 'number', 'rhou', 'rhov', 'rhow', 'rhoT']
-    integer  :: b, m, c, n(3), r(3), i, j, k, ci, cj, ck
-    real(R8) :: v, sv, sm, sn, smu(3), smT, ft(6), ct(6), at(6)
+    integer  :: b, m, c, n(3), r(3), i, j, k, ci, cj, ck, mNoState
+    real(R8) :: v, sv, sm, sn, smu(3), smT, ft(6), ct(6), at(6), sr(6)
+    logical  :: nostate
     character(len=32) :: nm
 
     call Coarse_Level_Setup( fine, crs )
     if (allocated(coarse%src)) deallocate(coarse%src)
+    if (allocated(coarse%smk)) deallocate(coarse%smk)
     if (allocated(coarse%eul)) deallocate(coarse%eul)
-    allocate(coarse%src(size(crs%blk)))
+    allocate(coarse%src(size(crs%blk)), coarse%smk(size(crs%blk)))
     if (allocated(IGLOO%euler)) allocate(coarse%eul(size(crs%blk), size(IGLOO%euler, 2)))
     do b = 1, size(crs%blk)
       n = crs%blk(b)%dim
@@ -2008,6 +2026,28 @@ contains
           call Add_Total( 'IGLOO', nm, b, sum(IGLOO%source(b)%sourceMass(c,:,:,:)), &
                           sum(coarse%src(b)%sourceMass(c,:,:,:)), sum(abs(IGLOO%source(b)%sourceMass(c,:,:,:))) )
         enddo
+        ! the smoke's rates: each sub-cell's, summed; a sub-cell without a parcel's state counted once per material
+        if (smokeIGOn) then
+          allocate(coarse%smk(b)%r(6, size(smoke), n(1), n(2), n(3)), source=0._R8)
+          allocate(coarse%smk(b)%nostate(n(1), n(2), n(3)), source=0)
+          do ck = 1, n(3)
+          do cj = 1, n(2)
+          do ci = 1, n(1)
+            do k = (ck-1)*r(3)+1, ck*r(3)
+            do j = (cj-1)*r(2)+1, cj*r(2)
+            do i = (ci-1)*r(1)+1, ci*r(1)
+              mNoState = 0
+              do c = 1, size(smoke)
+                call Smoke_Packet( smoke(c), IGLOO%source(b)%sourceMass(:,i,j,k), sr, nostate )
+                coarse%smk(b)%r(:,c,ci,cj,ck) = coarse%smk(b)%r(:,c,ci,cj,ck) + sr
+                if (nostate .and. smoke(c)%from /= mNoState) then
+                  coarse%smk(b)%nostate(ci,cj,ck) = coarse%smk(b)%nostate(ci,cj,ck) + 1
+                  mNoState = smoke(c)%from
+                endif
+              enddo
+            enddo; enddo; enddo
+          enddo; enddo; enddo
+        endif
       endif
       if (allocated(IGLOO%source(b)%sourceMom)) then
         call Check_Cells( 'IGLOO''s sourceMom', shape3(IGLOO%source(b)%sourceMom), fine, b )

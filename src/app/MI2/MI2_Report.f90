@@ -273,19 +273,44 @@ contains
 
   !> Under report, after the condensed sources were restricted to level, the one MOSE steps on a start on its coarse
   !  grids (Before_MOSE_Iteration): per block and quantity, the finest grid's total, the coarse level's, the sum of
-  !  magnitudes on the finest grid.
-  subroutine Report_Coarse_Sources ( level, IGLOO_src, ICE_src )
+  !  magnitudes on the finest grid; then, per row of the residual, what IGLOO's and ICE's per-stage routines subtract
+  !  on copies of that level and of the finest grid (Residual_Probe; no relaxation, no floor guard).
+  subroutine Report_Coarse_Sources ( MOSE_simulation, level, IGLOO, ICE_simulation, IGLOO_src, ICE_src )
+    use MOSE_Advanced_Types_m,   only: MOSE_simulation_type, MOSE_domain_type
+    use ICE_Advanced_Types_m,    only: ICE_simulation_type
+    use IGLOO_module,            only: obj_IGLOO
     use hydraMI2_Config_Types_m, only: hydra_MI2_obj
-    use hydraMI2_Mod_Coupling,   only: source_state_t, restricted_t, Restricted_Totals
+    use hydraMI2_Mod_Coupling,   only: source_state_t, restricted_t, Restricted_Totals, IGLOOxMOSE, ICExMOSE
     implicit none
-    integer,              intent(in) :: level
-    type(source_state_t), intent(in) :: IGLOO_src, ICE_src
+    type(MOSE_simulation_type), intent(in) :: MOSE_simulation
+    integer,                    intent(in) :: level
+    type(obj_IGLOO),            intent(in) :: IGLOO
+    type(ICE_simulation_type),  intent(in) :: ICE_simulation
+    type(source_state_t),       intent(in) :: IGLOO_src, ICE_src
     type(restricted_t), allocatable :: t(:)
+    type(MOSE_domain_type) :: crs, fine
 
     if ( .not. hydra_MI2_obj%report ) return
     t = Restricted_Totals()
     if ( IGLOO_src%ready ) call Lines( 'IGLOO' )
     if ( ICE_src%ready )   call Lines( 'ICE' )
+
+    call Residual_Probe( MOSE_simulation%domain(level), crs )
+    call Residual_Probe( MOSE_simulation%domain(1), fine )
+    if ( IGLOO_src%ready ) then
+      !$omp parallel
+      call IGLOOxMOSE( fine, IGLOO, IGLOO_src%eulerian, 1, 1, 1._R8 )
+      call IGLOOxMOSE( crs, IGLOO, IGLOO_src%eulerian, 1, 1, 1._R8 )
+      !$omp end parallel
+      call Report_Probe( trim(merge('igloo-euler ', 'igloo-source', IGLOO_src%eulerian)), fine, crs )
+    endif
+    if ( ICE_src%ready ) then
+      !$omp parallel
+      call ICExMOSE( fine, ICE_simulation%domain(1) )
+      call ICExMOSE( crs, ICE_simulation%domain(1) )
+      !$omp end parallel
+      call Report_Probe( 'ice', fine, crs )
+    endif
 
   contains
 
@@ -301,6 +326,67 @@ contains
     end subroutine Lines
 
   end subroutine Report_Coarse_Sources
+
+
+  !> probe, a copy of MOSE_domain's cells for the per-stage routines (level, cells, volumes, state) with a zero residual
+  !  and a zero dtlocal (no floor guard), so that its residual is what they subtract.
+  subroutine Residual_Probe ( MOSE_domain, probe )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    implicit none
+    type(MOSE_domain_type), intent(in)  :: MOSE_domain
+    type(MOSE_domain_type), intent(out) :: probe
+    integer :: b
+
+    probe%mg_level = MOSE_domain%mg_level
+    allocate(probe%blk(size(MOSE_domain%blk)))
+    do b = 1, size(MOSE_domain%blk)
+      probe%blk(b)%dim = MOSE_domain%blk(b)%dim
+      allocate(probe%blk(b)%vol, source=MOSE_domain%blk(b)%vol)
+      allocate(probe%blk(b)%P, source=MOSE_domain%blk(b)%P)
+      allocate(probe%blk(b)%R, mold=MOSE_domain%blk(b)%R)
+      allocate(probe%blk(b)%dtlocal, mold=MOSE_domain%blk(b)%dtlocal)
+      probe%blk(b)%R       = 0._R8
+      probe%blk(b)%dtlocal = 0._R8
+    enddo
+
+  end subroutine Residual_Probe
+
+
+  !> The [MI2-report] lines 'residual level <m> <what> row <q>': per row of the residual, what a per-stage routine
+  !  subtracted on the probes fine and crs (and the sum of its magnitudes on fine); the probes' residuals zeroed after.
+  subroutine Report_Probe ( what, fine, crs )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    use MOSE_Global_m,         only: np
+    implicit none
+    character(len=*),       intent(in)    :: what
+    type(MOSE_domain_type), intent(inout) :: fine, crs
+    real(R8) :: ft(np), ct(np), at(np)
+    integer  :: b, i, j, k, q
+
+    ft = 0._R8; ct = 0._R8; at = 0._R8
+    do b = 1, size(fine%blk)
+      do k = 1, fine%blk(b)%dim(3)
+      do j = 1, fine%blk(b)%dim(2)
+      do i = 1, fine%blk(b)%dim(1)
+        ft = ft - fine%blk(b)%R(1:np,i,j,k)
+        at = at + abs(fine%blk(b)%R(1:np,i,j,k))
+      enddo; enddo; enddo
+      fine%blk(b)%R = 0._R8
+    enddo
+    do b = 1, size(crs%blk)
+      do k = 1, crs%blk(b)%dim(3)
+      do j = 1, crs%blk(b)%dim(2)
+      do i = 1, crs%blk(b)%dim(1)
+        ct = ct - crs%blk(b)%R(1:np,i,j,k)
+      enddo; enddo; enddo
+      crs%blk(b)%R = 0._R8
+    enddo
+    do q = 1, np
+      write(*,'(A,I0,1X,A,A,I0,3ES24.16)') ' [MI2-report] residual level ', crs%mg_level, what, ' row ', q, &
+        ft(q), ct(q), at(q)
+    enddo
+
+  end subroutine Report_Probe
 
 
   !> Add what h hands the gas, over dt (1 for an amount), to the books. A mass coupling opens the mass books.
