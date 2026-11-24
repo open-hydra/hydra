@@ -29,7 +29,8 @@ program hydra_MI2_program
                                      Setup_ICE_Coupling, Setup_IGLOO_Coupling, Set_IGLOO_Switches, Gas_Field_For_IGLOO, &
                                      MOSExIGLOO, MOSExICE, IGLOOxMOSE, ICExMOSE, Check_IGLOO_Sources, Check_ICE_Sources, &
                                      Open_Removals, Close_Removals, After_ICE_Step, ICE_Block_Mean,                   &
-                                     IGLOO_Smoke_Accumulate, IGLOO_Smoke_Deliver, Before_MOSE_Iteration, Fill_Finest_Grid
+                                     IGLOO_Smoke_Accumulate, IGLOO_Smoke_Deliver, Before_MOSE_Iteration, Fill_Finest_Grid, &
+                                     Evaluate_Gas_Once
   use hydraMI2_Restart,        only: Setup_Restart, Remove_Stale_Handoff, Note_Outputs, Save_Handoff_If_Fields_Current, &
                                      Write_ICE_Exchange, Made_No_Iteration
   use hydraMI2_Report,         only: Report_Start, Report_Frozen_Sources, Report_Values, Report_Inlet,                &
@@ -264,6 +265,9 @@ contains
     ! IGLOO%setup prepared
     if ( IGLOO_src%ready ) call IGLOO%reset_state()
 
+    ! the gas state in, then the solve; before MOSE's first iteration of the run its boundary records (the inflow mass
+    ! flow) are not computed yet
+    call Evaluate_Gas_Once( MOSE_simulation%domain(1) )
     call MOSExIGLOO( MOSE_simulation%domain(1), IGLOO )
     call Report_Inlet( mdotHanded, nHanded )
     call IGLOO%solve()

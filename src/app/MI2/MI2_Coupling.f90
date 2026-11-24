@@ -36,7 +36,7 @@ module hydraMI2_Mod_Coupling
   public :: Removed_Store_Setup, Removals_Timed
   public :: Open_Removals, Close_Removals, After_ICE_Step, ICE_Block_Mean
   public :: IGLOO_Smoke_Accumulate, IGLOO_Smoke_Deliver
-  public :: Before_MOSE_Iteration, Fill_Finest_Grid, Restricted_Totals
+  public :: Before_MOSE_Iteration, Fill_Finest_Grid, Evaluate_Gas_Once, Restricted_Totals
 
   !> The sources a condensed solver last produced. They stay in force, and MOSE keeps reading them, until that
   !  solver's next solve: a cycle with X-iter = 0 runs on frozen sources. cycle = 0 for sources a restart read back.
@@ -110,6 +110,8 @@ module hydraMI2_Mod_Coupling
   type(coarse_src_t) :: coarse
   !> The finest grid lags a coarser level MOSE stepped since its last fill.
   logical :: fineStale = .false.
+  !> The finest grid's boundary records hold MOSE's evaluation of its gas (an iteration there, or a fill).
+  logical :: gasEvaluated = .false.
 
   !> A total over block b of a quantity restricted to a coarse level by who (IGLOO or ICE): the finest grid's, the
   !  coarse level's, the sum of its magnitudes on the finest grid. The last restriction's, for the report.
@@ -721,16 +723,11 @@ contains
 
 
   !> After MOSE stepped a coarser level (a start on its coarse grids): the finest grid, which IGLOO and ICE see, filled
-  !  from it, its state prolongated level by level, then what an iteration there computes before its update (derived
-  !  variables, dtlocal, ghosts, fluxes, boundary records), without the condensed sources. Nothing when the finest grid
-  !  does not lag. Opens its own parallel regions.
+  !  from it, its state prolongated level by level, then evaluated. Nothing when the finest grid does not lag.
   subroutine Fill_Finest_Grid ( MOSE_simulation )
-    use MOSE_Advanced_Types_m,    only: MOSE_simulation_type
-    use MOSE_Config_Types_m,      only: MOSE_multigrid => obj_multigrid, MOSE_time_scheme => obj_time_scheme
-    use MOSE_Mod_Multigrid,       only: Prolongation
-    use MOSE_Lib_Preconditioning, only: Update_Derived_Variables
-    use MOSE_Mod_dt,              only: Compute_dt
-    use MOSE_Mod_Explicit,        only: Assemble_Residual
+    use MOSE_Advanced_Types_m, only: MOSE_simulation_type
+    use MOSE_Config_Types_m,   only: MOSE_multigrid => obj_multigrid
+    use MOSE_Mod_Multigrid,    only: Prolongation
     implicit none
     type(MOSE_simulation_type), intent(inout) :: MOSE_simulation
     integer :: m
@@ -739,18 +736,49 @@ contains
     do m = MOSE_multigrid%MG_level, 2, -1
       call Prolongation( Fine=MOSE_simulation%domain(m-1), Coarse=MOSE_simulation%domain(m) )
     enddo
-    !$omp parallel
-    call Update_Derived_Variables( MOSE_simulation%domain(1) )
-    !$omp end parallel
-    MOSE_simulation%domain(1)%dtglobal = 1d5
-    call Compute_dt( MOSE_simulation%domain(1), MOSE_time_scheme%cfl, MOSE_time_scheme%vnn, &
-                     MOSE_time_scheme%rampa_cfl_iter )
-    !$omp parallel
-    call Assemble_Residual( MOSE_simulation%domain(1), No_Source )
-    !$omp end parallel
+    call Evaluate_Finest_Grid( MOSE_simulation%domain(1) )
     fineStale = .false.
 
   end subroutine Fill_Finest_Grid
+
+
+  !> Before IGLOO's hand-off: the finest grid evaluated once when neither a MOSE iteration there nor a fill has done
+  !  it in this run (IGLOO solves before MOSE's first iteration): its boundary records hold the inflow mass flow
+  !  MOSExIGLOO hands IGLOO only from MOSE's evaluation of the gas.
+  subroutine Evaluate_Gas_Once ( MOSE_domain )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    implicit none
+    type(MOSE_domain_type), intent(inout) :: MOSE_domain
+
+    if ( gasEvaluated ) return
+    call Evaluate_Finest_Grid( MOSE_domain )
+
+  end subroutine Evaluate_Gas_Once
+
+
+  !> What a MOSE iteration computes on its finest grid, MOSE_domain, before its update (derived variables, dtlocal,
+  !  ghosts, fluxes, boundary records: the inflow mass flow IGLOO takes), without the condensed sources: no update, no
+  !  time step. Opens its own parallel regions.
+  subroutine Evaluate_Finest_Grid ( MOSE_domain )
+    use MOSE_Advanced_Types_m,    only: MOSE_domain_type
+    use MOSE_Config_Types_m,      only: MOSE_time_scheme => obj_time_scheme
+    use MOSE_Lib_Preconditioning, only: Update_Derived_Variables
+    use MOSE_Mod_dt,              only: Compute_dt
+    use MOSE_Mod_Explicit,        only: Assemble_Residual
+    implicit none
+    type(MOSE_domain_type), intent(inout) :: MOSE_domain
+
+    !$omp parallel
+    call Update_Derived_Variables( MOSE_domain )
+    !$omp end parallel
+    MOSE_domain%dtglobal = 1d5
+    call Compute_dt( MOSE_domain, MOSE_time_scheme%cfl, MOSE_time_scheme%vnn, MOSE_time_scheme%rampa_cfl_iter )
+    !$omp parallel
+    call Assemble_Residual( MOSE_domain, No_Source )
+    !$omp end parallel
+    gasEvaluated = .true.
+
+  end subroutine Evaluate_Finest_Grid
 
 
   !> The external routine of the finest grid's residual when the coupler evaluates it: no source.
@@ -1840,6 +1868,8 @@ contains
     lev       = MOSE_multigrid%MG_level
     rebuilt   = .false.
     fineStale = lev > 1
+    ! an iteration on the finest grid evaluates its gas
+    if ( lev == 1 ) gasEvaluated = .true.
     if ( lev == 1 ) return
     if ( lev == coarse%held .and. Same_State(IGLOO_src, coarse%iglooAt) .and. Same_State(ICE_src, coarse%iceAt) ) return
 

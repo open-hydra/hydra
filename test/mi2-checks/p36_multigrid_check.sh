@@ -22,16 +22,14 @@
 #  cycle     : levels = 2, cycle = v, level1-iter set: the run ends cleanly on the finest grid with as many gas
 #              iterations as the stock case, which is run beside it.
 # These legs: about 40 s at 1 thread on a Xeon W-2265 with the scratch on a local disk.
-# Long leg, with P36_LONG=1 (51 min at 1 thread on a Xeon W-2265, the four runs one after the other): the coarse
-# level's own answer on JPL-Lagrangian-20micron (2 levels), IGLOO's Eulerian sources frozen after one solve that
-# follows one gas iteration on the coarse level (before any gas iteration the inlet's mass flow, which IGLOO's
-# particle inflow takes, is not computed yet). C: then 12000 iterations on the coarse level and 30000 on the finest;
-# A: on the finest at once (level2-iter = 1), 30000 iterations; C0 (as C) and A0 (no levels, 30000 iterations): the
-# gas alone, without IGLOO's solve. The exit Mach number of the coarse level (each coarse cell of the last column
-# against its four sub-cells): with the sources, within twice the difference of the two levels of the gas alone; a
-# coarse level without the sources (C0 against A, which a coupler adding nothing on the coarse level would give) is
-# out of it.
-# After the switch the finest grid ends on A's field (max |d| over the variable's scale below 1e-8).
+# Long leg, with P36_LONG=1 (about 52 minutes at 1 thread on a Xeon W-2145, the four runs one after the other): the coarse
+# level's own answer on JPL-Lagrangian-20micron, IGLOO's Eulerian sources frozen after one solve on the initial gas
+# (before any gas iteration). C: 2 levels, then 12000 iterations on the coarse level and 30000 on the finest; A: no
+# levels, 30000 iterations; C0 and A0: the same without IGLOO's solve, the gas alone. The exit Mach number of the
+# coarse level (each coarse cell of the last column against its four sub-cells): with the sources, within twice the
+# difference of the two levels of the gas alone; a coarse level without the sources (C0 against A, which a coupler
+# adding nothing on the coarse level would give) is out of it. After the switch the finest grid ends on A's field
+# (max |d| over the variable's scale below 1e-8).
 # RED on a build that refuses every coarse start: coarse, coarse-ice, coarse-igloo and the refusals of ta and relax.
 # Needs python3 with numpy.
 #   usage: p36_multigrid_check.sh [scratch-root] [exe]
@@ -181,31 +179,31 @@ n0=$(iters "$T/stock.log"); n1=$(iters "$T/cycle.log"); n2=$(grep -c 'MOSE Grid 
 
 # --- long: the coarse level's own answer --------------------------------------------------------------------------
 if [ "${P36_LONG:-0}" = 1 ]; then
-  L='[MOSE-Multigrid]\nlevels      = 2\nlevel1-iter = 1000000000\nlevel2-iter = '
+  L='[MOSE-Multigrid]\nlevels      = 2\nlevel2-iter = 12000\nlevel1-iter = 1000000000\n'
   for v in A C A0 C0; do
     case $v in
-      A)  d=$(variant g3-$v JPL-Lagrangian-20micron "${L}1\n");     k='1 30000'; ig='2 0';;
-      C)  d=$(variant g3-$v JPL-Lagrangian-20micron "${L}12000\n"); k='1 41999'; ig='2 0';;
-      A0) d=$(variant g3-$v JPL-Lagrangian-20micron '');            k='1 30000'; ig='0 0';;
-      C0) d=$(variant g3-$v JPL-Lagrangian-20micron "${L}12000\n"); k='1 41999'; ig='0 0';;
+      A)  d=$(variant g3-$v JPL-Lagrangian-20micron '');   k='0 30000'; ig='2 0';;
+      C)  d=$(variant g3-$v JPL-Lagrangian-20micron "$L"); k='0 42000'; ig='2 0';;
+      A0) d=$(variant g3-$v JPL-Lagrangian-20micron '');   k='0 30000'; ig='0 0';;
+      C0) d=$(variant g3-$v JPL-Lagrangian-20micron "$L"); k='0 42000'; ig='0 0';;
     esac
-    [ $v != A0 ] && cp -p "$D/JPL-gas-bc2.txt" "$d/INPUT/gas-bc2.txt"
+    case $v in C|C0) cp -p "$D/JPL-gas-bc2.txt" "$d/INPUT/gas-bc2.txt";; esac
     schedule "$d" '1 1' "$k" IGLOO-iter "$ig"
     run g3-$v "$d"; rc=$?
     clean "$T/g3-$v.log" $rc && ok "g3-$v: runs to its end ($(iters "$T/g3-$v.log") gas iterations)" || ko "g3-$v: exit $rc"
   done
   P=$H/test/mi2-checks/p36_coarse_phase.py
-  ex() { python3 "$P" "$1" "$2" | sed -n 's/^exit column: max |M_coarse - M_fine| \([^ ]*\).*/\1/p'; }
+  ex() { python3 "$P" "$1" "$2" 2>/dev/null | sed -n 's/^exit column: max |M_coarse - M_fine| \([^ ]*\).*/\1/p'; }
   ds=$(ex "$T/g3-C/OUTPUT/gas-field-level2.tec" "$T/g3-A/OUTPUT/gas-field.tec")
   d0=$(ex "$T/g3-C0/OUTPUT/gas-field-level2.tec" "$T/g3-A0/OUTPUT/gas-field.tec")
   dm=$(ex "$T/g3-C0/OUTPUT/gas-field-level2.tec" "$T/g3-A/OUTPUT/gas-field.tec")
   python3 -c "import sys; s, z, m = map(float, sys.argv[1:4]); sys.exit(0 if 0 < s <= 2*z < m else 1)" "${ds:-1}" "${d0:-0}" "${dm:-0}" \
     && ok "g3: exit Mach of the coarse level with IGLOO's restricted sources against the finest grid's: $ds, within twice the two levels' difference of the gas alone ($d0); without the sources: $dm" \
     || ko "g3: exit Mach, coarse against fine: $ds with the sources, $d0 for the gas alone, $dm without the sources (bound twice the gas alone's, which the coarse level without sources must exceed)"
-  s=$(python3 "$P" --same "$T/g3-A/OUTPUT/gas-field.tec" "$T/g3-C/OUTPUT/gas-field.tec" | sed -n 's/^largest max|d|\/scale \(.*\)/\1/p')
+  s=$(python3 "$P" --same "$T/g3-A/OUTPUT/gas-field.tec" "$T/g3-C/OUTPUT/gas-field.tec" 2>/dev/null | sed -n 's/^largest max|d|\/scale \(.*\)/\1/p')
   python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) <= 1e-8 else 1)" "${s:-1}" \
-    && ok "g3: after the switch the finest grid ends on the field of the run without a coarse phase (max |d|/scale $s)" \
-    || ko "g3: the finest grid after the switch ends ${s:-unread} of scale away from the run without a coarse phase (bound 1e-8)"
+    && ok "g3: after the switch the finest grid ends on the field of the run without levels (max |d|/scale $s)" \
+    || ko "g3: the finest grid after the switch ends ${s:-unread} of scale away from the run without levels (bound 1e-8)"
 fi
 
 echo "== $pass passed, $fail failed"; [ $fail = 0 ]
