@@ -37,8 +37,8 @@ module hydraMI2_Restart
   !> Each solver's iteration after its set-up: a restarted solver that makes no iteration writes no end-of-run output.
   integer :: MOSE_iter0 = 0, ICE_iter0 = 0
 
-  !> A variable of the hand-off file: its name, what it holds (XS source, XH heat, XB birth, XG the removals' store,
-  !  XU the relaxation time, XR a smoke family's srate, XA and XT the removals' rate and time), family, component.
+  !> A variable of the hand-off file: its name, what it holds (XS source, XH heat, XB gen_rate, XG the removals' store,
+  !  XU the relaxation time, XR a generation family's births_gen, XA and XT the removals' rate and time), family, component.
   type :: xvar_t
     character(len=32) :: name = ''
     integer :: what = 0, g = 0, n = 0
@@ -393,7 +393,7 @@ contains
   ! ---------------------------------------------------------------------------------------------
 
   !> What ICE's last coupling step hands the gas and leaves for its next step, kept for a restart: the source of its
-  !  last step's stages (or block), and the relaxation times and smoke rates its next step starts from, are not
+  !  last step's stages (or block), and the relaxation times and generated births its next step starts from, are not
   !  functions of the state ICE writes, so its field file cannot give them back.
   function ICE_Exchange_File () result(f)
     use ICE_Global_m, only: ICE_phase_prefix
@@ -405,8 +405,8 @@ contains
   end function ICE_Exchange_File
 
 
-  !> The variables of ICE_Exchange_File, family by family: source, heat, birth, the removals' store, the relaxation time
-  !  that bounds the next step; srate where a smoke family holds one (srate(g)), the removals' rate and time where
+  !> The variables of ICE_Exchange_File, family by family: source, heat, gen_rate, the removals' store, the relaxation
+  !  time that bounds the next step; births_gen where a generation family holds them (srate(g)), the removals' rate and time where
   !  the coupler keeps them (rate).
   subroutine Exchange_Vars ( srate, rate, xv )
     use ICE_Global_m, only: ngroups, ncond
@@ -420,10 +420,10 @@ contains
       call Add( 'S', XS, ncond(g) )
       call Add( 'H', XH, 0 )
       call Add( 'B', XB, 5 )
-      call Add( 'G', XG, 5 )
+      call Add( 'G', XG, 6 )
       call Add( 'TAU', XU, 0 )
-      if (srate(g)) call Add( 'R', XR, ncond(g) )
-      if (rate)     call Add( 'GA', XA, 5 )
+      if (srate(g)) call Add( 'R', XR, 6 )
+      if (rate)     call Add( 'GA', XA, 6 )
       if (rate)     call Add( 'GT', XT, 0 )
     enddo
 
@@ -451,7 +451,7 @@ contains
 
 
   !> Variable v of the hand-off file in cell (i,j,k) of block b: read into x, or written from x (put). An infinite
-  !  relaxation time (no drag) is held as -1; a smoke family without srate there holds 0.
+  !  relaxation time (no drag) is held as -1; a generation family without births_gen there holds 0.
   subroutine Exchange_Slot ( ICE_domain, b, v, i, j, k, x, put )
     use, intrinsic :: ieee_arithmetic, only: ieee_value, ieee_positive_inf
     use ICE_Advanced_Types_m,  only: ICE_domain_type
@@ -468,10 +468,10 @@ contains
         select case (v%what)
         case (XS); cp%source(n,i,j,k)      = x
         case (XH); cp%heat(i,j,k)          = x
-        case (XB); cp%birth(n,i,j,k)       = x
+        case (XB); cp%gen_rate(n,i,j,k)    = x
         case (XG); removed(g)%blk(b)%a(n,i,j,k) = x
         case (XU); cp%tau(i,j,k)           = merge(ieee_value(1._R8, ieee_positive_inf), x, x == -1._R8)
-        case (XR); cp%srate(n,i,j,k)       = x
+        case (XR); cp%births_gen(n,i,j,k)  = x
         case (XA); removed(g)%blk(b)%r(n,i,j,k) = x
         case (XT); removed(g)%blk(b)%t(i,j,k)   = x
         end select
@@ -480,10 +480,10 @@ contains
         select case (v%what)
         case (XS); x = cp%source(n,i,j,k)
         case (XH); x = cp%heat(i,j,k)
-        case (XB); x = cp%birth(n,i,j,k)
+        case (XB); x = cp%gen_rate(n,i,j,k)
         case (XG); x = removed(g)%blk(b)%a(n,i,j,k)
         case (XU); x = merge(-1._R8, cp%tau(i,j,k), cp%tau(i,j,k) > huge(x))
-        case (XR); if (allocated(cp%srate)) x = cp%srate(n,i,j,k)
+        case (XR); if (allocated(cp%births_gen)) x = cp%births_gen(n,i,j,k)
         case (XA); x = removed(g)%blk(b)%r(n,i,j,k)
         case (XT); x = removed(g)%blk(b)%t(i,j,k)
         end select
@@ -517,7 +517,7 @@ contains
     integer :: b, g, v, i, j, k, err
 
     do g = 1, ngroups
-      srate(g) = any([(allocated(ICE_sim%domain(1)%blk(b)%cond_phase(g)%srate), b = 1, ICE_sim%domain(1)%nb)])
+      srate(g) = any([(allocated(ICE_sim%domain(1)%blk(b)%cond_phase(g)%births_gen), b = 1, ICE_sim%domain(1)%nb)])
     enddo
     call Exchange_Vars( srate, Removals_Timed(), xv )
     call copyORION( ICE_sim%ODP(1), io )
@@ -655,8 +655,8 @@ contains
     call Removed_Store_Setup( ICE_sim%domain(1), timed=rate )
     do b = 1, ICE_sim%domain(1)%nb
       do g = 1, ngroups
-        if (srate(g) .and. .not. allocated(ICE_sim%domain(1)%blk(b)%cond_phase(g)%srate)) &
-          allocate(ICE_sim%domain(1)%blk(b)%cond_phase(g)%srate(ncond(g), ICE_sim%domain(1)%blk(b)%dim(1), &
+        if (srate(g) .and. .not. allocated(ICE_sim%domain(1)%blk(b)%cond_phase(g)%births_gen)) &
+          allocate(ICE_sim%domain(1)%blk(b)%cond_phase(g)%births_gen(6, ICE_sim%domain(1)%blk(b)%dim(1), &
                    ICE_sim%domain(1)%blk(b)%dim(2), ICE_sim%domain(1)%blk(b)%dim(3)))
       enddo
       do k = 1, ICE_sim%domain(1)%blk(b)%dim(3)

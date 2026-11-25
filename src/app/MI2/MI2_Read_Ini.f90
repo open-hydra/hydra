@@ -323,7 +323,7 @@ contains
   subroutine Check_Coupled_Inputs ( IGLOO )
     use hydra_Config_Types_m,    only: hydra_obj_sim_param
     use hydraMI2_Config_Types_m, only: hydra_MI2_obj
-    use hydraMI2_Stoichiometry,  only: productsIGLOO
+    use hydraMI2_Chemistry,      only: chemIGLOO
     use MOSE_Config_Types_m,     only: MOSE_time_scheme => obj_time_scheme
     use ICE_Config_Types_m,      only: ICE_time_scheme  => obj_time_scheme
     use IGLOO_module,            only: obj_IGLOO
@@ -342,7 +342,7 @@ contains
       enddo
     endif
 
-    if ( productsIGLOO%active .and. any(hydra_MI2_obj%IGLOO_iter == 2) ) then
+    if ( chemIGLOO%active .and. any(hydra_MI2_obj%IGLOO_iter == 2) ) then
       write(*,'(A)') ' [ERROR] MI2: an IGLOO material evaporates or burns and a cycle has IGLOO-iter = 2: the '// &
         'Eulerian coupling hands the gas momentum and energy only. Use IGLOO-iter = 1 in every cycle that runs IGLOO'
       error stop 1

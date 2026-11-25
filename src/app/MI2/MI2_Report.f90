@@ -185,7 +185,7 @@ contains
 
 
   !> After a MOSE block: what it handed the gas, into the books and, under report, onto the log. ICE's stored
-  !  removals (rm: the rates in force, or the amounts delivered) and IGLOO's smoke given to ICE (sm); then the
+  !  removals (rm: the rates in force, or the amounts delivered) and IGLOO's generated mass given to ICE (sm); then the
   !  sources in force, before the solves of this coupling step replace them, over the block's clock; and what ICE's
   !  removals still hold. ICE_simulation is read only when ICE's sources are ready.
   subroutine Report_Block_End ( MOSE_domain, ICE_simulation, IGLOO, IGLOO_src, ICE_src, n_cycle, n_couple, rm, sm )
@@ -194,8 +194,8 @@ contains
     use ICE_Global_m,            only: ngroups
     use IGLOO_module,            only: obj_IGLOO
     use hydraMI2_Config_Types_m, only: hydra_MI2_obj
-    use hydraMI2_Stoichiometry,  only: productsICE
-    use hydraMI2_Mod_Coupling,   only: source_state_t, removals_t, smoke_t, handRates, smokeIGOn, &
+    use hydraMI2_Chemistry,      only: chemICE
+    use hydraMI2_Mod_Coupling,   only: source_state_t, removals_t, gen_t, handRates, genIGOn, &
                                        IGLOO_Handed, ICE_Handed, Removals_Handed
     implicit none
     type(MOSE_domain_type),    intent(in) :: MOSE_domain
@@ -204,28 +204,28 @@ contains
     type(source_state_t),      intent(in) :: IGLOO_src, ICE_src
     integer,                   intent(in) :: n_cycle, n_couple
     type(removals_t),          intent(in) :: rm
-    type(smoke_t),             intent(in) :: sm
+    type(gen_t),               intent(in) :: sm
     type(handed_t) :: hIGLOO, hICE
     real(R8) :: dt, mom1(3), en1, tau(2)
     integer  :: b, g, n(3)
     logical  :: iglooSrc
 
-    ! ICE's removals and IGLOO's smoke, between the solvers' steps
+    ! ICE's removals and IGLOO's generated mass, between the solvers' steps
     if ( rm%asRate .and. allocated(rm%h%mass) ) call Report_Handed( 'ice-removed-rate', rm%h )
     if ( rm%shared ) then
       ! the removals carry mass only when an ICE material converts (rm%h%mass then allocated)
       if ( allocated(rm%h%mass) ) call Book( rm%h, 1._R8 )
       call Report_Handed( 'ice-removed-delivered', rm%h )
     endif
-    if ( smokeIGOn ) then
+    if ( genIGOn ) then
       if ( handRates ) then
-        call Report_Values( 'igloo-smoke-withheld', sm%amount )
-        call Report_Values( 'igloo-smoke-rate', sm%rate )
+        call Report_Values( 'igloo-gen-withheld', sm%amount )
+        call Report_Values( 'igloo-gen-rate', sm%rate )
       else
-        call Report_Values( 'igloo-smoke-delivered', sm%amount )
+        call Report_Values( 'igloo-gen-delivered', sm%amount )
       endif
       if ( sm%nNoState > 0 ) write(*,'(A,I0,A)') ' [WARNING] MI2: in ', sm%nNoState, ' cells of this block''s '// &
-        'iterations a smoke was born with no parcel''s state in IGLOO''s columns: at rest, at T_datum_ref'
+        'iterations a generated mass was born with no parcel''s state in IGLOO''s columns: at rest, at T_datum_ref'
     endif
 
     ! the sources in force over the block (IGLOO's Eulerian branch is mass-inert: left out of the books)
@@ -239,7 +239,7 @@ contains
     endif
     if ( ICE_src%ready ) then
       hICE = ICE_Handed( MOSE_domain, ICE_simulation%domain(1) )
-      if ( productsICE%active ) call Book( hICE, dt )
+      if ( chemICE%active ) call Book( hICE, dt )
     endif
 
     if ( .not. hydra_MI2_obj%report ) return
@@ -261,7 +261,7 @@ contains
         enddo
       enddo
       call Report_Values( 'ice-to-gas', [hICE%mom, hICE%energy, tau] )
-      if ( productsICE%active ) then
+      if ( chemICE%active ) then
         call Report_Values( 'ice-to-gas-mass', [Mass_Of(hICE)] )
         call Report_Handed( 'ice-removed-stored', Removals_Handed( MOSE_domain, 1._R8 ) )
       endif

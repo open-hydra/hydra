@@ -11,7 +11,7 @@
 !> When MOSE starts on its coarse grids, IGLOO and ICE see the finest grid filled from the level MOSE steps.
 !>
 !> This file is the schedule. The input and its refusals are in hydraMI2_Read_Ini; the exchange, and what lands
-!> between solver steps (ICE's removals, IGLOO's smoke), in hydraMI2_Mod_Coupling; the restart rules and ICE's
+!> between solver steps (ICE's removals, IGLOO's generated mass), in hydraMI2_Mod_Coupling; the restart rules and ICE's
 !> hand-off in hydraMI2_Restart; the books and the log's report lines in hydraMI2_Report.
 !>
 program hydra_MI2_program
@@ -25,11 +25,11 @@ program hydra_MI2_program
   use hydraMI2_Read_Ini,       only: Read_Inifile_MI2, Read_Inifile_MI2_Runtime, Check_MOSE_Grid_Levels,    &
                                      Check_ICE_Grid_Levels, Check_Coupled_Inputs, Check_MOSE_Level1_Iter
   use hydraMI2_Mod_Import,     only: Assign_Phases
-  use hydraMI2_Mod_Coupling,   only: source_state_t, removals_t, smoke_t, handRates, smokeIGOn, mdotHanded, nHanded, &
+  use hydraMI2_Mod_Coupling,   only: source_state_t, removals_t, gen_t, handRates, genIGOn, mdotHanded, nHanded, &
                                      Setup_ICE_Coupling, Setup_IGLOO_Coupling, Set_IGLOO_Switches, Gas_Field_For_IGLOO, &
                                      MOSExIGLOO, MOSExICE, IGLOOxMOSE, ICExMOSE, Check_IGLOO_Sources, Check_ICE_Sources, &
                                      Open_Removals, Close_Removals, After_ICE_Step, ICE_Block_Mean,                   &
-                                     IGLOO_Smoke_Accumulate, IGLOO_Smoke_Deliver, Before_MOSE_Iteration, Fill_Finest_Grid, &
+                                     IGLOO_Gen_Accumulate, IGLOO_Gen_Deliver, Before_MOSE_Iteration, Fill_Finest_Grid, &
                                      Evaluate_Gas_Once
   use hydraMI2_Restart,        only: Setup_Restart, Remove_Stale_Handoff, Note_Outputs, Save_Handoff_If_Fields_Current, &
                                      Write_ICE_Exchange, Made_No_Iteration
@@ -164,11 +164,11 @@ contains
 
 
   !> MOSE's part of a coupling step: MOSE-iter iterations under the sources in force; around them, ICE's stored
-  !  removals and IGLOO's smoke handed on, and the books and the report of what the block handed the gas.
+  !  removals and IGLOO's generated mass handed on, and the books and the report of what the block handed the gas.
   subroutine Advance_MOSE()
     implicit none
     type(removals_t) :: removals
-    type(smoke_t)    :: smoke
+    type(gen_t)      :: gen
     integer :: nIter, nRun, itermaxKept, level
     logical :: lastIter, rebuilt
 
@@ -209,8 +209,8 @@ contains
         MOSE_ended = .true.
       endif
       nRun = nRun + 1
-      if ( smokeIGOn .and. IGLOO_src%ready .and. .not. IGLOO_src%eulerian ) &
-        call IGLOO_Smoke_Accumulate( MOSE_simulation%domain(level), IGLOO )
+      if ( genIGOn .and. IGLOO_src%ready .and. .not. IGLOO_src%eulerian ) &
+        call IGLOO_Gen_Accumulate( MOSE_simulation%domain(level), IGLOO )
       if ( MOSE_obj_sim_param%TODO <= 2 ) call MOSE%postprocess( MOSE_simulation )
       ! MOSE's postprocess reads input.ini again at its own interval
       call Check_MOSE_Level1_Iter()
@@ -222,12 +222,12 @@ contains
 
     if ( hydra_MI2_obj%run_ICE ) call Close_Removals( MOSE_simulation%domain(1), nRun, removals )
 
-    ! the smoke IGLOO's burning made over this block, which the gas did not get, to ICE
-    if ( smokeIGOn ) call IGLOO_Smoke_Deliver( MOSE_simulation%domain(1), ICE_simulation%domain(1), IGLOO, &
-                                               IGLOO_src%ready .and. .not. IGLOO_src%eulerian, smoke )
+    ! the mass IGLOO's materials generated over this block, which the gas did not get, to ICE
+    if ( genIGOn ) call IGLOO_Gen_Deliver( MOSE_simulation%domain(1), ICE_simulation%domain(1), IGLOO, &
+                                           IGLOO_src%ready .and. .not. IGLOO_src%eulerian, gen )
 
     call Report_Block_End( MOSE_simulation%domain(1), ICE_simulation, IGLOO, IGLOO_src, ICE_src, n_cycle, n_couple, &
-                           removals, smoke )
+                           removals, gen )
 
   end subroutine Advance_MOSE
 
@@ -319,7 +319,7 @@ contains
     enddo
 
     call ICE_Block_Mean( ICE_simulation%domain(1) )
-    ! the ICE time the smoke's rates were integrated over
+    ! the ICE time the generated mass's rates were integrated over
     if ( handRates .and. hydra_MI2_obj%ICE_iter(n_cycle) /= 0 ) &
       call Report_Values( 'ice-time', [t_ice0, ICE_simulation%domain(1)%time] )
 
