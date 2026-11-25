@@ -30,7 +30,7 @@ module hydraMI2_Mod_Coupling
 
   public :: source_state_t, handed_t, removals_t, gen_t, restricted_t
   public :: Setup_ICE_Coupling, Setup_IGLOO_Coupling, Set_IGLOO_Switches
-  public :: Gas_Field_For_IGLOO, MOSExIGLOO, MOSExICE, IGLOOxMOSE, ICExMOSE
+  public :: Gas_State_From_Prim, Gas_Field_For_IGLOO, MOSExIGLOO, MOSExICE, IGLOOxMOSE, ICExMOSE
   public :: Check_IGLOO_Sources, Check_ICE_Sources
   public :: IGLOO_Handed, ICE_Handed, Removals_Handed
   public :: Removed_Store_Setup, Removals_Timed
@@ -1638,14 +1638,15 @@ contains
 
   !> After a MOSE block: the generated mass its iterations made (IGLOO_Gen_Accumulate), which the gas did not get,
   !  handed to each ICE family a generation channel feeds. Amounts: born at once (add_birth, per volume). Rates: the
-  !  rates of IGLOO's sources as they stand (srcOn; else 0), per volume, the family's births in force (add_birth_rate).
+  !  rates of IGLOO's sources as they stand (srcOn; else 0), per volume, added to the family's imports
+  !  (add_birth_rate; Law_Step_Start clears them at each coupling step's start).
   !  sm: the totals, energies on the gas's formation scale; the stores emptied. Outside any parallel region.
   subroutine IGLOO_Gen_Deliver ( MOSE_domain, ICE_domain, IGLOO, srcOn, sm )
     use MOSE_Advanced_Types_m, only: MOSE_domain_type
     use ICE_Advanced_Types_m,  only: ICE_domain_type
     use IGLOO_module,          only: obj_IGLOO
     use ICE_Global_m,          only: ngroups
-    use ICE_Mod_Exchange,      only: add_birth, add_birth_rate, clear_import_rates
+    use ICE_Mod_Exchange,      only: add_birth, add_birth_rate
     implicit none
     type(MOSE_domain_type), intent(in)    :: MOSE_domain
     type(ICE_domain_type),  intent(inout) :: ICE_domain
@@ -1661,7 +1662,6 @@ contains
     asRate = gen(1)%asRate
     do g = 1, ngroups
       if (.not. any(gen(:)%to == g)) cycle
-      if (asRate) call clear_import_rates( ICE_domain, g )
       ! the generated material's datum offset, whichever channel feeds it
       do c = 1, size(gen)
         if (gen(c)%to == g) dhg = gen(c)%dh

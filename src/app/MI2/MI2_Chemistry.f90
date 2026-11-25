@@ -14,7 +14,7 @@ module hydraMI2_Chemistry
 
   public :: record_t, material_chem_t, solver_chem_t
   public :: chemIGLOO, chemICE, IS_IGLOO, IS_ICE, T_datum_ref
-  public :: Load_Chemistry, Set_Datum_Offsets, Set_Product_Datum, Report_Chemistry, Gas_Of
+  public :: Load_Chemistry, Set_Datum_Offsets, Set_Product_Datum, Report_Chemistry, Gas_Of, Formation_Enthalpy
 
   integer,          parameter :: IS_IGLOO = 1, IS_ICE = 2
   character(len=5), parameter :: SOLVER(2) = ['IGLOO', 'ICE  ']
@@ -34,11 +34,13 @@ module hydraMI2_Chemistry
   end type record_t
 
   !> A material: the record of the process it runs, of what it carries, of its release as a carried material; dh its
-  !  datum offset (its formation-inclusive enthalpy less the one its solver credits, at T_datum_ref).
+  !  datum offset (its formation-inclusive enthalpy less the one its solver credits, at T_datum_ref); h298 that
+  !  enthalpy, when a record of its own gives it (known).
   type :: material_chem_t
     character(len=64) :: name = ''
     type(record_t)    :: process, carry, release
-    real(R8)          :: dh = 0._R8
+    real(R8)          :: dh = 0._R8, h298 = 0._R8
+    logical           :: known = .false.
   end type material_chem_t
 
   !> A solver's table, materials in the order of its phase file. active: some material hands the gas mass.
@@ -271,7 +273,11 @@ contains
         endif
       elseif (c%carry%on) then
         c%dh = c%carry%h298 - href(m)
+      elseif (c%release%on) then
+        c%dh = c%release%h298 - href(m)
       endif
+      c%known = c%process%on .or. c%carry%on .or. c%release%on
+      if (c%known) c%h298 = c%dh + href(m)
       if (c%carry%on) c%carry%dhProduct = c%carry%hProduct - hcarried(m)
       if (.not. hydra_MI2_obj%datum_correction) then
         c%dh = 0._R8
@@ -301,6 +307,46 @@ contains
     endif
 
   end subroutine Set_Product_Datum
+
+
+  !> The formation-inclusive enthalpy at T_datum_ref of the material called name [J/kg], from either solver's table: a
+  !  record of its own, else a record whose product it is. False when no record gives it.
+  logical function Formation_Enthalpy ( name, h ) result(known)
+    character(len=*), intent(in)  :: name
+    real(R8),         intent(out) :: h
+    type(solver_chem_t), pointer :: t
+    integer :: w, m
+
+    known = .false.
+    h = 0._R8
+    do w = IS_IGLOO, IS_ICE
+      t => Table(w)
+      if (.not. allocated(t%mat)) cycle
+      do m = 1, size(t%mat)
+        if (trim(t%mat(m)%name) == trim(name) .and. t%mat(m)%known) then
+          h = t%mat(m)%h298; known = .true.; return
+        endif
+      enddo
+    enddo
+    do w = IS_IGLOO, IS_ICE
+      t => Table(w)
+      if (.not. allocated(t%mat)) cycle
+      do m = 1, size(t%mat)
+        if (Product_Is(t%mat(m)%process) .or. Product_Is(t%mat(m)%carry) .or. Product_Is(t%mat(m)%release)) return
+      enddo
+    enddo
+
+  contains
+
+    logical function Product_Is ( rec )
+      type(record_t), intent(in) :: rec
+      Product_Is = rec%on .and. trim(rec%product) == trim(name)
+      if (Product_Is) then
+        h = rec%hProduct; known = .true.
+      endif
+    end function Product_Is
+
+  end function Formation_Enthalpy
 
 
   !> Echo, per material that converts, the gas species of its records and its datum offset.

@@ -195,6 +195,8 @@ contains
     use IGLOO_module,            only: obj_IGLOO
     use hydraMI2_Config_Types_m, only: hydra_MI2_obj
     use hydraMI2_Chemistry,      only: chemICE
+    use hydraMI2_Law_Channels,   only: lawsOn, Laws_Handed, Report_Channels
+    use MOSE_Global_m,           only: nsc
     use hydraMI2_Mod_Coupling,   only: source_state_t, removals_t, gen_t, handRates, genIGOn, &
                                        IGLOO_Handed, ICE_Handed, Removals_Handed
     implicit none
@@ -205,7 +207,7 @@ contains
     integer,                   intent(in) :: n_cycle, n_couple
     type(removals_t),          intent(in) :: rm
     type(gen_t),               intent(in) :: sm
-    type(handed_t) :: hIGLOO, hICE
+    type(handed_t) :: hIGLOO, hICE, hLaw
     real(R8) :: dt, mom1(3), en1, tau(2)
     integer  :: b, g, n(3)
     logical  :: iglooSrc
@@ -240,6 +242,16 @@ contains
     if ( ICE_src%ready ) then
       hICE = ICE_Handed( MOSE_domain, ICE_simulation%domain(1) )
       if ( chemICE%active ) call Book( hICE, dt )
+    endif
+    ! the mass channels of [MI2-Channels]
+    if ( lawsOn ) then
+      allocate(hLaw%mass(nsc))
+      call Laws_Handed( MOSE_domain, hLaw%mass, hLaw%mom, hLaw%energy, hLaw%datum )
+      call Book( hLaw, dt )
+      if ( hydra_MI2_obj%report ) then
+        call Report_Values( 'channels-to-gas', [hLaw%mom, hLaw%energy, Mass_Of(hLaw)] )
+        call Report_Channels( MOSE_domain )
+      endif
     endif
 
     if ( .not. hydra_MI2_obj%report ) return

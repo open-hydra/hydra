@@ -31,6 +31,7 @@ program hydra_MI2_program
                                      Open_Removals, Close_Removals, After_ICE_Step, ICE_Block_Mean,                   &
                                      IGLOO_Gen_Accumulate, IGLOO_Gen_Deliver, Before_MOSE_Iteration, Fill_Finest_Grid, &
                                      Evaluate_Gas_Once
+  use hydraMI2_Law_Channels,   only: Read_Law_Channels, Law_Step_Start, Law_After_IGLOO, LawxMOSE, lawsOn
   use hydraMI2_Restart,        only: Setup_Restart, Remove_Stale_Handoff, Note_Outputs, Save_Handoff_If_Fields_Current, &
                                      Write_ICE_Exchange, Made_No_Iteration
   use hydraMI2_Report,         only: Report_Start, Report_Frozen_Sources, Report_Values, Report_Inlet,                &
@@ -84,8 +85,14 @@ program hydra_MI2_program
       n_couple = n_couple + 1
       call Read_Inifile_MI2_Runtime( n_couple )
 
+      ! the imports of the condensed solvers, and the mass channels' rates, on the state the step starts from
+      call Law_Step_Start( MOSE_simulation%domain(1), ICE_simulation, IGLOO )
       call Advance_MOSE()
       if ( hydra_MI2_obj%run_IGLOO ) call Advance_IGLOO()
+      if ( lawsOn .and. hydra_MI2_obj%run_IGLOO ) then
+        if ( hydra_MI2_obj%IGLOO_iter(n_cycle) /= 0 ) &
+          call Law_After_IGLOO( MOSE_simulation%domain(1), ICE_simulation, IGLOO )
+      endif
       if ( hydra_MI2_obj%run_ICE )   call Advance_ICE()
 
       if ( n_couple >= hydra_obj_sim_param%N_Coupling(n_cycle) ) exit
@@ -155,6 +162,7 @@ contains
     endif
 
     call Check_Coupled_Inputs( IGLOO )
+    call Read_Law_Channels( MOSE_simulation%domain(1), IGLOO )
     call Report_Start( MOSE_simulation, ICE_simulation, IGLOO )
 
     ! past every set-up refusal: a new ICE run drops the hand-off an earlier run left
@@ -249,6 +257,9 @@ contains
 
     ! MOSE_domain is the callback's argument, not the module-level simulation
     if ( ICE_src%ready ) call ICExMOSE( MOSE_domain, ICE_simulation%domain(1) )
+
+    ! the mass channels of [MI2-Channels]: the gas keeps their books
+    if ( lawsOn ) call LawxMOSE( MOSE_domain )
 
   end subroutine MOSE_external_routine
 
