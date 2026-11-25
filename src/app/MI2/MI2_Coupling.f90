@@ -1,21 +1,21 @@
 !> The exchange between MOSE and the two condensed solvers of hydra-MI2.
 !
+!  The gas is the ledger of every exchange. A condensed mass that leaves its solver enters the gas's books at the
+!  solver's energy plus its datum offset; a record of the products file turns it into gas species; a condensed product
+!  of that record born in another solver leaves the gas's books at the receiver's energy plus its own offset. So a
+!  route between two solvers needs no code of its own: it is a record, read from the products file ATLAS writes.
+!
 !  Within a coupling step:
 !    MOSExIGLOO, MOSExICE : the gas state a condensed solver steps on
-!    IGLOOxMOSE, ICExMOSE : the sources it hands back, into MOSE's residual at every Runge-Kutta stage
-!  What a solver hands the gas in one cell is written once, in the cell kernels IGLOO_Mass_To_Gas, ICE_Cell and
-!  Removal_Cell: the injection applies them, IGLOO_Handed, ICE_Handed and the removals' totals sum them for the
-!  books and the report (hydraMI2_Report).
+!    IGLOOxMOSE, ICExMOSE : what it hands the gas, into MOSE's residual at every Runge-Kutta stage
+!  What one cell hands the gas is written once, in the cell kernels IGLOO_Cell, ICE_Cell and Removal_Cell; the
+!  injection applies them, IGLOO_Handed, ICE_Handed and Removals_Handed sum them for the books (hydraMI2_Report).
 !
-!  What lands outside a solver's step goes through a channel (hydraMI2_Channels), one per route:
-!    removed(g)  ICE family g -> gas: what its burn-out removed (cond_phase%gone, drained after each ICE step), which
-!                the gas has not received yet
-!    iceMean(g)  ICE family g -> gas: a time-accurate ICE block of several steps hands the gas its steps' dt-weighted
-!                mean source
-!    smoke(c)    IGLOO material -> ICE family: the condensed product of IGLOO's burning, born in the family instead
-!                of the gas
-!  They go as rates when MOSE or ICE steps in pseudo-time (handRates: a converged steady field then holds per unit
-!  time), as amounts when both are time-accurate.
+!  What lands outside a solver's step goes through a channel (hydraMI2_Channels):
+!    removed(g)  ICE family g -> gas: what its burn-out removed (take_removed after each ICE step)
+!    iceMean(g)  a time-accurate ICE block of several steps hands the gas its steps' dt-weighted mean
+!    gen(c)      IGLOO material -> ICE family: the mass a record of the material generates, born in the family
+!  They go as rates when MOSE or ICE steps in pseudo-time (handRates), as amounts when both are time-accurate.
 module hydraMI2_Mod_Coupling
   use iso_fortran_env,   only: R8 => real64
   use hydraMI2_Channels, only: channel_t
@@ -23,14 +23,14 @@ module hydraMI2_Mod_Coupling
   implicit none
   private
 
-  public :: source_state_t, handed_t, removals_t, smoke_t
+  public :: source_state_t, handed_t, removals_t, gen_t
   public :: Setup_ICE_Coupling, Setup_IGLOO_Coupling, Set_IGLOO_Switches
   public :: Gas_Field_For_IGLOO, MOSExIGLOO, MOSExICE, IGLOOxMOSE, ICExMOSE
   public :: Check_IGLOO_Sources, Check_ICE_Sources
   public :: IGLOO_Handed, ICE_Handed, Removals_Handed
   public :: Removed_Store_Setup, Removals_Timed
   public :: Open_Removals, Close_Removals, After_ICE_Step, ICE_Block_Mean
-  public :: IGLOO_Smoke_Accumulate, IGLOO_Smoke_Deliver
+  public :: IGLOO_Gen_Accumulate, IGLOO_Gen_Deliver
 
   !> The sources a condensed solver last produced. They stay in force, and MOSE keeps reading them, until that
   !  solver's next solve: a cycle with X-iter = 0 runs on frozen sources. cycle = 0 for sources a restart read back.
@@ -55,13 +55,13 @@ module hydraMI2_Mod_Coupling
     type(handed_t) :: h
   end type removals_t
 
-  !> IGLOO's smoke a MOSE block made, withheld from the gas and given to ICE (IGLOO_Smoke_Deliver): its amounts (mass,
-  !  momentum (3), energy on the gas's datum); under handRates the rates set as ICE's source (and the number); the
-  !  cells of the block's iterations where a smoke was born with no parcel's state.
-  type :: smoke_t
+  !> IGLOO's generated mass a MOSE block made, withheld from the gas and given to ICE (IGLOO_Gen_Deliver): its amounts
+  !  (mass, momentum (3), energy on the gas's datum); under handRates the rates set in ICE (and the number); the cells
+  !  of the block's iterations where a generated mass was born with no parcel's state.
+  type :: gen_t
     real(R8) :: amount(5) = 0._R8, rate(6) = 0._R8
     integer  :: nNoState  = 0
-  end type smoke_t
+  end type gen_t
 
   !> .true.: what lands between solver steps goes as rates; .false.: as amounts. Set by Setup_ICE_Coupling.
   logical, protected, public :: handRates = .false.
@@ -82,27 +82,24 @@ module hydraMI2_Mod_Coupling
   end type res_block_t
   type(res_block_t), allocatable :: oldResidual(:)
 
-  !> removed(g): what the burn-out of ICE family g removed (mass, momentum (3), energy, per unit volume), from ICE to
-  !  the gas; the store of every family, though only a converting one hands it on. Under rates timed: the store over
-  !  the time it was made in is the rate in force, kept while ICE does not step, as its source is. Under amounts each
-  !  MOSE iteration takes its share. The store, its time and its rate are restored by the hand-off file of a restart.
+  !> removed(g): what the burn-out of ICE family g removed and the gas has not received yet, per unit volume: the
+  !  gas's mass, momentum (3), energy, then the generated mass (take_removed). Under rates timed: the store over the
+  !  time it was made in is the rate in force. Restored by the hand-off file of a restart.
   type(channel_t), allocatable, public :: removed(:)
 
-  !> iceMean(g): over a time-accurate ICE block, family g's dt*source, dt*heat, dt*birth (its components, in this
-  !  order) and dt, cell by cell (After_ICE_Step), made into the block's rates after it (ICE_Block_Mean) when it made
-  !  meanSteps > 1 steps.
+  !> iceMean(g): over a time-accurate ICE block, family g's dt*source, dt*heat, dt*gen_rate and dt, cell by cell,
+  !  made into the block's rates after it (ICE_Block_Mean) when it made meanSteps > 1 steps.
   type(channel_t), allocatable :: iceMean(:)
   integer :: meanSteps = 0
 
-  !> smoke(c): the smoke of an IGLOO material (from), born in an ICE family (to): the smoke of its combustion record
-  !  (trigger SMOKE_OF_BURN) or of its cap oxide handed at burnout (SMOKE_OF_CAP); kg per kg, the smoke's datum
-  !  offset, the material's d-smoke. Its store: what the current MOSE block made (mass, momentum (3), energy on ICE's
-  !  datum, number). smokeIGOn: one at least. nSmokeNoState: the cells of the block's iterations where a smoke was
-  !  born with no parcel's state.
-  integer, parameter :: SMOKE_OF_BURN = 1, SMOKE_OF_CAP = 2
-  type(channel_t), allocatable :: smoke(:)
-  logical, protected, public   :: smokeIGOn = .false.
-  integer :: nSmokeNoState = 0
+  !> gen(c): the mass a record of an IGLOO material (from) generates, born in an ICE family (to): GEN_OF_PROCESS, the
+  !  material's process record; GEN_OF_RELEASE, the release record of the material it carries, handed at burnout.
+  !  d: the material's d-gen; dh: the generated material's datum offset in ICE. Its store: what the current MOSE
+  !  block made (mass, momentum (3), energy on ICE's datum, number). genIGOn: one at least.
+  integer, parameter :: GEN_OF_PROCESS = 1, GEN_OF_RELEASE = 2
+  type(channel_t), allocatable :: gen(:)
+  logical, protected, public   :: genIGOn = .false.
+  integer :: nGenNoState = 0
 
   character(len=*), parameter :: E_ = ' [ERROR] MI2: '
 
@@ -112,81 +109,82 @@ contains
   ! Setup
   ! ---------------------------------------------------------------------------------------------
 
-  !> ICE's side of the coupler, after ICE%setup: how what lands between steps goes (handRates), material -> gas
-  !  species of ICE's phase from the file ATLAS writes, the smoke families, the datum offsets, and the removals'
-  !  channels. ICE credits a material its energy at T_ref on its own datum: its table's, or cp*T.
+  !> ICE's side of the coupler, after ICE%setup: how what lands between steps goes (handRates), the chemistry of
+  !  ICE's materials, the mass they generate (declared to ICE), the datum offsets, the removals' channels. ICE credits
+  !  a material its energy at T_ref on its own datum: its table's, or cp*T.
   subroutine Setup_ICE_Coupling ( ICE_domain )
     use MOSE_Config_Types_m,    only: MOSE_time_scheme => obj_time_scheme
     use ICE_Advanced_Types_m,   only: ICE_domain_type
     use ICE_Global_m,           only: ICE_phase_prefix
-    use ICE_Lib_Properties,     only: mat_e, mat_cp_const, mat_lv
-    use ICE_Config_Types_m,     only: COMB_BECKSTEAD, ICE_condensed => obj_condensed, ICE_time_scheme => obj_time_scheme
+    use ICE_Lib_Properties,     only: mat_lv
+    use ICE_Config_Types_m,     only: ICE_condensed => obj_condensed, ICE_time_scheme => obj_time_scheme
+    use ICE_Mod_Exchange,       only: set_generation
     use hydraMI2_Channels,      only: As_Rate
-    use hydraMI2_Stoichiometry, only: Load_Species_Map, Report_Stoichiometry, Build_Datum_Offsets, Smoke_Record, &
-                                      Set_Smoke_Datum, MAP_ICE, T_datum_ref, productsICE
+    use hydraMI2_Chemistry,     only: chemICE, IS_ICE, T_datum_ref, Load_Chemistry, Set_Datum_Offsets, &
+                                      Set_Product_Datum, Report_Chemistry
     implicit none
     type(ICE_domain_type), intent(in) :: ICE_domain
-    character(len=64), allocatable :: matnames(:)
-    logical,           allocatable :: evap(:), burn(:), beck(:), Lvconst(:)
-    real(R8),          allocatable :: eref(:), Lvmat(:), qmat(:), Thot(:), ehot(:), beta(:)
-    character(len=64) :: sname, sphase
-    real(R8) :: snu, sh, dh
+    character(len=64), allocatable :: names(:)
+    real(R8),          allocatable :: eref(:), Lv(:)
+    logical,           allocatable :: none(:)
+    character(len=:),  allocatable :: why
     integer  :: m, nm, gs
+    real(R8) :: dh
 
     handRates = As_Rate( MOSE_time_scheme%time_accurate, ICE_time_scheme%time_accurate )
 
     nm = size(ICE_condensed)
-    allocate(matnames(nm), evap(nm), burn(nm), beck(nm), Lvconst(nm))
-    allocate(eref(nm), Lvmat(nm), qmat(nm), Thot(nm), ehot(nm), beta(nm))
+    allocate(names(nm), eref(nm), Lv(nm), none(nm))
+    none = .false.
     do m = 1, nm
-      associate ( mat => ICE_condensed(m) )
-        matnames(m) = mat%name
-        evap(m)     = mat%evapSelect > 0
-        burn(m)     = mat%combSelect > 0
-        beck(m)     = mat%combSelect == COMB_BECKSTEAD
-        beta(m)     = merge(mat%betaPart, 0._R8, beck(m))
-        ! where the material converts: its boiling temperature, or the one it burns from (Beckstead: T-ign)
-        Thot(m)     = merge(mat%Tign, mat%Tboil, beck(m))
-        if ( mat%cs_varies ) then
-          eref(m) = mat_e( mat, T_datum_ref )
-          ehot(m) = mat_e( mat, Thot(m) )
-        else
-          eref(m) = mat_cp_const( mat ) * T_datum_ref
-          ehot(m) = mat_cp_const( mat ) * Thot(m)
-        endif
-        Lvmat(m)    = mat_lv( mat, T_datum_ref )
-        Lvconst(m)  = .not. mat%use_lv
-        qmat(m)     = mat%qComb
-      end associate
+      names(m) = ICE_condensed(m)%name
+      eref(m)  = ICE_Energy( m, T_datum_ref )
+      Lv(m)    = mat_lv( ICE_condensed(m), T_datum_ref )
     enddo
+    call Load_Chemistry( IS_ICE, ICE_phase_prefix, names, ICE_condensed(:)%evapSelect > 0, &
+                         ICE_condensed(:)%combSelect > 0, none, none )
+    call Set_Datum_Offsets( IS_ICE, eref, Lv, eref )
 
-    call Load_Species_Map( MAP_ICE, ICE_phase_prefix, matnames, evap, burn )
-
-    ! the smoke of ICE's burning materials, which ICE itself makes (cond_phase%birth): its family, kg per kg, datum
+    ! the mass ICE's burning materials generate, which ICE makes itself, in the family the record names
     do m = 1, nm
-      if ( .not. Smoke_Record( MAP_ICE, m, sname, snu, sh, sphase ) ) cycle
-      call Smoke_Family( trim(matnames(m)), 'INPUT/'//trim(ICE_phase_prefix)//'products.txt', sname, sphase, sh, gs, dh )
-      if ( .not. ICE_condensed(m)%dSmoke > 0._R8 ) then
-        write(*,'(A)') E_//trim(matnames(m))//' burns into the smoke '//trim(sname)//' and its row of INPUT/'// &
-          trim(ICE_phase_prefix)//'models.txt gives no d-smoke, the diameter each smoke drop is born with'
+      if ( .not. chemICE%mat(m)%process%on .or. len_trim(chemICE%mat(m)%process%phase) == 0 ) cycle
+      call Gen_Family( trim(names(m)), chemICE%mat(m)%process%product, chemICE%mat(m)%process%phase, &
+                       chemICE%mat(m)%process%hProduct, gs, dh )
+      call set_generation( m, chemICE%mat(m)%process%product, chemICE%mat(m)%process%nuProduct, why )
+      if ( len(why) > 0 ) then
+        write(*,'(A)') E_//'ICE material '//trim(names(m))//' cannot generate '// &
+          trim(chemICE%mat(m)%process%product)//': '//why
         error stop 1
       endif
-      ICE_condensed(m)%smokeFam = gs
-      ICE_condensed(m)%nuSmoke  = snu
-      call Set_Smoke_Datum( m, dh )
-      write(*,'(A,I0,A,ES15.7,A,ES12.4,A,ES15.7,A)') ' [MI2] ICE material '//trim(matnames(m))//' burns into the '// &
-        'smoke '//trim(sname)//' (family ', gs, '): ', snu, ' kg per kg burnt, d-smoke ', ICE_condensed(m)%dSmoke, &
-        ' m, datum offset ', dh, ' J/kg'
+      call Set_Product_Datum( IS_ICE, m, .false., dh )
+      write(*,'(A,I0,A,ES15.7,A,ES12.4,A)') ' [MI2] ICE material '//trim(names(m))//' generates '// &
+        trim(chemICE%mat(m)%process%product)//' (family ', gs, '): ', chemICE%mat(m)%process%nuProduct, &
+        ' kg per kg burnt, d-gen ', ICE_condensed(m)%dGen, ' m'
     enddo
-
-    call Report_Stoichiometry( MAP_ICE, matnames, nm )
-    call Build_Datum_Offsets( MAP_ICE, matnames, nm, beck, beta, eref, Lvmat, qmat, Thot, ehot, Lvconst )
+    call Report_Chemistry( IS_ICE )
 
     ! the removals reach the gas as the rate of their store, timed by ICE's steps, or as amounts
-    call Removed_Store_Setup( ICE_domain, timed = handRates .and. productsICE%active )
+    call Removed_Store_Setup( ICE_domain, timed = handRates .and. chemICE%active )
     removed(:)%asRate = handRates
 
   end subroutine Setup_ICE_Coupling
+
+
+  !> ICE's energy of material m at T on its own datum: its table's, or cp*T.
+  real(R8) function ICE_Energy ( m, T )
+    use ICE_Config_Types_m, only: ICE_condensed => obj_condensed
+    use ICE_Lib_Properties, only: mat_e, mat_cp_const
+    implicit none
+    integer,  intent(in) :: m
+    real(R8), intent(in) :: T
+
+    if ( ICE_condensed(m)%cs_varies ) then
+      ICE_Energy = mat_e( ICE_condensed(m), T )
+    else
+      ICE_Energy = mat_cp_const( ICE_condensed(m) ) * T
+    endif
+
+  end function ICE_Energy
 
 
   !> The channels of ICE's removals, one per family (a restart may have opened them first): each store, and when timed
@@ -211,7 +209,7 @@ contains
       dims(:,b) = ICE_domain%blk(b)%dim(1:3)
     enddo
     do g = 1, ngroups
-      call Open_Store( removed(g), dims, 5, timed=timed, rated=timed )
+      call Open_Store( removed(g), dims, 6, timed=timed, rated=timed )
     enddo
 
   end subroutine Removed_Store_Setup
@@ -230,26 +228,24 @@ contains
   end function Removals_Timed
 
 
-  !> IGLOO's side of the coupler, after IGLOO%setup: the family -> material map, material -> gas species of IGLOO's
-  !  phase from the file ATLAS writes (with the oxide cap of a material that burns with one), the smoke of its burning
-  !  materials, the datum offsets, and the under-relaxation store (allocated whether or not relaxation is on).
+  !> IGLOO's side of the coupler, after IGLOO%setup: the family -> material map, the chemistry of IGLOO's materials
+  !  (what each carries, and the carried material it hands the gas at burnout), the mass they generate in ICE, the
+  !  datum offsets, the under-relaxation store (allocated whether or not relaxation is on).
   subroutine Setup_IGLOO_Coupling ( MOSE_domain, IGLOO )
     use MOSE_Advanced_Types_m,  only: MOSE_domain_type
     use MOSE_Global_m,          only: nprim
     use IGLOO_module,           only: obj_IGLOO
     use IGLOO_variables,        only: nfam, IGLOO_phase_prefix
-    use IGLOO_Lib_Combustion,   only: nuOx
-    use IGLOO_Lib_Evaporation,  only: IGLOO_COMB_BECKSTEAD => COMB_BECKSTEAD
-    use hydraMI2_Stoichiometry, only: Load_Species_Map, Report_Stoichiometry, Build_Datum_Offsets, MAP_IGLOO, &
-                                      T_datum_ref
+    use hydraMI2_Chemistry,     only: chemIGLOO, IS_IGLOO, T_datum_ref, Load_Chemistry, Set_Datum_Offsets, &
+                                      Report_Chemistry
     implicit none
-    type(MOSE_domain_type), intent(in) :: MOSE_domain
-    type(obj_IGLOO),        intent(in) :: IGLOO
-    character(len=20), allocatable :: matnames(:)
-    logical,           allocatable :: evap(:), burn(:), handsCap(:), beck(:), Lvconst(:)
-    integer,           allocatable :: oxide(:)
-    real(R8),          allocatable :: href(:), Lvmat(:), qmat(:), Thot(:), hhot(:), beta(:)
-    integer :: b, m, g, fam, nmat
+    type(MOSE_domain_type), intent(in)    :: MOSE_domain
+    type(obj_IGLOO),        intent(inout) :: IGLOO
+    character(len=64), allocatable :: names(:)
+    logical,           allocatable :: carries(:), released(:)
+    real(R8),          allocatable :: href(:), Lv(:), hcar(:)
+    integer  :: b, m, g, fam, nm
+    real(R8) :: yield
 
     ! family -> material, from the famID IGLOO%setup assigned
     if (allocated(famMatID)) deallocate(famMatID)
@@ -262,41 +258,44 @@ contains
       enddo
     enddo
 
-    ! per material: what it converts by, and the enthalpy IGLOO credits it at T_ref and where it converts (boiling,
-    ! or T-ign on Beckstead's law) on the datum of its table: cp*T + hOff for constant cp, hTab interpolated otherwise
-    nmat = size(IGLOO%material)
-    allocate(matnames(nmat), evap(nmat), burn(nmat), handsCap(nmat), oxide(nmat), beck(nmat), Lvconst(nmat))
-    allocate(href(nmat), Lvmat(nmat), qmat(nmat), Thot(nmat), hhot(nmat), beta(nmat))
-    do m = 1, nmat
+    ! per material: its name, what it carries and hands the gas, its enthalpy at T_ref on the datum of its table, its
+    ! latent heat, and the enthalpy of the material it carries at T_ref
+    nm = size(IGLOO%material)
+    allocate(names(nm), carries(nm), released(nm), href(nm), Lv(nm), hcar(nm))
+    released = .false.
+    do m = 1, nm
       associate ( mat => IGLOO%material(m) )
-        matnames(m) = mat%matName
-        evap(m)     = mat%evapSelect > 0
-        burn(m)     = mat%combSelect > 0
-        ! a material that burns with an oxide cap names the material its oxide is, and whether the cap ends in the gas
-        oxide(m)    = merge(mat%prodID, 0, burn(m))
-        handsCap(m) = oxide(m) > 0 .and. .not. mat%resOn
-        beck(m)     = mat%combSelect == IGLOO_COMB_BECKSTEAD
-        beta(m)     = merge(mat%betaPart, 0._R8, beck(m))
-        Thot(m)     = merge(mat%Tign, mat%Tboil, beck(m))
-        Lvmat(m)    = mat%Lv
-        Lvconst(m)  = .not. mat%LvVariable
-        qmat(m)     = mat%qComb
+        names(m)   = mat%matName
+        carries(m) = mat%carryShare > 0._R8 .or. mat%carryLaw > 0
+        if ( carries(m) .and. .not. mat%resOn ) released(mat%carriedID) = .true.
         if ( mat%cpVariable ) then
           href(m) = Table_Enthalpy( mat%hTab, lbound(mat%hTab,1), T_datum_ref )
-          hhot(m) = Table_Enthalpy( mat%hTab, lbound(mat%hTab,1), Thot(m) )
         else
           href(m) = mat%cp * T_datum_ref + mat%hOff
-          hhot(m) = mat%cp * Thot(m) + mat%hOff
         endif
-        write(*,'(A,I0,A,ES14.7,A)') ' [MI2] IGLOO material ', m, ': table datum '//trim(mat%hDatum)//', hOff = ', &
-          mat%hOff, ' J/kg'
+        Lv(m)   = mat%Lv
+        hcar(m) = mat%cpCar * T_datum_ref + mat%hOffCar
       end associate
     enddo
+    call Load_Chemistry( IS_IGLOO, IGLOO_phase_prefix, names, IGLOO%material(:)%evapSelect > 0, &
+                         IGLOO%material(:)%combSelect > 0, carries, released )
+    call Set_Datum_Offsets( IS_IGLOO, href, Lv, hcar )
 
-    call Load_Species_Map( MAP_IGLOO, IGLOO_phase_prefix, matnames, evap, burn, oxide, handsCap, nuOx )
-    call Setup_IGLOO_Smoke( MOSE_domain, IGLOO, matnames )
-    call Report_Stoichiometry( MAP_IGLOO, matnames, nmat )
-    call Build_Datum_Offsets( MAP_IGLOO, matnames, nmat, beck, beta, href, Lvmat, qmat, Thot, hhot, Lvconst )
+    ! the yield IGLOO's carry law holds is the one of the carry record
+    do m = 1, nm
+      if ( .not. carries(m) ) cycle
+      yield = IGLOO%material(m)%carryYield
+      ! 1e-7: one formula with two tables of atomic weights that differ in their last digit stays within it
+      if ( abs(chemIGLOO%mat(m)%carry%nuProduct - yield) > 1.e-7_R8*yield ) then
+        write(*,'(A,ES15.7,A,ES15.7,A)') E_//'the carry record of IGLOO material '//trim(names(m))//' forms ', &
+          chemIGLOO%mat(m)%carry%nuProduct, ' kg per kg, and its carry row gives yield = ', yield, &
+          ': run ATLAS GPB again'
+        error stop 1
+      endif
+    enddo
+
+    call Setup_IGLOO_Gen( MOSE_domain, IGLOO, names )
+    call Report_Chemistry( IS_IGLOO )
 
     if (allocated(oldResidual)) deallocate(oldResidual)
     allocate(oldResidual(1:size(MOSE_domain%blk)))
@@ -320,147 +319,120 @@ contains
   end subroutine Setup_IGLOO_Coupling
 
 
-  !> The smoke channels of IGLOO's burning materials (the tail of a combustion record, and of the release record of a
-  !  cap oxide handed at burnout): ICE runs and holds its family, the coupling is not relaxed, the material gives
-  !  d-smoke. One channel per route, in the order of the materials, then of the records.
-  subroutine Setup_IGLOO_Smoke ( MOSE_domain, IGLOO, matnames )
+  !> The generation channels of IGLOO's materials: a process record whose product is born in an ICE phase, and the
+  !  release record of a carried material handed at burnout that names one. ICE runs and holds the family, the
+  !  coupling is not relaxed, the material gives d-gen, and IGLOO tracks the state its processed mass leaves at.
+  subroutine Setup_IGLOO_Gen ( MOSE_domain, IGLOO, names )
     use MOSE_Advanced_Types_m,   only: MOSE_domain_type
     use IGLOO_module,            only: obj_IGLOO
-    use IGLOO_variables,         only: IGLOO_phase_prefix
+    use IGLOO_Mod_Exchange,      only: gen_diameter, track_processed
     use hydraMI2_Config_Types_m, only: hydra_MI2_obj
     use hydraMI2_Channels,       only: Open_Store
-    use hydraMI2_Stoichiometry,  only: Smoke_Record, MAP_IGLOO
+    use hydraMI2_Chemistry,      only: chemIGLOO, record_t
     implicit none
-    type(MOSE_domain_type), intent(in) :: MOSE_domain
-    type(obj_IGLOO),        intent(in) :: IGLOO
-    character(len=*),       intent(in) :: matnames(:)
-    character(len=64)  :: sname, sphase
-    character(len=256) :: file
-    character(len=:), allocatable :: who
-    real(R8) :: snu, sh, dh
-    integer  :: m, p, gs, n, b, c, nc, dims(3, size(MOSE_domain%blk))
-    logical  :: has
+    type(MOSE_domain_type), intent(in)    :: MOSE_domain
+    type(obj_IGLOO),        intent(inout) :: IGLOO
+    character(len=*),       intent(in)    :: names(:)
     type(channel_t), allocatable :: found(:)
+    type(record_t) :: rec
+    character(len=:), allocatable :: who, why
+    real(R8) :: dh
+    integer  :: m, n, gs, b, c, nc, dims(3, size(MOSE_domain%blk))
 
-    allocate(found(2*size(matnames)))
+    allocate(found(2*size(names)))
     nc = 0
-    file = 'INPUT/'//trim(IGLOO_phase_prefix)//'products.txt'
-    do m = 1, size(matnames)
-      who = 'the IGLOO material '//trim(matnames(m))
-      do n = SMOKE_OF_BURN, SMOKE_OF_CAP
-        if ( n == SMOKE_OF_BURN ) then
-          has = Smoke_Record( MAP_IGLOO, m, sname, snu, sh, sphase )
+    do m = 1, size(names)
+      who = 'IGLOO material '//trim(names(m))
+      do n = GEN_OF_PROCESS, GEN_OF_RELEASE
+        if ( n == GEN_OF_PROCESS ) then
+          rec = chemIGLOO%mat(m)%process
+        elseif ( chemIGLOO%mat(m)%carry%on .and. .not. IGLOO%material(m)%resOn ) then
+          rec = chemIGLOO%mat(IGLOO%material(m)%carriedID)%release
         else
-          p   = IGLOO%material(m)%prodID
-          has = .false.
-          if ( IGLOO%material(m)%combSelect > 0 .and. p > 0 .and. .not. IGLOO%material(m)%resOn ) &
-            has = Smoke_Record( MAP_IGLOO, p, sname, snu, sh, sphase, release=.true. )
+          cycle
         endif
-        if ( .not. has ) cycle
+        if ( .not. rec%on .or. len_trim(rec%phase) == 0 ) cycle
         if ( .not. hydra_MI2_obj%run_ICE ) then
-          write(*,'(A)') E_//trim(file)//': '//who//' burns into the smoke '//trim(sname)//', and the smoke has no '// &
-            'family: ICE is not run. Run ICE with '//trim(sname)//' in its phase, or burn the material into gas species only'
+          write(*,'(A)') E_//who//' generates '//trim(rec%product)//', born in ICE, and ICE is not run'
           error stop 1
         endif
         if ( hydra_MI2_obj%relaxation ) then
-          write(*,'(A)') E_//who//' burns into the smoke '//trim(sname)//': relaxation = true blends two coupling '// &
-            'steps of the gas''s share, and the smoke''s is not blended; set relaxation = false'
+          write(*,'(A)') E_//who//' generates '//trim(rec%product)//': relaxation = true blends two coupling '// &
+            'steps of the gas''s share, and the generated mass is not blended; set relaxation = false'
           error stop 1
         endif
-        if ( .not. IGLOO%material(m)%dSmoke > 0._R8 ) then
-          write(*,'(A)') E_//who//' burns into the smoke '//trim(sname)//' and its row of INPUT/'// &
-            trim(IGLOO_phase_prefix)//'models.txt gives no d-smoke, the diameter each smoke drop is born with'
+        if ( .not. gen_diameter(IGLOO, m) > 0._R8 ) then
+          write(*,'(A)') E_//who//' generates '//trim(rec%product)//' and its combustion row gives no d-gen, the '// &
+            'diameter each generated drop is born with'
           error stop 1
         endif
-        call Smoke_Family( who, file, sname, sphase, sh, gs, dh )
+        call track_processed( IGLOO, m, why )
+        if ( len(why) > 0 ) then
+          write(*,'(A)') E_//who//' generates '//trim(rec%product)//': '//why
+          error stop 1
+        endif
+        call Gen_Family( who, rec%product, rec%phase, rec%hProduct, gs, dh )
         nc = nc + 1
-        found(nc)%name    = 'igloo-smoke'
+        found(nc)%name    = 'igloo-gen'
         found(nc)%from    = m
         found(nc)%to      = gs
         found(nc)%trigger = n
-        found(nc)%nu      = snu
+        found(nc)%nu      = rec%nuProduct
         found(nc)%dh      = dh
-        found(nc)%d       = IGLOO%material(m)%dSmoke
+        found(nc)%d       = gen_diameter(IGLOO, m)
         found(nc)%asRate  = handRates
-        write(*,'(A,I0,A,ES15.7,A,ES12.4,A,ES15.7,A)') ' [MI2] IGLOO material '//trim(matnames(m))//' '// &
-          trim(merge('burns into' // repeat(' ', 17), 'hands its cap at burnout to', n == SMOKE_OF_BURN))// &
-          ' the smoke '//trim(sname)//' (ICE family ', gs, '): ', snu, ' kg per kg, d-smoke ', &
-          IGLOO%material(m)%dSmoke, ' m, datum offset ', dh, ' J/kg'
+        write(*,'(A,I0,A,ES15.7,A,ES12.4,A)') ' [MI2] '//who//' generates '//trim(rec%product)// &
+          trim(merge('                        ', ' from what it carries   ', n == GEN_OF_PROCESS))//' (ICE family ', &
+          gs, '): ', rec%nuProduct, ' kg per kg, d-gen ', found(nc)%d, ' m'
       enddo
     enddo
-    allocate(smoke(nc))
+    allocate(gen(nc))
     do c = 1, nc
-      smoke(c) = found(c)
+      gen(c) = found(c)
     enddo
-    smokeIGOn = nc > 0
+    genIGOn = nc > 0
     ! each channel's store: what a MOSE block's iterations make (mass, momentum (3), energy, number)
     do b = 1, size(MOSE_domain%blk)
       dims(:,b) = MOSE_domain%blk(b)%dim(1:3)
     enddo
-    do c = 1, size(smoke)
-      call Open_Store( smoke(c), dims, 6, timed=.false., rated=.false. )
+    do c = 1, size(gen)
+      call Open_Store( gen(c), dims, 6, timed=.false., rated=.false. )
     enddo
-    if ( smokeIGOn .and. handRates ) &
-      write(*,'(A)') ' [MI2] IGLOO''s smoke reaches ICE as rates: a source of each smoke family over ICE''s own steps'
-    if ( smokeIGOn .and. .not. handRates ) &
-      write(*,'(A)') ' [MI2] IGLOO''s smoke reaches ICE as amounts: what each MOSE block made, after the block'
+    if ( genIGOn .and. handRates ) &
+      write(*,'(A)') ' [MI2] IGLOO''s generated mass reaches ICE as rates: births over ICE''s own steps'
+    if ( genIGOn .and. .not. handRates ) &
+      write(*,'(A)') ' [MI2] IGLOO''s generated mass reaches ICE as amounts: what each MOSE block made, after the block'
 
-  end subroutine Setup_IGLOO_Smoke
+  end subroutine Setup_IGLOO_Gen
 
 
-  !> The ICE family a smoke is born in, for ICE's materials and IGLOO's alike: the smoke material is a material of
-  !  ICE's phase (the record's phase) with exactly one family, of the MK closure, that neither evaporates nor burns.
-  !  Returns the family and the smoke's datum offset: its formation enthalpy sh less ICE's energy of it at T_datum_ref.
-  subroutine Smoke_Family ( owner, file, sname, sphase, sh, gs, dh )
-    use ICE_Global_m,           only: ICE_phase_prefix, mat_of, ngroups
-    use ICE_Config_Types_m,     only: ICE_condensed => obj_condensed, ICE_time_scheme => obj_time_scheme
-    use ICE_Lib_Properties,     only: mat_e, mat_cp_const
-    use hydraMI2_Stoichiometry, only: T_datum_ref
+  !> The ICE family a generated mass of material `product` is born in (ICE's birth_family: one family, MK, inert) and
+  !  the generated material's datum offset there: its formation enthalpy hProduct less ICE's energy of it at T_ref.
+  !  phase: the ICE phase the record names.
+  subroutine Gen_Family ( owner, product, phase, hProduct, gs, dh )
+    use ICE_Global_m,       only: ICE_phase_prefix, mat_of
+    use ICE_Mod_Exchange,   only: birth_family
+    use hydraMI2_Chemistry, only: T_datum_ref
     implicit none
-    character(len=*), intent(in)  :: owner, file, sname, sphase
-    real(R8),         intent(in)  :: sh
+    character(len=*), intent(in)  :: owner, product, phase
+    real(R8),         intent(in)  :: hProduct
     integer,          intent(out) :: gs
     real(R8),         intent(out) :: dh
-    integer :: g, ms, nfam
+    character(len=:), allocatable :: why
 
-    ms = 0
-    do g = 1, size(ICE_condensed)
-      if ( trim(ICE_condensed(g)%name) == trim(sname) ) ms = g
-    enddo
-    if ( ms == 0 ) then
-      write(*,'(A)') E_//trim(file)//': '//owner//' burns into the smoke '//trim(sname)//', which is not a '// &
-        'material of ICE''s phase: declare it in INPUT/'//trim(ICE_phase_prefix)//'phase.txt with one population '// &
-        'and its family with closure = MK'
+    if ( trim(phase) /= trim(ICE_phase_prefix) ) then
+      write(*,'(A)') E_//'the mass '//owner//' generates is born in the phase '//trim(phase)//', and ICE runs '// &
+        'the phase '//trim(ICE_phase_prefix)//': run ATLAS GPB again'
       error stop 1
     endif
-    if ( trim(sphase) /= trim(ICE_phase_prefix) ) then
-      write(*,'(A)') E_//'the smoke of '//owner//' is born in the phase '//trim(sphase)//', and ICE runs the phase '// &
-        trim(ICE_phase_prefix)//': run ATLAS GPB again'
+    gs = birth_family( product, why )
+    if ( gs == 0 ) then
+      write(*,'(A)') E_//'the mass '//owner//' generates cannot be born in ICE: '//why
       error stop 1
     endif
-    nfam = count(mat_of(1:ngroups) == ms)
-    gs   = findloc(mat_of(1:ngroups), ms, dim=1, back=.true.)
-    if ( nfam /= 1 ) then
-      write(*,'(A,I0,A)') E_//'the smoke '//trim(sname)//' of '//owner//' has ', nfam, &
-        ' families in ICE: it is born in one, give its material one population'
-      error stop 1
-    endif
-    if ( trim(ICE_time_scheme%model(gs)) /= 'MK' ) then
-      write(*,'(A,I0,A)') E_//'the smoke '//trim(sname)//' is born in ICE family ', gs, ', whose closure is '// &
-        trim(ICE_time_scheme%model(gs))//': set closure = MK (a smoke takes mass and number at a fixed diameter)'
-      error stop 1
-    endif
-    if ( ICE_condensed(ms)%evapSelect > 0 .or. ICE_condensed(ms)%combSelect > 0 ) then
-      write(*,'(A)') E_//'the smoke '//trim(sname)//' evaporates or burns in ICE: a smoke does neither'
-      error stop 1
-    endif
-    if ( ICE_condensed(ms)%cs_varies ) then
-      dh = sh - mat_e( ICE_condensed(ms), T_datum_ref )
-    else
-      dh = sh - mat_cp_const( ICE_condensed(ms) ) * T_datum_ref
-    endif
+    dh = hProduct - ICE_Energy( mat_of(gs), T_datum_ref )
 
-  end subroutine Smoke_Family
+  end subroutine Gen_Family
 
 
   !> Select IGLOO's coupling mode for cycle n_cycle: IGLOO-iter = 2 -> Eulerian (eulSwitch), 1 -> source (srcSwitch).
@@ -650,12 +622,12 @@ contains
   end subroutine MOSExIGLOO
 
 
-  !> Push the MOSE gas state into ICE's gas_phase: prim = (rho, u, v, w, T), interior only, plus
-  !  R, gam, mu, k. Opens its own parallel region.
+  !> Push the MOSE gas state into ICE (set_gas), interior cells. Opens its own parallel region.
   subroutine MOSExICE ( MOSE_domain, ICE_domain )
     use MOSE_Advanced_Types_m, only: MOSE_domain_type
     use MOSE_Global_m,         only: nsc
     use ICE_Advanced_Types_m,  only: ICE_domain_type
+    use ICE_Mod_Exchange,      only: set_gas
     implicit none
     type(MOSE_domain_type), intent(in)    :: MOSE_domain
     type(ICE_domain_type),  intent(inout) :: ICE_domain
@@ -668,11 +640,7 @@ contains
       do j = 1, MOSE_domain%blk(b)%dim(2)
       do i = 1, MOSE_domain%blk(b)%dim(1)
         call Gas_State_From_Prim ( MOSE_domain%blk(b)%P(:,i,j,k), rhoi, vel, rho, R, gam, T, mu, kappa )
-        ICE_domain%blk(b)%gas_phase%prim(1:5,i,j,k) = [rho, vel, T]
-        ICE_domain%blk(b)%gas_phase%R   (    i,j,k) = R
-        ICE_domain%blk(b)%gas_phase%gam (    i,j,k) = gam
-        ICE_domain%blk(b)%gas_phase%mu  (    i,j,k) = mu
-        ICE_domain%blk(b)%gas_phase%k   (    i,j,k) = kappa
+        call set_gas( ICE_domain%blk(b), i, j, k, rho, vel, T, R, gam, mu, kappa )
       enddo ; enddo ; enddo
       !$OMP END PARALLEL DO
     enddo
@@ -686,8 +654,7 @@ contains
   ! ---------------------------------------------------------------------------------------------
 
   !> Inject IGLOO's reaction on the gas into MOSE's residual (R = R - S).
-  !    source branch : source{Mass,Mom,En} are absolute rates; their mass through IGLOO_Mass_To_Gas, under the
-  !                    consumed-species floor guard
+  !    source branch : IGLOO_Cell (absolute rates), under the consumed-species floor guard
   !    euler  branch : getSourceTerms is per unit volume (*vol); momentum and energy only
   !  iter of iMax is the MOSE iteration within its block and relCoeff the cycle's under-relaxation coefficient
   !  (1: the source is injected as it is).
@@ -697,7 +664,7 @@ contains
     use MOSE_Config_Types_m,    only: obj_chemistry
     use IGLOO_module,           only: obj_IGLOO
     use IGLOO_variables,        only: nfam
-    use hydraMI2_Stoichiometry, only: productsIGLOO
+    use hydraMI2_Chemistry,     only: chemIGLOO
     implicit none
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
     type(obj_IGLOO),        intent(in)    :: IGLOO
@@ -734,13 +701,10 @@ contains
           res(np)    = - sources(4)
           res = res * MOSE_domain%blk(b)%vol(i,j,k)
         else
-          res(nu:nw) = IGLOO%source(b)%sourceMom(:,i,j,k)
-          res(np)    = IGLOO%source(b)%sourceEn(i,j,k)
-          if (productsIGLOO%active) then
-            call IGLOO_Mass_To_Gas ( IGLOO%source(b)%sourceMass(:,i,j,k), res, datum )
+          call IGLOO_Cell ( IGLOO, b, i, j, k, res, datum )
+          if (chemIGLOO%active) &
             call Floor_Guard ( res(1:nsc), MOSE_domain%blk(b)%P(1:nsc,i,j,k), MOSE_domain%blk(b)%vol(i,j,k), &
                                MOSE_domain%blk(b)%dtlocal(i,j,k) * obj_chemistry%strangcoeff )
-          endif
         endif
 
         if (blend) then
@@ -758,22 +722,24 @@ contains
   end subroutine IGLOOxMOSE
 
 
-  !> Inject ICE's reaction on the gas into MOSE's residual: what each family's source hands the gas (ICE_Cell) and the
-  !  removals ICE stores (Removal_Cell: a steady run, the rate of the store; a time-accurate one, this MOSE
-  !  iteration's share of it as a rate over its step, which each stage and both Strang halves integrate to
-  !  rate*dtlocal), under the consumed-species floor guard, times the cell volume.
+  !> Inject ICE's reaction on the gas into MOSE's residual: what each family gives the gas over its last step
+  !  (ICE_Cell) and the removals ICE's burn-out made (Removal_Cell: a steady run, the rate of the store; a
+  !  time-accurate one, this MOSE iteration's share of it as a rate over its step), under the consumed-species floor
+  !  guard, times the cell volume.
   subroutine ICExMOSE ( MOSE_domain, ICE_domain )
     use MOSE_Advanced_Types_m,  only: MOSE_domain_type
     use MOSE_Global_m,          only: nsc, nprim
     use MOSE_Config_Types_m,    only: obj_chemistry
     use ICE_Advanced_Types_m,   only: ICE_domain_type
-    use ICE_Global_m,           only: ngroups, nbase, mat_of
-    use hydraMI2_Stoichiometry, only: productsICE
+    use ICE_Global_m,           only: ngroups, mat_of
+    use ICE_Mod_Exchange,       only: exchange_t, exchange_rate
+    use hydraMI2_Chemistry,     only: chemICE
     implicit none
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
     type(ICE_domain_type),  intent(in)    :: ICE_domain
+    type(exchange_t) :: x
     integer  :: b, g, i, j, k, imat, nshare
-    real(R8) :: r(nprim), dtIter, datum, gr(5)
+    real(R8) :: r(nprim), dtIter, datum, gr(6)
     logical  :: mapped, consumes
 
     ! the families whose material consumes a gas species share what a cell holds of it
@@ -786,14 +752,14 @@ contains
         mapped   = Converts(imat)
         consumes = Consumes_Gas(imat)
 
-        !$OMP DO COLLAPSE(3) PRIVATE(r,i,j,k,dtIter,datum,gr)
+        !$OMP DO COLLAPSE(3) PRIVATE(x,r,i,j,k,dtIter,datum,gr)
         do k = 1, MOSE_domain%blk(b)%dim(3)
         do j = 1, MOSE_domain%blk(b)%dim(2)
         do i = 1, MOSE_domain%blk(b)%dim(1)
 
           r = 0._R8
-          call ICE_Cell ( imat, mapped, ICE_domain%blk(b)%cond_phase(g)%source(:,i,j,k), nbase(g)-1, &
-                          ICE_domain%blk(b)%cond_phase(g)%birth(:,i,j,k), r, datum )
+          x = exchange_rate( ICE_domain%blk(b), g, i, j, k )
+          call ICE_Cell ( imat, mapped, x, r, datum )
           if (mapped) then
             if (removed(g)%asRate) then
               if (allocated(removed(g)%blk(b)%r)) then
@@ -827,125 +793,141 @@ contains
     logical function Consumes_Gas ( imat )
       integer, intent(in) :: imat
       Consumes_Gas = .false.
-      if (Converts(imat)) Consumes_Gas = any(productsICE%nu(imat,1:nsc) < 0._R8)
+      if (Converts(imat)) Consumes_Gas = any(chemICE%mat(imat)%process%nu(1:nsc) < 0._R8)
     end function Consumes_Gas
 
   end subroutine ICExMOSE
 
 
-  !> ICE material imat converts: it has a record in the products file, whose mass the gas receives.
+  !> ICE material imat converts: it has a process record, through which the gas receives its mass.
   logical function Converts ( imat )
-    use hydraMI2_Stoichiometry, only: productsICE
+    use hydraMI2_Chemistry, only: chemICE
     implicit none
     integer, intent(in) :: imat
 
     Converts = .false.
-    if (productsICE%active) Converts = productsICE%mapped(imat)
+    if (allocated(chemICE%mat)) Converts = chemICE%mat(imat)%process%on
 
   end function Converts
 
 
-  !> What IGLOO's mass source in one cell (col, IGLOO%source(b)%sourceMass(:,i,j,k)) hands the gas, added to r (the
-  !  residual's layout) as absolute rates: each material through its row (a capped material through its three, with
-  !  Cap_Rates) with its datum offset, less the smoke born in ICE. datum: the offsets' part of what it adds to the
-  !  energy. Thread-safe.
-  subroutine IGLOO_Mass_To_Gas ( col, r, datum )
-    use MOSE_Global_m,          only: nsc, nu, nw, np
-    use IGLOO_variables,        only: nm
-    use hydraMI2_Stoichiometry, only: productsIGLOO, Cap_Rates
+  !> The mass IGLOO material m's parcels consume in a cell (x: its exchange_rate) by each of its records [kg/s]: F(1)
+  !  through its process record, F(2) through its carry record (the part that forms what they carry), F(3) the carried
+  !  material they hand the gas at burnout, through that material's release record. The parcels lose F(1) + F(2) of
+  !  their own material, gain the carried material deposited and lose the one handed, so the net mass the gas gets is
+  !  x%mass. Thread-safe.
+  pure function Material_Flows ( m, x ) result(F)
+    use IGLOO_Mod_Exchange, only: exchange_t
+    use hydraMI2_Chemistry, only: chemIGLOO
     implicit none
-    real(R8), intent(in)    :: col(:)
-    real(R8), intent(inout) :: r(:)
-    real(R8), intent(out)   :: datum
-    integer  :: imat, isp, c
-    real(R8) :: dm, cr(4), sr(6)
+    integer,          intent(in) :: m
+    type(exchange_t), intent(in) :: x
+    real(R8) :: F(3)
 
-    datum = 0._R8
-    do imat = 1, nm
-      dm = col(imat)
-      ! an oxide cap: the material burnt into gas species, the oxide the cap gained, the cap handed to the gas
-      if (productsIGLOO%capped(imat)) then
-        cr = Cap_Rates( imat, dm, col(nm+2*imat-1), col(nm+2*imat) )
-        do isp = 1, nsc
-          r(isp) = r(isp) + productsIGLOO%nu(imat,isp)*cr(2) + productsIGLOO%nuCap(imat,isp)*cr(3) &
-                          + productsIGLOO%nuRel(imat,isp)*cr(4)
-        enddo
-        r(np) = r(np) + productsIGLOO%dh(imat)*cr(1) - productsIGLOO%dhOxide(imat)*(cr(3) - cr(4))
-        datum = datum + productsIGLOO%dh(imat)*cr(1) - productsIGLOO%dhOxide(imat)*(cr(3) - cr(4))
-        cycle
+    F = [x%mass, 0._R8, 0._R8]
+    if (.not. chemIGLOO%mat(m)%carry%on) return
+    F(2) = x%carried_in/chemIGLOO%mat(m)%carry%nuProduct
+    F(1) = x%mass + x%carried_in - x%carried_out - F(2)
+    F(3) = x%carried_out
+
+  end function Material_Flows
+
+
+  !> What IGLOO's parcels hand the gas in geometry cell (b, i, j, k), added to r (the residual's layout) as absolute
+  !  rates: the momentum and energy of every parcel (gas_rate); for each material that converts, its gas species
+  !  through its records with its datum offsets; less what it generates in ICE, born there. datum: the offsets' part of
+  !  the energy. Thread-safe.
+  subroutine IGLOO_Cell ( IGLOO, b, i, j, k, r, datum )
+    use MOSE_Global_m,      only: nu, nw, np
+    use IGLOO_module,       only: obj_IGLOO
+    use IGLOO_Mod_Exchange, only: exchange_t, exchange_rate, gas_rate
+    use hydraMI2_Chemistry, only: chemIGLOO, Gas_Of
+    implicit none
+    type(obj_IGLOO), intent(in)    :: IGLOO
+    integer,         intent(in)    :: b, i, j, k
+    real(R8),        intent(inout) :: r(:)
+    real(R8),        intent(out)   :: datum
+    type(exchange_t) :: x
+    real(R8) :: q(4), F(3), sr(6)
+    integer  :: m, ic, c
+
+    q = gas_rate( IGLOO, b, i, j, k )
+    r(nu:nw) = r(nu:nw) + q(1:3)
+    r(np)    = r(np) + q(4)
+    datum    = 0._R8
+    if (.not. chemIGLOO%active) return
+
+    do m = 1, size(chemIGLOO%mat)
+      x = exchange_rate( IGLOO, m, b, i, j, k )
+      F = Material_Flows( m, x )
+      call Gas_Of( chemIGLOO%mat(m)%process, F(1), r )
+      call Gas_Of( chemIGLOO%mat(m)%carry,   F(2), r )
+      datum = datum + chemIGLOO%mat(m)%dh*(F(1) + F(2))
+      if (chemIGLOO%mat(m)%carry%on) then
+        ic = IGLOO%material(m)%carriedID
+        call Gas_Of( chemIGLOO%mat(ic)%release, F(3), r )
+        datum = datum - chemIGLOO%mat(m)%carry%dhProduct*(x%carried_in - x%carried_out)
       endif
-      if (dm == 0._R8) cycle
-      do isp = 1, nsc
-        if (productsIGLOO%nu(imat,isp) == 0._R8) cycle
-        r(isp) = r(isp) + productsIGLOO%nu(imat,isp)*dm
-      enddo
-      r(np) = r(np) + productsIGLOO%dh(imat)*dm
-      datum = datum + productsIGLOO%dh(imat)*dm
     enddo
 
-    ! the smoke of a material that makes one is born in its ICE family: the gas receives IGLOO's books less it
-    if (.not. smokeIGOn) return
-    do c = 1, size(smoke)
-      call Smoke_Packet( smoke(c), col, sr )
+    ! the mass a material generates is born in its ICE family: it leaves the gas's books
+    do c = 1, size(gen)
+      call Gen_Packet( gen(c), IGLOO, b, i, j, k, sr )
       r(nu:nw) = r(nu:nw) - sr(2:4)
-      r(np)    = r(np) - sr(5) - smoke(c)%dh*sr(1)
-      datum    = datum - smoke(c)%dh*sr(1)
+      r(np)    = r(np) - sr(5)
+      datum    = datum - gen(c)%dh*sr(1)
     enddo
+    r(np) = r(np) + datum
 
-  end subroutine IGLOO_Mass_To_Gas
+  end subroutine IGLOO_Cell
 
 
-  !> What the source of one ICE family in one cell hands the gas, per unit volume, into r (the residual's layout):
-  !  -source (src = cond_phase%source(:,i,j,k)), the momentum src(2:4) and the energy src(ie); for a material that
-  !  converts (mapped) also the mass -src(1) through its row with its datum offset, less the smoke the family makes
-  !  (birth = cond_phase%birth(:,i,j,k)). datum: the offsets' part of the energy. Thread-safe.
-  subroutine ICE_Cell ( imat, mapped, src, ie, birth, r, datum )
-    use MOSE_Global_m,          only: nsc, nu, nw, np
-    use hydraMI2_Stoichiometry, only: productsICE
+  !> What one ICE family gives the gas in a cell, per unit volume (x: its exchange_rate, or a rate of its removals),
+  !  into r (the residual's layout): the momentum and energy; for a material that converts (mapped) the mass it loses,
+  !  mass + generated, through its process record with its datum offset, less the generated mass's offset (it stays
+  !  condensed). datum: the offsets' part of the energy. Thread-safe.
+  subroutine ICE_Cell ( imat, mapped, x, r, datum )
+    use MOSE_Global_m,      only: nu, nw, np
+    use ICE_Mod_Exchange,   only: exchange_t
+    use hydraMI2_Chemistry, only: chemICE, Gas_Of
     implicit none
-    integer,  intent(in)    :: imat, ie
-    logical,  intent(in)    :: mapped
-    real(R8), intent(in)    :: src(:), birth(:)
-    real(R8), intent(inout) :: r(:)
-    real(R8), intent(out)   :: datum
-    real(R8) :: dm
+    integer,          intent(in)    :: imat
+    logical,          intent(in)    :: mapped
+    type(exchange_t), intent(in)    :: x
+    real(R8),         intent(inout) :: r(:)
+    real(R8),         intent(out)   :: datum
+    real(R8) :: F
 
-    r(nu:nw) = - src(2:4)
-    r(np)    = - src(ie)
+    r(nu:nw) = r(nu:nw) + x%momentum
+    r(np)    = r(np) + x%energy
     datum    = 0._R8
     if (.not. mapped) return
 
-    dm = - src(1)
-    r(1:nsc) = productsICE%nu(imat,1:nsc)*dm
-    r(np)    = r(np) + productsICE%dh(imat)*dm
-    ! the smoke the family makes is not the gas's: its momentum, its energy and its datum offset stay out
-    r(nu:nw) = r(nu:nw) - birth(2:4)
-    r(np)    = r(np) - birth(5) - productsICE%dhSmoke(imat)*birth(1)
-    datum    = productsICE%dh(imat)*dm - productsICE%dhSmoke(imat)*birth(1)
+    F = x%mass + x%generated
+    call Gas_Of( chemICE%mat(imat)%process, F, r )
+    datum = chemICE%mat(imat)%dh*F - chemICE%mat(imat)%process%dhProduct*x%generated
+    r(np) = r(np) + datum
 
   end subroutine ICE_Cell
 
 
-  !> What a rate g of ICE's removals of material imat (mass, momentum (3), energy, per unit volume) hands the gas,
-  !  added to r (the residual's layout): the mass through its row with the removal's datum offset (the material's,
-  !  less that of the smoke it made), which is added to datum too. Thread-safe.
+  !> A rate g of ICE's removals of material imat, per unit volume ([gas mass, momentum (3), energy, generated mass]),
+  !  added to r as ICE_Cell adds an exchange, its offsets added to datum too. Thread-safe.
   subroutine Removal_Cell ( imat, g, r, datum )
-    use MOSE_Global_m,          only: nsc, nu, nw, np
-    use hydraMI2_Stoichiometry, only: productsICE
+    use ICE_Mod_Exchange, only: exchange_t
     implicit none
     integer,  intent(in)    :: imat
-    real(R8), intent(in)    :: g(5)
+    real(R8), intent(in)    :: g(6)
     real(R8), intent(inout) :: r(:), datum
-    integer  :: isp
-    real(R8) :: dh
+    type(exchange_t) :: x
+    real(R8) :: d
 
-    dh = productsICE%dh(imat) - productsICE%nuSmoke(imat)*productsICE%dhSmoke(imat)
-    do isp = 1, nsc
-      r(isp) = r(isp) + productsICE%nu(imat,isp)*g(1)
-    enddo
-    r(nu:nw) = r(nu:nw) + g(2:4)
-    r(np)    = r(np) + g(5) + dh*g(1)
-    datum    = datum + dh*g(1)
+    x%mass      = g(1)
+    x%momentum  = g(2:4)
+    x%energy    = g(5)
+    x%generated = g(6)
+    call ICE_Cell ( imat, .true., x, r, d )
+    datum = datum + d
 
   end subroutine Removal_Cell
 
@@ -1008,48 +990,58 @@ contains
   ! residual is NaN, so such a value would act unseen), or when ICE loses mass no gas species receives.
   ! ---------------------------------------------------------------------------------------------
 
-  !> IGLOO's sources: under the source mode the rates IGLOOxMOSE reads (sourceMom, sourceEn, and sourceMass when a
-  !  material converts); under the Eulerian mode the fields it turns into sources (velocity, temperature, density,
-  !  np of every family).
+  !> IGLOO's sources: under the source mode what IGLOO_Cell reads (gas_rate, and every material's exchange_rate when
+  !  one converts); under the Eulerian mode the fields it turns into sources (velocity, temperature, density, np).
   subroutine Check_IGLOO_Sources ( MOSE_domain, IGLOO, eulerian )
     use MOSE_Advanced_Types_m,  only: MOSE_domain_type
     use IGLOO_module,           only: obj_IGLOO
-    use IGLOO_variables,        only: nsm, nfam
-    use hydraMI2_Stoichiometry, only: productsIGLOO
+    use IGLOO_variables,        only: nfam
+    use IGLOO_Mod_Exchange,     only: exchange_t, exchange_rate, gas_rate
+    use MOSE_Finite_m,          only: Not_Finite
+    use hydraMI2_Chemistry,     only: chemIGLOO
     implicit none
     type(MOSE_domain_type), intent(in) :: MOSE_domain
     type(obj_IGLOO),        intent(in) :: IGLOO
     logical,                intent(in) :: eulerian
-    character(len=*), parameter :: SRC = 'source', EUL = 'Eulerian field'
-    integer :: b, m, i, j, k
+    character(len=*), parameter :: EUL = 'Eulerian field'
+    type(exchange_t) :: x
+    character(len=32) :: what
+    integer :: b, m, i, j, k, n(3)
 
     do b = 1, size(MOSE_domain%blk)
-      i = MOSE_domain%blk(b)%dim(1); j = MOSE_domain%blk(b)%dim(2); k = MOSE_domain%blk(b)%dim(3)
+      n = MOSE_domain%blk(b)%dim(1:3)
       if (eulerian) then
         do m = 1, nfam
           associate ( e => IGLOO%euler(b,m) )
-          if (allocated(e%velocity))    call Refuse_4( 'IGLOO', EUL, b, m, 'velocity', 1, e%velocity(:,1:i,1:j,1:k) )
-          if (allocated(e%temperature)) call Refuse_3( 'IGLOO', EUL, b, m, 'temperature', e%temperature(1:i,1:j,1:k) )
-          if (allocated(e%density))     call Refuse_3( 'IGLOO', EUL, b, m, 'density', e%density(1:i,1:j,1:k) )
-          if (allocated(e%np))          call Refuse_3( 'IGLOO', EUL, b, m, 'np', e%np(1:i,1:j,1:k) )
+          if (allocated(e%velocity))    call Refuse_4( 'IGLOO', EUL, b, m, 'velocity', 1, e%velocity(:,1:n(1),1:n(2),1:n(3)) )
+          if (allocated(e%temperature)) call Refuse_3( 'IGLOO', EUL, b, m, 'temperature', e%temperature(1:n(1),1:n(2),1:n(3)) )
+          if (allocated(e%density))     call Refuse_3( 'IGLOO', EUL, b, m, 'density', e%density(1:n(1),1:n(2),1:n(3)) )
+          if (allocated(e%np))          call Refuse_3( 'IGLOO', EUL, b, m, 'np', e%np(1:n(1),1:n(2),1:n(3)) )
           end associate
         enddo
-      else
-        associate ( s => IGLOO%source(b) )
-        if (allocated(s%sourceMom)) call Refuse_4( 'IGLOO', SRC, b, 0, 'sourceMom', 1, s%sourceMom(:,1:i,1:j,1:k) )
-        if (allocated(s%sourceEn))  call Refuse_3( 'IGLOO', SRC, b, 0, 'sourceEn', s%sourceEn(1:i,1:j,1:k) )
-        if (productsIGLOO%active .and. allocated(s%sourceMass)) &
-          call Refuse_4( 'IGLOO', SRC, b, 0, 'sourceMass', 1, s%sourceMass(1:nsm(),1:i,1:j,1:k) )
-        end associate
+        cycle
       endif
+      do k = 1, n(3)
+      do j = 1, n(2)
+      do i = 1, n(1)
+        if (any(Not_Finite(gas_rate(IGLOO, b, i, j, k)))) &
+          call Refuse_At( 'IGLOO', 'source', b, 0, 'momentum or energy', [i, j, k], 0._R8 )
+        if (.not. chemIGLOO%active) cycle
+        do m = 1, size(IGLOO%material)
+          x = exchange_rate( IGLOO, m, b, i, j, k )
+          if (.not. any(Not_Finite([x%mass, x%carried_in, x%carried_out, x%processed, x%u, x%T]))) cycle
+          write(what,'(A,I0)') 'mass of material ', m
+          call Refuse_At( 'IGLOO', 'source', b, 0, trim(what), [i, j, k], x%mass )
+        enddo
+      enddo; enddo; enddo
     enddo
 
   end subroutine Check_IGLOO_Sources
 
 
-  !> ICE's sources, the slots ICExMOSE reads: the momentum source(2:4) and the energy source(nbase-1) of every family,
-  !  the mass source(1) of a material that converts. And a family whose material has no record in the products file
-  !  that loses mass: ICExMOSE would not hand that mass to the gas.
+  !> ICE's sources, the slots exchange_rate reads: the momentum source(2:4) and the energy source(nbase-1) of every
+  !  family, the mass source(1) of a material that converts. And a family whose material has no record in the products
+  !  file that loses mass: ICExMOSE would not hand that mass to the gas.
   subroutine Check_ICE_Sources ( MOSE_domain, ICE_domain )
     use MOSE_Advanced_Types_m, only: MOSE_domain_type
     use ICE_Advanced_Types_m,  only: ICE_domain_type
@@ -1150,9 +1142,9 @@ contains
   !> IGLOO's source-mode rates, before under-relaxation and the floor guard [per s].
   function IGLOO_Handed ( MOSE_domain, IGLOO ) result( h )
     use MOSE_Advanced_Types_m,  only: MOSE_domain_type
-    use MOSE_Global_m,          only: nsc, nu, nw, np, nprim
+    use MOSE_Global_m,          only: nsc, np, nprim
     use IGLOO_module,           only: obj_IGLOO
-    use hydraMI2_Stoichiometry, only: productsIGLOO
+    use hydraMI2_Chemistry,     only: chemIGLOO
     implicit none
     type(MOSE_domain_type), intent(in) :: MOSE_domain
     type(obj_IGLOO),        intent(in) :: IGLOO
@@ -1161,7 +1153,7 @@ contains
     integer  :: b, i, j, k
     real(R8) :: r(nprim)
 
-    if (productsIGLOO%active) allocate(h%mass(nsc), source=0._R8)
+    if (chemIGLOO%active) allocate(h%mass(nsc), source=0._R8)
     do b = 1, size(MOSE_domain%blk)
       if (.not. allocated(IGLOO%source(b)%sourceMom)) cycle
       call Cells( MOSE_domain%blk(b)%dim, w )
@@ -1169,9 +1161,7 @@ contains
       do j = 1, MOSE_domain%blk(b)%dim(2)
       do i = 1, MOSE_domain%blk(b)%dim(1)
         r = 0._R8
-        r(nu:nw) = IGLOO%source(b)%sourceMom(:,i,j,k)
-        r(np)    = IGLOO%source(b)%sourceEn(i,j,k)
-        if (productsIGLOO%active) call IGLOO_Mass_To_Gas( IGLOO%source(b)%sourceMass(:,i,j,k), r, w(0,i,j,k) )
+        call IGLOO_Cell( IGLOO, b, i, j, k, r, w(0,i,j,k) )
         w(1:np,i,j,k) = r(1:np)
       enddo; enddo; enddo
       call Add_Cells( h, w )
@@ -1185,8 +1175,9 @@ contains
     use MOSE_Advanced_Types_m,  only: MOSE_domain_type
     use MOSE_Global_m,          only: nsc, np, nprim
     use ICE_Advanced_Types_m,   only: ICE_domain_type
-    use ICE_Global_m,           only: ngroups, nbase, mat_of
-    use hydraMI2_Stoichiometry, only: productsICE
+    use ICE_Global_m,           only: ngroups, mat_of
+    use ICE_Mod_Exchange,       only: exchange_rate
+    use hydraMI2_Chemistry,     only: chemICE
     implicit none
     type(MOSE_domain_type), intent(in) :: MOSE_domain
     type(ICE_domain_type),  intent(in) :: ICE_domain
@@ -1195,7 +1186,7 @@ contains
     integer  :: b, g, i, j, k
     real(R8) :: r(nprim), datum, vol
 
-    if (productsICE%active) allocate(h%mass(nsc), source=0._R8)
+    if (chemICE%active) allocate(h%mass(nsc), source=0._R8)
     do b = 1, size(MOSE_domain%blk)
       call Cells( MOSE_domain%blk(b)%dim, w )
       do g = 1, ngroups
@@ -1203,8 +1194,7 @@ contains
         do j = 1, MOSE_domain%blk(b)%dim(2)
         do i = 1, MOSE_domain%blk(b)%dim(1)
           r = 0._R8
-          call ICE_Cell( mat_of(g), Converts(mat_of(g)), ICE_domain%blk(b)%cond_phase(g)%source(:,i,j,k), nbase(g)-1, &
-                         ICE_domain%blk(b)%cond_phase(g)%birth(:,i,j,k), r, datum )
+          call ICE_Cell( mat_of(g), Converts(mat_of(g)), exchange_rate(ICE_domain%blk(b), g, i, j, k), r, datum )
           vol = MOSE_domain%blk(b)%vol(i,j,k)
           w(:,i,j,k) = w(:,i,j,k) + [datum, r(1:np)]*vol
         enddo; enddo; enddo
@@ -1221,7 +1211,7 @@ contains
     use MOSE_Advanced_Types_m,  only: MOSE_domain_type
     use MOSE_Global_m,          only: nsc, np, nprim
     use ICE_Global_m,           only: ngroups, mat_of
-    use hydraMI2_Stoichiometry, only: productsICE
+    use hydraMI2_Chemistry,     only: chemICE
     implicit none
     type(MOSE_domain_type), intent(in) :: MOSE_domain
     real(R8),               intent(in) :: share
@@ -1229,10 +1219,10 @@ contains
     type(handed_t) :: h
     real(R8), allocatable :: w(:,:,:,:)
     integer  :: b, g, i, j, k
-    real(R8) :: r(nprim), datum, vol, gr(5)
+    real(R8) :: r(nprim), datum, vol, gr(6)
     logical  :: asRate
 
-    if (.not. productsICE%active) return
+    if (.not. chemICE%active) return
     asRate = .false.
     if (present(rate)) asRate = rate
     allocate(h%mass(nsc), source=0._R8)
@@ -1308,7 +1298,7 @@ contains
     use MOSE_Advanced_Types_m,  only: MOSE_domain_type
     use ICE_Global_m,           only: ngroups, mat_of
     use hydraMI2_Channels,      only: Store_To_Rate, Open_Share
-    use hydraMI2_Stoichiometry, only: productsICE
+    use hydraMI2_Chemistry,     only: chemICE
     implicit none
     type(MOSE_domain_type), intent(in)  :: MOSE_domain
     logical,                intent(in)  :: ready
@@ -1326,7 +1316,7 @@ contains
     endif
 
     rm%asRate = .true.
-    if (.not. productsICE%active) return
+    if (.not. chemICE%active) return
     do g = 1, ngroups
       if (Converts(mat_of(g))) call Store_To_Rate( removed(g) )
     enddo
@@ -1367,24 +1357,30 @@ contains
   ! ICE's channels, after each of its steps and after its block. Outside any parallel region.
   ! ---------------------------------------------------------------------------------------------
 
-  !> After an ICE iteration: what each family's burn-out removed (cond_phase%gone) moved into its channel, and under
+  !> After an ICE iteration: what each family's burn-out removed (take_removed) moved into its channel, and under
   !  rates each converting family's dt added, cell by cell, to the time its store is being made over. A
-  !  time-accurate ICE: each family's dt*source, dt*heat, dt*birth and dt added to the block's mean channel.
+  !  time-accurate ICE: each family's dt*source, dt*heat, dt*gen_rate and dt added to the block's mean channel.
   subroutine After_ICE_Step ( ICE_domain )
     use ICE_Advanced_Types_m,   only: ICE_domain_type
     use ICE_Global_m,           only: ngroups, mat_of
     use ICE_Config_Types_m,     only: ICE_time_scheme => obj_time_scheme
+    use ICE_Mod_Exchange,       only: exchange_t, take_removed
     use hydraMI2_Channels,      only: Open_Store, Clock
-    use hydraMI2_Stoichiometry, only: productsICE
+    use hydraMI2_Chemistry,     only: chemICE
     implicit none
     type(ICE_domain_type), intent(inout) :: ICE_domain
+    type(exchange_t) :: x
     integer :: b, g, i, j, k, ns, dims(3, ICE_domain%nb)
 
     do b = 1, ICE_domain%nb
       do g = 1, ngroups
-        removed(g)%blk(b)%a = removed(g)%blk(b)%a + ICE_domain%blk(b)%cond_phase(g)%gone
-        ICE_domain%blk(b)%cond_phase(g)%gone = 0._R8
-        if (handRates .and. productsICE%active .and. Converts(mat_of(g))) &
+        do k = 1, ICE_domain%blk(b)%dim(3)
+        do j = 1, ICE_domain%blk(b)%dim(2)
+        do i = 1, ICE_domain%blk(b)%dim(1)
+          call take_removed( ICE_domain%blk(b), g, i, j, k, x )
+          removed(g)%blk(b)%a(:,i,j,k) = removed(g)%blk(b)%a(:,i,j,k) + [x%mass, x%momentum, x%energy, x%generated]
+        enddo; enddo; enddo
+        if (handRates .and. chemICE%active .and. Converts(mat_of(g))) &
           call Clock( removed(g), b, ICE_domain%blk(b)%cond_phase(g)%dt )
       enddo
     enddo
@@ -1398,7 +1394,8 @@ contains
       do g = 1, ngroups
         iceMean(g)%name = 'ice-mean'
         iceMean(g)%from = g
-        call Open_Store( iceMean(g), dims, Mean_Size(g), timed=.true., rated=.false. )
+        call Open_Store( iceMean(g), dims, size(ICE_domain%blk(1)%cond_phase(g)%source, 1) + 6, timed=.true., &
+                         rated=.false. )
       enddo
     endif
     do b = 1, ICE_domain%nb
@@ -1408,9 +1405,9 @@ contains
         do j = 1, ICE_domain%blk(b)%dim(2)
         do i = 1, ICE_domain%blk(b)%dim(1)
           associate (a => iceMean(g)%blk(b)%a, dt => ICE_domain%blk(b)%cond_phase(g)%dt(i,j,k))
-            a(1:ns,i,j,k)       = a(1:ns,i,j,k)       + dt*ICE_domain%blk(b)%cond_phase(g)%source(:,i,j,k)
-            a(ns+1,i,j,k)       = a(ns+1,i,j,k)       + dt*ICE_domain%blk(b)%cond_phase(g)%heat(i,j,k)
-            a(ns+2:ns+6,i,j,k)  = a(ns+2:ns+6,i,j,k)  + dt*ICE_domain%blk(b)%cond_phase(g)%birth(:,i,j,k)
+            a(1:ns,i,j,k)      = a(1:ns,i,j,k)      + dt*ICE_domain%blk(b)%cond_phase(g)%source(:,i,j,k)
+            a(ns+1,i,j,k)      = a(ns+1,i,j,k)      + dt*ICE_domain%blk(b)%cond_phase(g)%heat(i,j,k)
+            a(ns+2:ns+6,i,j,k) = a(ns+2:ns+6,i,j,k) + dt*ICE_domain%blk(b)%cond_phase(g)%gen_rate(:,i,j,k)
           end associate
         enddo; enddo; enddo
         call Clock( iceMean(g), b, ICE_domain%blk(b)%cond_phase(g)%dt )
@@ -1418,19 +1415,12 @@ contains
     enddo
     meanSteps = meanSteps + 1
 
-  contains
-
-    !> The components of family g's mean channel: its source, its heat, its birth (5).
-    integer function Mean_Size ( g )
-      integer, intent(in) :: g
-      Mean_Size = size(ICE_domain%blk(1)%cond_phase(g)%source, 1) + 6
-    end function Mean_Size
-
   end subroutine After_ICE_Step
 
 
-  !> After a time-accurate ICE block: where it made more than one step, each family's source, heat and birth become
-  !  the block's rates, its mean channel's store over its time; the channels emptied.
+  !> After a time-accurate ICE block: where it made more than one step, each family's source, heat and gen_rate become
+  !  the block's rates, its mean channel's store over its time; the channels emptied. (exchange_rate then reads the
+  !  block's mean.)
   subroutine ICE_Block_Mean ( ICE_domain )
     use ICE_Advanced_Types_m, only: ICE_domain_type
     use ICE_Global_m,         only: ngroups
@@ -1450,9 +1440,9 @@ contains
           do i = 1, ICE_domain%blk(b)%dim(1)
             t = iceMean(g)%blk(b)%t(i,j,k)
             if (.not. t > 0._R8) cycle
-            ICE_domain%blk(b)%cond_phase(g)%source(:,i,j,k) = iceMean(g)%blk(b)%a(1:ns,i,j,k)/t
-            ICE_domain%blk(b)%cond_phase(g)%heat(i,j,k)     = iceMean(g)%blk(b)%a(ns+1,i,j,k)/t
-            ICE_domain%blk(b)%cond_phase(g)%birth(:,i,j,k)  = iceMean(g)%blk(b)%a(ns+2:ns+6,i,j,k)/t
+            ICE_domain%blk(b)%cond_phase(g)%source(:,i,j,k)   = iceMean(g)%blk(b)%a(1:ns,i,j,k)/t
+            ICE_domain%blk(b)%cond_phase(g)%heat(i,j,k)       = iceMean(g)%blk(b)%a(ns+1,i,j,k)/t
+            ICE_domain%blk(b)%cond_phase(g)%gen_rate(:,i,j,k) = iceMean(g)%blk(b)%a(ns+2:ns+6,i,j,k)/t
           enddo; enddo; enddo
         enddo
       endif
@@ -1464,68 +1454,50 @@ contains
 
 
   ! ---------------------------------------------------------------------------------------------
-  ! IGLOO's smoke, from the gas's share to ICE
+  ! IGLOO's generated mass, from the gas's books to ICE
   ! ---------------------------------------------------------------------------------------------
 
-  !> The smoke channel ch makes in a cell, as a rate [per s, the cell's]: mass, momentum (3), energy on ICE's datum
-  !  with the kinetic part, number (each drop at the channel's d); born with the parcels' velocity and temperature
-  !  weighted by what they burnt there (IGLOO's columns). col: the cell's column of IGLOO's mass source. nostate: a
-  !  smoke born where no parcel's columns gave its state. Thread-safe.
-  subroutine Smoke_Packet ( ch, col, rate, nostate )
-    use IGLOO_variables,        only: nm, smokeRow
-    use ICE_Config_Types_m,     only: ICE_condensed => obj_condensed
-    use ICE_Global_m,           only: mat_of
-    use ICE_Lib_Properties,     only: mat_rho, mat_e, mat_cp_const
-    use hydraMI2_Stoichiometry, only: productsIGLOO, Cap_Rates, T_datum_ref
+  !> The mass generation channel ch carries in geometry cell (b, i, j, k), as a rate [per s, the cell's]: ICE's birth
+  !  packet (mass, momentum (3), energy on ICE's datum with the kinetic part, number at the channel's d), born with the
+  !  velocity and temperature the processed mass of the material left at. nostate: born where IGLOO tracked no state
+  !  (at rest, at T_datum_ref). Thread-safe.
+  subroutine Gen_Packet ( ch, IGLOO, b, i, j, k, rate, nostate )
+    use IGLOO_module,       only: obj_IGLOO
+    use IGLOO_Mod_Exchange, only: exchange_t, exchange_rate
+    use ICE_Mod_Exchange,   only: birth_packet
+    use hydraMI2_Chemistry, only: T_datum_ref
     implicit none
     type(channel_t),   intent(in)  :: ch
-    real(R8),          intent(in)  :: col(:)
+    type(obj_IGLOO),   intent(in)  :: IGLOO
+    integer,           intent(in)  :: b, i, j, k
     real(R8),          intent(out) :: rate(6)
     logical, optional, intent(out) :: nostate
-    real(R8), parameter :: pi = 3.14159265358979323846_R8
-    real(R8) :: md, w, u(3), T, es, cr(4)
-    integer  :: imat, ms
+    type(exchange_t) :: x
+    real(R8) :: F(3), md, u(3), T
 
     rate = 0._R8
     if (present(nostate)) nostate = .false.
-    imat = ch%from
-    ! the mass that makes it: the material burnt into its combustion record, or its cap oxide handed at burnout
-    if (productsIGLOO%capped(imat)) then
-      cr = Cap_Rates( imat, col(imat), col(nm+2*imat-1), col(nm+2*imat) )
-      md = ch%nu*merge(cr(2), cr(4), ch%trigger == SMOKE_OF_BURN)
-    elseif (ch%trigger == SMOKE_OF_BURN) then
-      md = ch%nu*col(imat)
-    else
-      md = 0._R8
-    endif
+    x  = exchange_rate( IGLOO, ch%from, b, i, j, k )
+    F  = Material_Flows( ch%from, x )
+    md = ch%nu*merge(F(1), F(3), ch%trigger == GEN_OF_PROCESS)
     if (md == 0._R8) return
-    w = col(smokeRow(imat,1))
-    if (w > 0._R8) then
-      u = col(smokeRow(imat,2):smokeRow(imat,4))/w
-      T = col(smokeRow(imat,5))/w
+    if (x%tracked) then
+      u = x%u
+      T = x%T
     else
       u = 0._R8
       T = T_datum_ref
       if (present(nostate)) nostate = .true.
     endif
-    ms = mat_of(ch%to)
-    if (ICE_condensed(ms)%cs_varies) then
-      es = mat_e(ICE_condensed(ms), T)
-    else
-      es = mat_cp_const(ICE_condensed(ms))*T
-    endif
-    rate(1)   = md
-    rate(2:4) = md*u
-    rate(5)   = md*(es + 0.5_R8*dot_product(u, u))
-    rate(6)   = md/(pi/6._R8*mat_rho(ICE_condensed(ms), T)*ch%d**3)
+    rate = birth_packet( ch%to, md, u, T, ch%d )
 
-  end subroutine Smoke_Packet
+  end subroutine Gen_Packet
 
 
-  !> After a MOSE iteration: each smoke channel's rate times the iteration's dtlocal, added cell by cell to its store
-  !  (the gas received the same rates less, over the same step). A cell where a material's smoke had no parcel's state
-  !  counts once. Outside any parallel region.
-  subroutine IGLOO_Smoke_Accumulate ( MOSE_domain, IGLOO )
+  !> After a MOSE iteration: each generation channel's rate times the iteration's dtlocal, added cell by cell to its
+  !  store (the gas received the same rates less, over the same step). A cell where a material's generated mass had no
+  !  parcel's state counts once. Outside any parallel region.
+  subroutine IGLOO_Gen_Accumulate ( MOSE_domain, IGLOO )
     use MOSE_Advanced_Types_m, only: MOSE_domain_type
     use IGLOO_module,          only: obj_IGLOO
     implicit none
@@ -1536,118 +1508,91 @@ contains
     logical  :: nostate
 
     do b = 1, size(MOSE_domain%blk)
-      if (.not. allocated(IGLOO%source(b)%sourceMass)) cycle
       do k = 1, MOSE_domain%blk(b)%dim(3)
       do j = 1, MOSE_domain%blk(b)%dim(2)
       do i = 1, MOSE_domain%blk(b)%dim(1)
         dt = MOSE_domain%blk(b)%dtlocal(i,j,k)
         mNoState = 0
-        do c = 1, size(smoke)
-          call Smoke_Packet( smoke(c), IGLOO%source(b)%sourceMass(:,i,j,k), sr, nostate )
+        do c = 1, size(gen)
+          call Gen_Packet( gen(c), IGLOO, b, i, j, k, sr, nostate )
           ! the channels of a material are consecutive
-          if (nostate .and. smoke(c)%from /= mNoState) then
-            nSmokeNoState = nSmokeNoState + 1
-            mNoState      = smoke(c)%from
+          if (nostate .and. gen(c)%from /= mNoState) then
+            nGenNoState = nGenNoState + 1
+            mNoState    = gen(c)%from
           endif
           if (sr(1) == 0._R8) cycle
-          smoke(c)%blk(b)%a(:,i,j,k) = smoke(c)%blk(b)%a(:,i,j,k) + sr*dt
+          gen(c)%blk(b)%a(:,i,j,k) = gen(c)%blk(b)%a(:,i,j,k) + sr*dt
         enddo
       enddo; enddo; enddo
     enddo
 
-  end subroutine IGLOO_Smoke_Accumulate
+  end subroutine IGLOO_Gen_Accumulate
 
 
-  !> After a MOSE block: the smoke its iterations made (IGLOO_Smoke_Accumulate), which the gas did not get, handed to
-  !  each ICE family a smoke channel feeds, in the channels' form (every smoke channel steps on MOSE's clock into
-  !  ICE's). Amounts: added to ICE's state cell by cell (per volume). Rates: the rates of IGLOO's sources as they stand
-  !  (srcOn; else 0), per volume, set as the family's source (cond_phase%ext). sm: the totals, energies on the gas's
-  !  formation scale; the stores emptied. Outside any parallel region.
-  subroutine IGLOO_Smoke_Deliver ( MOSE_domain, ICE_domain, IGLOO, srcOn, sm )
+  !> After a MOSE block: the generated mass its iterations made (IGLOO_Gen_Accumulate), which the gas did not get,
+  !  handed to each ICE family a generation channel feeds. Amounts: born at once (add_birth, per volume). Rates: the
+  !  rates of IGLOO's sources as they stand (srcOn; else 0), per volume, the family's births in force (add_birth_rate).
+  !  sm: the totals, energies on the gas's formation scale; the stores emptied. Outside any parallel region.
+  subroutine IGLOO_Gen_Deliver ( MOSE_domain, ICE_domain, IGLOO, srcOn, sm )
     use MOSE_Advanced_Types_m, only: MOSE_domain_type
     use ICE_Advanced_Types_m,  only: ICE_domain_type
     use IGLOO_module,          only: obj_IGLOO
-    use ICE_Global_m,          only: ngroups, mat_of, nbase, ncond
-    use ICE_Config_Types_m,    only: ICE_condensed => obj_condensed
-    use ICE_Lib_Model,         only: prim_2_cons, cons_2_prim, assign_prim_2_cons, assign_cons_2_prim
+    use ICE_Global_m,          only: ngroups
+    use ICE_Mod_Exchange,      only: add_birth, add_birth_rate, clear_import_rates
     implicit none
     type(MOSE_domain_type), intent(in)    :: MOSE_domain
     type(ICE_domain_type),  intent(inout) :: ICE_domain
     type(obj_IGLOO),        intent(in)    :: IGLOO
     logical,                intent(in)    :: srcOn
-    type(smoke_t),          intent(out)   :: sm
-    integer  :: b, g, i, j, k, ns, c
+    type(gen_t),            intent(out)   :: sm
+    integer  :: b, g, i, j, k, c
     real(R8) :: vol, ac(6), sr(6), pk(6), dhg
-    real(R8), allocatable :: q(:)
     logical  :: asRate
 
-    sm%nNoState   = nSmokeNoState
-    nSmokeNoState = 0
-    asRate = smoke(1)%asRate
-    do b = 1, size(MOSE_domain%blk)
-      do g = 1, ngroups
-        if (.not. any(smoke(:)%to == g)) cycle
-        ! the smoke family's datum offset: its material's, whichever channel feeds it
-        do c = 1, size(smoke)
-          if (smoke(c)%to == g) dhg = smoke(c)%dh
-        enddo
-        ! the conversions of family g's closure (ICE points them at the family it last stepped)
-        call assign_prim_2_cons(g)
-        call assign_cons_2_prim(g)
-        ns = nbase(g)
-        if (allocated(q)) deallocate(q)
-        allocate(q(ncond(g)))
-        if (asRate) then
-          if (.not. allocated(ICE_domain%blk(b)%cond_phase(g)%ext)) &
-            allocate(ICE_domain%blk(b)%cond_phase(g)%ext(ncond(g), ICE_domain%blk(b)%dim(1), &
-                     ICE_domain%blk(b)%dim(2), ICE_domain%blk(b)%dim(3)))
-          ICE_domain%blk(b)%cond_phase(g)%ext = 0._R8
-        endif
+    sm%nNoState = nGenNoState
+    nGenNoState = 0
+    asRate = gen(1)%asRate
+    do g = 1, ngroups
+      if (.not. any(gen(:)%to == g)) cycle
+      if (asRate) call clear_import_rates( ICE_domain, g )
+      ! the generated material's datum offset, whichever channel feeds it
+      do c = 1, size(gen)
+        if (gen(c)%to == g) dhg = gen(c)%dh
+      enddo
+      do b = 1, size(MOSE_domain%blk)
         do k = 1, MOSE_domain%blk(b)%dim(3)
         do j = 1, MOSE_domain%blk(b)%dim(2)
         do i = 1, MOSE_domain%blk(b)%dim(1)
           vol = MOSE_domain%blk(b)%vol(i,j,k)
-          ! rates: the source of family g from IGLOO's sources as they stand
+          ! rates: the births of family g from IGLOO's sources as they stand
           if (asRate .and. srcOn) then
-            if (allocated(IGLOO%source(b)%sourceMass)) then
-              sr = 0._R8
-              do c = 1, size(smoke)
-                if (smoke(c)%to /= g) cycle
-                call Smoke_Packet( smoke(c), IGLOO%source(b)%sourceMass(:,i,j,k), pk )
-                sr = sr + pk
-              enddo
-              q = 0._R8
-              q(1:4)  = sr(1:4)/vol
-              q(ns-1) = sr(5)/vol
-              q(ns)   = sr(6)/vol
-              ICE_domain%blk(b)%cond_phase(g)%ext(:,i,j,k) = q
-              sm%rate(1:4) = sm%rate(1:4) + sr(1:4)
-              sm%rate(5)   = sm%rate(5) + sr(5) + dhg*sr(1)
-              sm%rate(6)   = sm%rate(6) + sr(6)
-            endif
+            sr = 0._R8
+            do c = 1, size(gen)
+              if (gen(c)%to /= g) cycle
+              call Gen_Packet( gen(c), IGLOO, b, i, j, k, pk )
+              sr = sr + pk
+            enddo
+            if (sr(1) > 0._R8) call add_birth_rate( ICE_domain%blk(b), g, i, j, k, sr/vol )
+            sm%rate(1:4) = sm%rate(1:4) + sr(1:4)
+            sm%rate(5)   = sm%rate(5) + sr(5) + dhg*sr(1)
+            sm%rate(6)   = sm%rate(6) + sr(6)
           endif
-          ! the amounts of the block: out of the gas's share, and into ICE's state when they go as amounts
+          ! the amounts of the block: out of the gas's books, and into ICE's state when they go as amounts
           ac = 0._R8
-          do c = 1, size(smoke)
-            if (smoke(c)%to == g) ac = ac + smoke(c)%blk(b)%a(:,i,j,k)
+          do c = 1, size(gen)
+            if (gen(c)%to == g) ac = ac + gen(c)%blk(b)%a(:,i,j,k)
           enddo
           if (all(ac == 0._R8)) cycle
-          if (.not. asRate) then
-            q = prim_2_cons(ICE_domain%blk(b)%cond_phase(g)%prim(:,i,j,k), ICE_condensed(mat_of(g)))
-            q(1:4)  = q(1:4)  + ac(1:4)/vol
-            q(ns-1) = q(ns-1) + ac(5)/vol
-            q(ns)   = q(ns)   + ac(6)/vol
-            ICE_domain%blk(b)%cond_phase(g)%prim(:,i,j,k) = cons_2_prim(q, ICE_condensed(mat_of(g)))
-          endif
+          if (.not. asRate) call add_birth( ICE_domain%blk(b), g, i, j, k, ac/vol )
           sm%amount(1:4) = sm%amount(1:4) + ac(1:4)
           sm%amount(5)   = sm%amount(5) + ac(5) + dhg*ac(1)
-          do c = 1, size(smoke)
-            if (smoke(c)%to == g) smoke(c)%blk(b)%a(:,i,j,k) = 0._R8
+          do c = 1, size(gen)
+            if (gen(c)%to == g) gen(c)%blk(b)%a(:,i,j,k) = 0._R8
           enddo
         enddo; enddo; enddo
       enddo
     enddo
 
-  end subroutine IGLOO_Smoke_Deliver
+  end subroutine IGLOO_Gen_Deliver
 
 end module hydraMI2_Mod_Coupling
