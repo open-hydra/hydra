@@ -57,8 +57,9 @@ ICE is a private repository, cloned over SSH: this build needs access to it.
 The solvers (MOSE, FUSS, ARES, ICE, IGLOO, GROOT), ATLAS and the libraries ORION, OSLO and FLINT are not part of the
 clone: each lives in its own repository, and hydra requires a range of its releases (`cmake/Releases.cmake`). A range
 `1.1` accepts 1.1.0 and every later 1.x, not 2.0.0; a range `0.2` accepts 0.2.x only. The build checks each component
-it needs out in its folder (`src/lib/<NAME>`, `utils/ATLAS`, `lib/<NAME>`) at the release of `deps.lock`, or, when
-`deps.lock` has none in the range, at the newest release on its remote, and writes it to `deps.lock`. FiNeR is the
+it needs out in its folder (`src/lib/<NAME>`, `utils/ATLAS`, `lib/<NAME>`): the first build of a clone takes the
+newest release in each range on its remote and records it in `deps.lock` (local, not tracked); the next builds take the
+release recorded there, without the network, until `--update` selects the newest again. FiNeR is the
 one submodule.
 
 ```bash

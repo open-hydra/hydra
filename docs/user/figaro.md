@@ -90,7 +90,7 @@ Hydra build options:
 - `--use-cantera`
 - `--type=<BuildType>`
 - `--update-deps`: select again the newest releases of the build's components (the libraries and the solvers) in the
-  ranges of `cmake/Releases.cmake`, written to `deps.lock` (commit it to take them)
+  ranges of `cmake/Releases.cmake`, written to the local `deps.lock`
 
 Example:
 

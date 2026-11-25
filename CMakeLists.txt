@@ -115,8 +115,8 @@ set (CMAKE_Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/modules")
 set(MASTER "hydra")
 
 # The libraries ORION, OSLO and FLINT and the solvers of this application by release range (cmake/Releases.cmake),
-# each checked out in its folder (lib/<NAME>, src/lib/<NAME>, git-ignored) at the release of deps.lock (tracked), or
-# the newest in its range. hydra is the top of its build tree: these requirements select the releases, before any
+# each checked out in its folder (lib/<NAME>, src/lib/<NAME>, git-ignored) at the newest release in its range, which
+# deps.lock (local, git-ignored) then records for the next configures. hydra is the top of its build tree: these requirements select the releases, before any
 # solver checks its own. -DSEMVER_UPDATE=ALL selects the newest releases again; -DFETCHCONTENT_SOURCE_DIR_<NAME>=<path>
 # builds a checkout as it is. FLINT sets FLINT_SRC, the sources MOSE and ARES compile, in this directory
 IF(NOT EXE_NAME MATCHES "^(MF|AF|MI2)$")

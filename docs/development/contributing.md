@@ -7,7 +7,7 @@ land in either:
 
 - Hydra framework code (`src/app`, `scripts`, docs)
 - solver libraries (`src/lib/MOSE`, `src/lib/FUSS`, etc) --- submit to solver repos first; once released, raise the
-  range in `cmake/Releases.cmake` if hydra needs the new release, and `deps.lock`
+  range in `cmake/Releases.cmake` if hydra needs the new release (a build takes the newest in range)
 
 Choose the repository according to ownership of the change.
 
@@ -112,5 +112,5 @@ Hydra scheme is `docs/stylesheets/hydra.css`, the same file in every code of the
 
 If the change is purely solver internals (for example MOSE numerics),
 prefer submitting it in the solver repository first. While it is unreleased, build hydra against your checkout with
-`-DFETCHCONTENT_SOURCE_DIR_<NAME>=<folder>`; once released, update `deps.lock` (`figaro deps --update <NAME>`) and,
+`-DFETCHCONTENT_SOURCE_DIR_<NAME>=<folder>`; once released, take it (`figaro deps --update <NAME>`) and,
 if hydra needs it, the lower limit in `cmake/Releases.cmake`.

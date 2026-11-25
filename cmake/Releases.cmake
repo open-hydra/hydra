@@ -4,8 +4,9 @@
 #   hydra_releases(<NAME>...)       select and check out each component (no build)
 #
 # A requirement is a caret range on the vX.Y.Z tags of the component's repository: 1.1 accepts 1.1.0 and every later
-# 1.x, not 2.0.0; 0.2 accepts 0.2.x only (a 0.y release may break 0.y-1). The release is the one of deps.lock (tracked,
-# in the source root) when it satisfies the range, else the newest on the remote, written to deps.lock. Each component
+# 1.x, not 2.0.0; 0.2 accepts 0.2.x only (a 0.y release may break 0.y-1). The first configure of a clone takes the
+# newest release in the range on the remote and writes it to deps.lock (in the source root, local: git-ignored); the
+# next ones take the release deps.lock holds while it satisfies the range. Each component
 # is checked out in its folder below (git-ignored), out of the build tree, at a detached tag.
 #   -DSEMVER_UPDATE=ALL (or =<NAME>)            select the newest releases in the ranges again
 #   -DFETCHCONTENT_SOURCE_DIR_<NAME>=<folder>   build a checkout as it is (a branch, local changes), e.g. src/lib/MOSE

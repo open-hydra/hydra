@@ -1,6 +1,6 @@
 # Building file
 CMakePresets.json
-# The components of cmake/Releases.cmake, checked out by the configure at the releases of deps.lock (which is tracked)
+# The components of cmake/Releases.cmake, checked out by the configure, and deps.lock, the releases it took (local)
 lib/ORION
 lib/OSLO
 lib/FLINT
