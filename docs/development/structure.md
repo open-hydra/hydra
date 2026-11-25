@@ -25,7 +25,7 @@ hydra/
 │   │   ├── MF/                   # Coupled MOSE+FUSS executable logic
 │   │   ├── AF/                   # Coupled ARES+FUSS executable logic
 │   │   └── MI2/                  # Coupled MOSE+ICE+IGLOO executable logic
-│   └── lib/                      # Solver libraries as submodules
+│   └── lib/                      # Solvers, checked out at their releases (git-ignored)
 │       ├── MOSE/
 │       ├── FUSS/
 │       ├── GROOT/
@@ -141,7 +141,7 @@ Major task groups:
 | `figaro build ...` | `scripts/modules/building/` |
 | `figaro compile ...` | `scripts/modules/compile/` |
 | `figaro <solver> ... solve` | `scripts/modules/simulations/solve.sh` |
-| `figaro submodule ...` | `scripts/modules/git.sh` |
+| `figaro deps ...` | `scripts/modules/deps.sh` |
 | `figaro doctor` | `scripts/doctor.sh` |
 
 ## Dependency Wiring

@@ -1,25 +1,3 @@
-[submodule "src/lib/FUSS"]
-	path = src/lib/FUSS
-	url = git@github.com:open-hydra/FUSS.git
 [submodule "lib/third_party/FiNeR"]
 	path = lib/third_party/FiNeR
 	url = git@github.com:szaghi/FiNeR.git
-[submodule "utils/ATLAS"]
-	path = utils/ATLAS
-	url = git@github.com:open-hydra/ATLAS.git
-[submodule "src/lib/GROOT"]
-	path = src/lib/GROOT
-	url = git@github.com:open-hydra/GROOT.git
-[submodule "src/lib/MOSE"]
-	path = src/lib/MOSE
-	url = https://github.com/open-hydra/MOSE.git
-[submodule "src/lib/ARES"]
-	path = src/lib/ARES
-	url = https://github.com/open-hydra/ARES.git
-[submodule "src/lib/ICE"]
-	path = src/lib/ICE
-	url = git@github.com:open-hydra/ICE.git
-	update = none
-[submodule "src/lib/IGLOO"]
-	path = src/lib/IGLOO
-	url = https://github.com/open-hydra/IGLOO.git

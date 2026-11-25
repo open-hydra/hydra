@@ -1,7 +1,7 @@
-# Writes OUT, the Fortran module hydraMI2_Build_Stamp: the commit of each repository hydra-MI2 is built from, and for
-# ORION, OSLO and FLINT their release tag. Script mode: cmake -DSRC=<hydra root> -DOUT=<file.f90>
-# [-DDIR_ORION=<dir> -DDIR_OSLO=<dir> -DDIR_FLINT=<dir>] -P MI2_Build_Stamp.cmake (the folders the build used; default
-# lib/<name>)
+# Writes OUT, the Fortran module hydraMI2_Build_Stamp: the commit of each repository hydra-MI2 is built from, after
+# its release tag when it is at one. Script mode: cmake -DSRC=<hydra root> -DOUT=<file.f90> [-DDIR_<NAME>=<dir>...]
+# -P MI2_Build_Stamp.cmake (the folders the build used, for MOSE ICE IGLOO ORION OSLO FLINT; default the folders of
+# cmake/Releases.cmake)
 find_program(GIT_EXE git)
 set(repos "hydra=." "MOSE=src/lib/MOSE" "ICE=src/lib/ICE" "IGLOO=src/lib/IGLOO"
           "ORION=lib/ORION" "OSLO=lib/OSLO" "FLINT=lib/FLINT" "FiNeR=lib/third_party/FiNeR")
@@ -20,8 +20,8 @@ foreach(entry ${repos})
                     OUTPUT_VARIABLE sha RESULT_VARIABLE rc OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
     if(rc EQUAL 0)
       set(stamp "${sha}")
-      # a library at a release: its tag first
-      if(name MATCHES "^(ORION|OSLO|FLINT)$")
+      # a component at a release: its tag first
+      if(NOT name STREQUAL "hydra")
         execute_process(COMMAND ${GIT_EXE} -C "${dir}" describe --tags --exact-match HEAD
                         OUTPUT_VARIABLE tag RESULT_VARIABLE rc OUTPUT_STRIP_TRAILING_WHITESPACE ERROR_QUIET)
         if(rc EQUAL 0)

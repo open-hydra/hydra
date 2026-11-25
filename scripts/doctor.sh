@@ -65,27 +65,27 @@ require_file "$HYDRADIR/CMakeLists.txt" && log_success "CMakeLists.txt found" ||
 require_dir "$HYDRADIR/build" && log_success "build/ directory exists" || log_warn "build/ directory missing (will be created on build)"
 
 # -------------------------
-# Submodules
+# Components
 # -------------------------
-# Driven off .gitmodules rather than a hardcoded list, so a solver added later (ICE was) shows up
-# here without editing this script. "populated" means the working tree is actually checked out --
-# a registered-but-empty submodule is the usual cause of a confusing configure-time failure.
+# The components of cmake/Releases.cmake: checked out in their folders at the release of deps.lock. A build checks
+# out what it needs, so a missing one is a note; one at another commit stops the configure.
 echo
-echo "Submodule checks"
-if require_file "$HYDRADIR/.gitmodules"; then
-    while read -r sub_path; do
-        [[ -n "$sub_path" ]] || continue
-        only=""
-        [[ "$sub_path" == "src/lib/ICE" || "$sub_path" == "src/lib/IGLOO" ]] && only=" (needed by hydra-MI2 only)"
-        # a directory that holds nothing but the .git link is not checked out
-        if [[ -n "$(ls -A "$HYDRADIR/$sub_path" 2>/dev/null | grep -v '^\.git$')" ]]; then
-            log_success "$sub_path populated"
-        else
-            log_warn "$sub_path registered but EMPTY$only (run: figaro submodule update $(basename "$sub_path"))"
-        fi
-    done < <(git -C "$HYDRADIR" config --file .gitmodules --get-regexp '^submodule\..*\.path$' 2>/dev/null | awk '{print $2}')
+echo "Component checks"
+while read -r name dir; do
+    want=$(awk -v n="$name" '$1 == n {print $2}' "$HYDRADIR/deps.lock" 2>/dev/null)
+    if [[ ! -e "$HYDRADIR/$dir/.git" ]]; then
+        log_info "$dir not checked out (a build checks it out; or: figaro deps $name)"
+    elif at=$(git -C "$HYDRADIR/$dir" describe --tags --exact-match HEAD 2>/dev/null) && [[ "$at" == "$want" ]]; then
+        log_success "$dir at $at"
+    else
+        log_warn "$dir at $(git -C "$HYDRADIR/$dir" describe --tags --always 2>/dev/null), deps.lock has ${want:-none} (build it as it is with -DFETCHCONTENT_SOURCE_DIR_$name=$dir)"
+    fi
+done < <(sed -n 's/^ *"\([A-Z][A-Za-z0-9]*\) *[0-9.]* *[^ ]* *\([^ "]*\).*/\1 \2/p' "$HYDRADIR/cmake/Releases.cmake")
+# FiNeR, the one submodule
+if [[ -n "$(ls -A "$HYDRADIR/lib/third_party/FiNeR" 2>/dev/null | grep -v '^\.git$')" ]]; then
+    log_success "lib/third_party/FiNeR populated"
 else
-    log_warn ".gitmodules not found -- cannot check submodules"
+    log_warn "lib/third_party/FiNeR EMPTY (run: git submodule update --init --recursive lib/third_party/FiNeR)"
 fi
 
 # -------------------------

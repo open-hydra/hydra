@@ -10,7 +10,7 @@ summarizes the split and points to solver-specific user documentation.
 
     ---
 
-    Command reference for build, compile, run, clean, and submodule workflows.
+    Command reference for build, compile, run, clean, and component workflows.
 
     [:octicons-arrow-right-24: Figaro reference](figaro.md)
 

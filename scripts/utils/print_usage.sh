@@ -17,20 +17,19 @@ print_usage() {
   echo -e "${YELLOW}Available commands:${NC}"
   echo
 
-  echo -e "${RED}git submodules tasks${NC}"
-  echo -e "  ${CYAN}submodule update [options] <mod>${NC}       Update git submodule. If <mod> not specified, update all submodules"
-  echo -e "     ${CYAN}-r, --remote${NC}                            Update to latest remote version"
-  echo -e "  ${CYAN}submodule delete [options] <mod>${NC}       Delete git submodule. If <mod> not specified, delete all submodules"
-  echo -e "     ${CYAN}-f, --force${NC}                             Delete submodule even if it has uncommitted changes"
+  echo -e "${RED}Components${NC}"
+  echo -e "  ${CYAN}deps [options] <name>...${NC}               Check components out at their releases (deps.lock). Without"
+  echo -e "                                          a name, all but ICE (private)"
+  echo -e "     ${CYAN}-u, --update${NC}                            Select the newest releases in the ranges of cmake/Releases.cmake"
   echo
 
   echo -e "${RED}Build tasks${NC}"
-  echo -e "  ${CYAN}build <solver>${NC}                         Build solver (both submodules and hydras)"
+  echo -e "  ${CYAN}build <solver>${NC}                         Build a solver or a hydra application"
   echo -e "     ${CYAN}options${NC}                                 Specific for each solver, see the proper install.sh"
   echo
 
   echo -e "${RED}Compile tasks${NC}"
-  echo -e "  ${CYAN}compile [options]  <solver>${NC}            Full compilation of solver (both submodules and hydras)"
+  echo -e "  ${CYAN}compile [options]  <solver>${NC}            Full compilation of a solver or a hydra application"
   echo -e "     ${CYAN}-e, --edit${NC}                              Edit the CMakePreset file before compiling"
   echo
 
@@ -66,8 +65,8 @@ print_usage() {
   echo "      Build MOSE solver with OpenMP enabled"
   echo
 
-  echo "figaro submodule update MOSE"
-  echo "      Update MOSE git submodule to the commit specified in the main repository"
+  echo "figaro deps --update MOSE"
+  echo "      Check MOSE out at the newest release in hydra's range, and record it in deps.lock"
   echo
 
   echo "figaro MOSE -p 4 solve"

@@ -10,7 +10,7 @@ Hydra employs `figaro` as the command-line entrypoint for every Hydra workflows.
 It wraps common tasks for:
 
 - environment checks
-- submodule management
+- the components at their releases
 - build and compile
 - simulation setup, launch, and cleanup
 
@@ -31,8 +31,8 @@ figaro <command> [options] [args]
 | Command | Purpose |
 |---------|---------|
 | `doctor` | Run environment and toolchain checks |
-| `submodule ...` | Update or deinit git submodules |
-| `build ...` | Configure and build hydra target or solver submodule |
+| `deps ...` | Check components out at their releases (`deps.lock`) |
+| `build ...` | Configure and build a hydra target or a solver |
 | `compile ...` | Recompile using existing presets/build dirs |
 | `ATLAS ...` | Run ATLAS preprocessing helpers and import outputs |
 | `<solver> ... solve` | Run solver executable (`MOSE`, `FUSS`, `GROOT`, `hydra-*`) |
@@ -53,19 +53,23 @@ Checks include:
 - optional MPI/OpenMP checks
 - CMake presets validity
 
-### `submodule`
+### `deps`
 
 ```bash
-figaro submodule update [--remote] [<name>]
-figaro submodule delete [--force] [<name>]
+figaro deps [--update] [<name>...]
 ```
+
+Checks each component out in its folder at its release of `deps.lock`, or the newest in the range of
+`cmake/Releases.cmake` when `deps.lock` has none; `--update` selects the newest releases in the ranges again, written
+to `deps.lock`. Without a name: every component but ICE (private, cloned over SSH: name it). A build checks out what it
+needs by itself (see [Installation](../getting-started/installation.md#components-and-their-releases)).
 
 Examples:
 
 ```bash
-figaro submodule update
-figaro submodule update --remote MOSE
-figaro submodule delete --force FUSS
+figaro deps
+figaro deps --update MOSE IGLOO
+figaro deps ICE
 ```
 
 ### `build`
@@ -85,8 +89,8 @@ Hydra build options:
 - `--use-sundials`
 - `--use-cantera`
 - `--type=<BuildType>`
-- `--update-deps`: select again the newest releases of ORION, OSLO and FLINT in the ranges of `CMakeLists.txt`,
-  written to `deps.lock` (commit it to take them)
+- `--update-deps`: select again the newest releases of the build's components (the libraries and the solvers) in the
+  ranges of `cmake/Releases.cmake`, written to the local `deps.lock`
 
 Example:
 
@@ -95,10 +99,9 @@ figaro build hydra-MF --compilers=gnu --use-openmp
 figaro build hydra-MI2 --compilers=intel --use-openmp
 ```
 
-`hydra-MI2` is OpenMP only: it refuses to configure with `--use-mpi`. Its build also checks out the ICE and IGLOO
-submodules (see [Multiphase Coupling](mi2.md#build)).
+`hydra-MI2` is OpenMP only: it refuses to configure with `--use-mpi` (see [Multiphase Coupling](mi2.md#build)).
 
-**Build solver submodule directly**
+**Build a solver directly**
 
 ```bash
 figaro build MOSE [solver install.sh options]
@@ -106,8 +109,8 @@ figaro build FUSS [solver install.sh options]
 figaro build GROOT [solver install.sh options]
 ```
 
-The command delegates to each solver's `install.sh build` and injects
-paths to shared hydra dependencies.
+The command checks the solver out at its release (`figaro deps`), then delegates to its `install.sh build` and
+injects paths to shared hydra dependencies.
 
 ### `compile`
 
@@ -118,7 +121,7 @@ figaro compile [--edit] <target>
 Targets:
 
 - hydra executable target: `hydra-MF`, `hydra-AF`, `hydra-MI2`
-- solver submodule target: `MOSE`, `FUSS`, `GROOT`, `ATLAS`
+- solver target: `MOSE`, `FUSS`, `GROOT`, `ATLAS`
 
 Examples:
 

@@ -23,9 +23,10 @@ figaro build hydra-MI2 --compilers=intel --use-openmp
 figaro compile hydra-MI2          # incremental rebuild of an existing build/MI2
 ```
 
-The executable is written to `bin/hydra_MI2`. `figaro build hydra-MI2` also checks out the two condensed-phase
-solvers, `src/lib/ICE` and `src/lib/IGLOO`. ICE is fetched over SSH and is marked `update = none` in `.gitmodules`,
-so a recursive clone skips it: the build checks it out on request, and needs access to its repository.
+The executable is written to `bin/hydra_MI2`. The build checks MOSE and the two condensed-phase solvers, ICE and
+IGLOO, out at their releases (`src/lib/<NAME>`, see
+[Installation](../getting-started/installation.md#components-and-their-releases)). ICE is a private repository,
+cloned over SSH: the build needs access to it.
 
 !!! warning "OpenMP only"
     `hydra-MI2` refuses to configure with `--use-mpi`. The configure step stops with:
@@ -550,7 +551,7 @@ IGLOO, ORION, OSLO, FLINT, FiNeR):
 # [MI2] built from ICE fbecd78
 ```
 
-Each line holds the short commit, preceded by the release tag for ORION, OSLO and FLINT when they sit on one,
+Each line holds the short commit, preceded by the release tag when the repository sits on one,
 followed by `-dirty` when tracked files were modified, or `unknown` without git. The stamp is refreshed at every build.
 
 ### Setup

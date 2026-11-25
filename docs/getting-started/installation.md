@@ -3,11 +3,11 @@
 This page describes how to build Hydra in this repository.
 
 Hydra uses a unified command entrypoint (`figaro`) to build both
-solver submodules and Hydra executables.
+the solvers and Hydra executables.
 
 ## Prerequisites
 
-- Git with submodule support
+- Git
 - CMake version 3.23 or higher
 - Fortran compiler (GNU or Intel toolchain)
 - Python 3
@@ -46,12 +46,31 @@ For the multiphase executable `hydra-MI2` (MOSE + ICE + IGLOO), OpenMP only:
 figaro build hydra-MI2 --compilers=intel --use-openmp
 ```
 
-It also checks out the ICE and IGLOO submodules; ICE is skipped by a recursive clone and fetched over SSH, so the
-build needs access to its repository.
+ICE is a private repository, cloned over SSH: this build needs access to it.
 
 !!! note
     Build options are forwarded to the underlying CMake/install scripts.
     Use `figaro` with no arguments to print the command help.
+
+## Components and their releases
+
+The solvers (MOSE, FUSS, ARES, ICE, IGLOO, GROOT), ATLAS and the libraries ORION, OSLO and FLINT are not part of the
+clone: each lives in its own repository, and hydra requires a range of its releases (`cmake/Releases.cmake`). A range
+`1.1` accepts 1.1.0 and every later 1.x, not 2.0.0; a range `0.2` accepts 0.2.x only. The build checks each component
+it needs out in its folder (`src/lib/<NAME>`, `utils/ATLAS`, `lib/<NAME>`): the first build of a clone takes the
+newest release in each range on its remote and records it in `deps.lock` (local, not tracked); the next builds take the
+release recorded there, without the network, until `--update` selects the newest again. FiNeR is the
+one submodule.
+
+```bash
+figaro deps                     # every component but ICE at its release of deps.lock
+figaro deps --update MOSE       # MOSE at the newest release in its range, written to deps.lock
+figaro build hydra-MF --update-deps   # the same for every component of the build
+```
+
+A component folder is used as it is when it is at the release; at another release it is moved, unless it is on a
+branch or has changes: the configure then stops. To build a checkout of your own (a branch under development), give
+it to the configure: `-DFETCHCONTENT_SOURCE_DIR_<NAME>=<folder>`, e.g. `-DFETCHCONTENT_SOURCE_DIR_MOSE=src/lib/MOSE`.
 
 ## Build an individual solver (optional)
 

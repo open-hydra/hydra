@@ -67,22 +67,11 @@ log_info "Build dir: $BUILD_DIR"
 
 rm -rf "$BUILD_DIR"
 
-# ORION, OSLO and FLINT are no submodules: the configure checks the releases of deps.lock out in lib/ (CMakeLists.txt)
+# FiNeR is the one submodule. The libraries and the solvers of the application are checked out by the configure at
+# their releases of deps.lock (cmake/Releases.cmake): ICE, private, only for hydra-MI2
 git submodule update --init --recursive lib/third_party/FiNeR
 source "$SCRIPT_DIR/utils/finer_deps.sh"
 fill_finer_deps "$HYDRADIR"
-
-git submodule update --init src/lib/MOSE
-git submodule update --init src/lib/FUSS
-git submodule update --init src/lib/GROOT
-git submodule update --init src/lib/ARES
-
-# hydra-MI2 only: its two condensed-phase solvers. ICE is a private repository, skipped by a
-# recursive clone (update = none in .gitmodules): it is checked out here, on request.
-if [[ "$SUFFIX" == "MI2" ]]; then
-    git submodule update --init --checkout src/lib/ICE
-    git submodule update --init src/lib/IGLOO
-fi
 
 # -------------------------
 # Configure + build
