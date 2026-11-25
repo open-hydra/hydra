@@ -2068,8 +2068,10 @@ contains
   end subroutine Restrict_ICE
 
 
-  !> The totals of rows 1:nq of the coarse sums w of block b against the finest grid's, ft, and its magnitudes, at.
+  !> The totals of rows 1:nq of the coarse sums w of block b against the finest grid's, ft, and its magnitudes, at,
+  !  each named by its row: <what>-rho(<species>), <what>-mom(<1..3>), <what>-energy.
   subroutine Add_Row_Totals ( who, what, b, ft, at, w, nq )
+    use MOSE_Global_m, only: nsc, nu, np
     implicit none
     character(len=*), intent(in) :: who, what
     integer,          intent(in) :: b, nq
@@ -2078,7 +2080,13 @@ contains
     character(len=32) :: nm
 
     do q = 1, nq
-      write(nm,'(A,A,I0,A)') what, '(', q, ')'
+      if (q <= nsc) then
+        write(nm,'(2A,I0,A)') what, '-rho(', q, ')'
+      elseif (q < np) then
+        write(nm,'(2A,I0,A)') what, '-mom(', q - nu + 1, ')'
+      else
+        nm = what//'-energy'
+      endif
       call Add_Total( who, nm, b, ft(q), sum(w(q,:,:,:)), at(q) )
     enddo
 

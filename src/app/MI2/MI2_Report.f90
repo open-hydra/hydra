@@ -285,14 +285,15 @@ contains
 
   !> Under report, after the condensed sources were restricted to level, the one MOSE steps on a start on its coarse
   !  grids (Before_MOSE_Iteration): per block and quantity, the finest grid's total, the coarse level's, the sum of
-  !  magnitudes on the finest grid; then, per row of the residual, what IGLOO's and ICE's per-stage routines subtract
-  !  on copies of that level and of the finest grid (Residual_Probe; no relaxation, no floor guard).
+  !  magnitudes on the finest grid; then, per row of the residual, what IGLOO's, ICE's and the law channels' per-stage
+  !  routines subtract on copies of that level and of the finest grid (Residual_Probe; no relaxation, no floor guard).
   subroutine Report_Coarse_Sources ( MOSE_simulation, level, IGLOO, ICE_simulation, IGLOO_src, ICE_src )
     use MOSE_Advanced_Types_m,   only: MOSE_simulation_type, MOSE_domain_type
     use ICE_Advanced_Types_m,    only: ICE_simulation_type
     use IGLOO_module,            only: obj_IGLOO
     use hydraMI2_Config_Types_m, only: hydra_MI2_obj
     use hydraMI2_Mod_Coupling,   only: source_state_t, restricted_t, Restricted_Totals, IGLOOxMOSE, ICExMOSE
+    use hydraMI2_Law_Channels,   only: lawsOn, LawxMOSE
     implicit none
     type(MOSE_simulation_type), intent(in) :: MOSE_simulation
     integer,                    intent(in) :: level
@@ -322,6 +323,13 @@ contains
       call ICExMOSE( crs, ICE_simulation%domain(1) )
       !$omp end parallel
       call Report_Probe( 'ice', fine, crs )
+    endif
+    if ( lawsOn ) then
+      !$omp parallel
+      call LawxMOSE( fine )
+      call LawxMOSE( crs )
+      !$omp end parallel
+      call Report_Probe( 'channels', fine, crs )
     endif
 
   contains
