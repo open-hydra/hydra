@@ -16,14 +16,19 @@
 !                of the gas
 !  They go as rates when MOSE or ICE steps in pseudo-time (handRates: a converged steady field then holds per unit
 !  time), as amounts when both are time-accurate.
+!
+!  When MOSE starts on its coarse grids, IGLOO and ICE still see its finest grid, filled from the level MOSE steps
+!  (Fill_Finest_Grid), and that level takes their sources restricted to it from the finest grid (Before_MOSE_Iteration).
 module hydraMI2_Mod_Coupling
-  use iso_fortran_env,   only: R8 => real64
-  use hydraMI2_Channels, only: channel_t
+  use iso_fortran_env,      only: R8 => real64
+  use hydraMI2_Channels,    only: channel_t
+  use IGLOO_data_block,     only: obj_sourceblock, obj_eulerblock
+  use ICE_Advanced_Types_m, only: ICE_domain_type
 
   implicit none
   private
 
-  public :: source_state_t, handed_t, removals_t, smoke_t
+  public :: source_state_t, handed_t, removals_t, smoke_t, restricted_t
   public :: Setup_ICE_Coupling, Setup_IGLOO_Coupling, Set_IGLOO_Switches
   public :: Gas_Field_For_IGLOO, MOSExIGLOO, MOSExICE, IGLOOxMOSE, ICExMOSE
   public :: Check_IGLOO_Sources, Check_ICE_Sources
@@ -31,6 +36,7 @@ module hydraMI2_Mod_Coupling
   public :: Removed_Store_Setup, Removals_Timed
   public :: Open_Removals, Close_Removals, After_ICE_Step, ICE_Block_Mean
   public :: IGLOO_Smoke_Accumulate, IGLOO_Smoke_Deliver
+  public :: Before_MOSE_Iteration, Fill_Finest_Grid, Evaluate_Gas_Once, Restricted_Totals
 
   !> The sources a condensed solver last produced. They stay in force, and MOSE keeps reading them, until that
   !  solver's next solve: a cycle with X-iter = 0 runs on frozen sources. cycle = 0 for sources a restart read back.
@@ -81,6 +87,51 @@ module hydraMI2_Mod_Coupling
     real(R8), allocatable :: res(:,:,:,:)
   end type res_block_t
   type(res_block_t), allocatable :: oldResidual(:)
+
+  !> A value per cell of a block (interior cells).
+  type :: vol_t
+    real(R8), allocatable :: v(:,:,:)
+  end type vol_t
+
+  !> IGLOO's smoke on the cells of a coarse level, per block: r(6, channel, cell) the sum over the cell's sub-cells of
+  !  each smoke channel's rate (Smoke_Packet), nostate(cell) the sub-cells, once per material, whose smoke took no
+  !  parcel's state.
+  type :: smoke_rate_t
+    real(R8), allocatable :: r(:,:,:,:,:)
+    integer,  allocatable :: nostate(:,:,:)
+  end type smoke_rate_t
+
+  !> The condensed solvers' sources restricted from the finest grid to the coarser level MOSE steps (held, 0: none),
+  !  from the sources in force iglooAt and iceAt: IGLOO's rates, its smoke's and its Eulerian fields, ICE's per-volume
+  !  rates, and the removals' channels on the coarse cells. ratio, the sub-cells per coarse cell along i, j, k, and
+  !  vol, their volume, are those of the level they were set up for (level).
+  type :: coarse_src_t
+    integer :: level = 0, held = 0
+    integer,               allocatable :: ratio(:,:)
+    type(vol_t),           allocatable :: vol(:)
+    type(obj_sourceblock), allocatable :: src(:)
+    type(smoke_rate_t),    allocatable :: smk(:)
+    type(obj_eulerblock),  allocatable :: eul(:,:)
+    type(ICE_domain_type)              :: ice
+    type(channel_t),       allocatable :: removed(:)
+    type(source_state_t)               :: iglooAt, iceAt
+  end type coarse_src_t
+  type(coarse_src_t) :: coarse
+  !> The finest grid lags a coarser level MOSE stepped since its last fill.
+  logical :: fineStale = .false.
+  !> The finest grid's boundary records hold MOSE's evaluation of its gas (an iteration there, or a fill).
+  logical :: gasEvaluated = .false.
+
+  !> A total over block b of a quantity restricted to a coarse level by who (IGLOO or ICE): the finest grid's, the
+  !  coarse level's, the sum of its magnitudes on the finest grid. The last restriction's, for the report.
+  type :: restricted_t
+    character(len=8)  :: who  = ''
+    character(len=32) :: what = ''
+    integer  :: b = 0
+    real(R8) :: onFine = 0._R8, onCoarse = 0._R8, magnitude = 0._R8
+  end type restricted_t
+  type(restricted_t), allocatable :: totals(:)
+  integer :: nTotals = 0
 
   !> removed(g): what the burn-out of ICE family g removed (mass, momentum (3), energy, per unit volume), from ICE to
   !  the gas; the store of every family, though only a converting one hands it on. Under rates timed: the store over
@@ -680,18 +731,108 @@ contains
   end subroutine MOSExICE
 
 
+  !> After MOSE stepped a coarser level (a start on its coarse grids): the finest grid, which IGLOO and ICE see, filled
+  !  from it, its state prolongated level by level, then evaluated. Nothing when the finest grid does not lag.
+  subroutine Fill_Finest_Grid ( MOSE_simulation )
+    use MOSE_Advanced_Types_m, only: MOSE_simulation_type
+    use MOSE_Config_Types_m,   only: MOSE_multigrid => obj_multigrid
+    use MOSE_Mod_Multigrid,    only: Prolongation
+    implicit none
+    type(MOSE_simulation_type), intent(inout) :: MOSE_simulation
+    integer :: m
+
+    if ( .not. fineStale ) return
+    do m = MOSE_multigrid%MG_level, 2, -1
+      call Prolongation( Fine=MOSE_simulation%domain(m-1), Coarse=MOSE_simulation%domain(m) )
+    enddo
+    call Evaluate_Finest_Grid( MOSE_simulation%domain(1) )
+    fineStale = .false.
+
+  end subroutine Fill_Finest_Grid
+
+
+  !> Before IGLOO's hand-off: the finest grid evaluated once when neither a MOSE iteration there nor a fill has done
+  !  it in this run (IGLOO solves before MOSE's first iteration): its boundary records hold the inflow mass flow
+  !  MOSExIGLOO hands IGLOO only from MOSE's evaluation of the gas.
+  subroutine Evaluate_Gas_Once ( MOSE_domain )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    implicit none
+    type(MOSE_domain_type), intent(inout) :: MOSE_domain
+
+    if ( gasEvaluated ) return
+    call Evaluate_Finest_Grid( MOSE_domain )
+
+  end subroutine Evaluate_Gas_Once
+
+
+  !> What a MOSE iteration computes on its finest grid, MOSE_domain, before its update (derived variables, dtlocal,
+  !  ghosts, fluxes, boundary records: the inflow mass flow IGLOO takes), without the condensed sources: no update, no
+  !  time step. Opens its own parallel regions.
+  subroutine Evaluate_Finest_Grid ( MOSE_domain )
+    use MOSE_Advanced_Types_m,    only: MOSE_domain_type
+    use MOSE_Config_Types_m,      only: MOSE_time_scheme => obj_time_scheme
+    use MOSE_Lib_Preconditioning, only: Update_Derived_Variables
+    use MOSE_Mod_dt,              only: Compute_dt
+    use MOSE_Mod_Explicit,        only: Assemble_Residual
+    implicit none
+    type(MOSE_domain_type), intent(inout) :: MOSE_domain
+
+    !$omp parallel
+    call Update_Derived_Variables( MOSE_domain )
+    !$omp end parallel
+    MOSE_domain%dtglobal = 1d5
+    call Compute_dt( MOSE_domain, MOSE_time_scheme%cfl, MOSE_time_scheme%vnn, MOSE_time_scheme%rampa_cfl_iter )
+    !$omp parallel
+    call Assemble_Residual( MOSE_domain, No_Source )
+    !$omp end parallel
+    gasEvaluated = .true.
+
+  end subroutine Evaluate_Finest_Grid
+
+
+  !> The external routine of the finest grid's residual when the coupler evaluates it: no source.
+  subroutine No_Source ( MOSE_domain )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    implicit none
+    type(MOSE_domain_type), intent(inout) :: MOSE_domain
+  end subroutine No_Source
+
+
   ! ---------------------------------------------------------------------------------------------
   ! Condensed solvers -> MOSE: the sources, from MOSE's per-RK-stage callback. Inside MOSE's parallel region:
   ! orphaned !$OMP DO only, no ASSOCIATE, and cell kernels that write only their arguments.
   ! ---------------------------------------------------------------------------------------------
 
-  !> Inject IGLOO's reaction on the gas into MOSE's residual (R = R - S).
+  !> Inject IGLOO's reaction on the gas into MOSE's residual (R = R - S): on MOSE's finest grid from IGLOO's own
+  !  arrays, on a coarser level from those restricted to it. iter of iMax is the MOSE iteration within its block and
+  !  relCoeff the cycle's under-relaxation coefficient (1: the source is injected as it is).
+  subroutine IGLOOxMOSE ( MOSE_domain, IGLOO, eulerian, iter, iMax, relCoeff )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    use IGLOO_module,          only: obj_IGLOO
+    implicit none
+    type(MOSE_domain_type), intent(inout) :: MOSE_domain
+    type(obj_IGLOO),        intent(in)    :: IGLOO
+    logical,                intent(in)    :: eulerian
+    integer,                intent(in)    :: iter, iMax
+    real(R8),               intent(in)    :: relCoeff
+
+    if (MOSE_domain%mg_level == 1) then
+      call IGLOO_Residual( MOSE_domain, IGLOO, IGLOO%source, IGLOO%euler, eulerian, iter, iMax, relCoeff )
+    else
+      call IGLOO_Residual( MOSE_domain, IGLOO, coarse%src, coarse%eul, eulerian, iter, iMax, relCoeff, coarse%vol, &
+                           coarse%smk )
+    endif
+
+  end subroutine IGLOOxMOSE
+
+
+  !> IGLOO's reaction on the gas into MOSE's residual, from the arrays given on the cells of MOSE_domain: src the
+  !  source mode's rates, eul the Eulerian fields; when given, volE the volume the Eulerian branch's per-volume source
+  !  is taken over (else the cell's own) and smk the smoke's rates (else those of the cell's column).
   !    source branch : source{Mass,Mom,En} are absolute rates; their mass through IGLOO_Mass_To_Gas, under the
   !                    consumed-species floor guard
   !    euler  branch : getSourceTerms is per unit volume (*vol); momentum and energy only
-  !  iter of iMax is the MOSE iteration within its block and relCoeff the cycle's under-relaxation coefficient
-  !  (1: the source is injected as it is).
-  subroutine IGLOOxMOSE ( MOSE_domain, IGLOO, eulerian, iter, iMax, relCoeff )
+  subroutine IGLOO_Residual ( MOSE_domain, IGLOO, src, eul, eulerian, iter, iMax, relCoeff, volE, smk )
     use MOSE_Advanced_Types_m,  only: MOSE_domain_type
     use MOSE_Global_m,          only: nsc, nu, nw, np, nprim
     use MOSE_Config_Types_m,    only: obj_chemistry
@@ -699,22 +840,26 @@ contains
     use IGLOO_variables,        only: nfam
     use hydraMI2_Stoichiometry, only: productsIGLOO
     implicit none
-    type(MOSE_domain_type), intent(inout) :: MOSE_domain
-    type(obj_IGLOO),        intent(in)    :: IGLOO
-    logical,                intent(in)    :: eulerian
-    integer,                intent(in)    :: iter, iMax
-    real(R8),               intent(in)    :: relCoeff
+    type(MOSE_domain_type),             intent(inout) :: MOSE_domain
+    type(obj_IGLOO),                    intent(in)    :: IGLOO
+    type(obj_sourceblock), allocatable, intent(in)    :: src(:)
+    type(obj_eulerblock),  allocatable, intent(in)    :: eul(:,:)
+    logical,                            intent(in)    :: eulerian
+    integer,                            intent(in)    :: iter, iMax
+    real(R8),                           intent(in)    :: relCoeff
+    type(vol_t),          optional,     intent(in)    :: volE(:)
+    type(smoke_rate_t),   optional,     intent(in)    :: smk(:)
     logical  :: blend
     integer  :: b, i, j, k, m
     ! res mirrors blk%R(1:nprim): species 1:nsc, momentum nu:nw, energy np, then soot/passive/RANS (left at zero)
-    real(R8) :: res(nprim), sources(4), datum
+    real(R8) :: res(nprim), sources(4), datum, vE
     real(R8) :: rhoi(nsc), rho, u(3), T, R, gam, kappa, mu, coeff
 
     call Relaxation_Weight ( iter, iMax, relCoeff, coeff, blend )
 
     do b = 1, size(MOSE_domain%blk)
 
-      !$OMP DO COLLAPSE(3) PRIVATE(res,sources,datum,rhoi,rho,u,T,R,gam,kappa,mu,i,j,k,m)
+      !$OMP DO COLLAPSE(3) PRIVATE(res,sources,datum,rhoi,rho,u,T,R,gam,kappa,mu,i,j,k,m,vE)
       do k = 1, MOSE_domain%blk(b)%dim(3)
       do j = 1, MOSE_domain%blk(b)%dim(2)
       do i = 1, MOSE_domain%blk(b)%dim(1)
@@ -725,19 +870,25 @@ contains
           sources = 0._R8
           do m = 1, nfam
             sources = sources + IGLOO%getSourceTerms( [rho,u,T,gam,R,mu,kappa],      &
-                                    IGLOO%euler(b,m)%velocity(:,i,j,k),              &
-                                    IGLOO%euler(b,m)%temperature(i,j,k),             &
-                                    IGLOO%euler(b,m)%density(i,j,k),                 &
-                                    IGLOO%euler(b,m)%np(i,j,k), famMatID(m) )
+                                    eul(b,m)%velocity(:,i,j,k),                      &
+                                    eul(b,m)%temperature(i,j,k),                     &
+                                    eul(b,m)%density(i,j,k),                         &
+                                    eul(b,m)%np(i,j,k), famMatID(m) )
           enddo
           res(nu:nw) = - sources(1:3)
           res(np)    = - sources(4)
-          res = res * MOSE_domain%blk(b)%vol(i,j,k)
+          vE = MOSE_domain%blk(b)%vol(i,j,k)
+          if (present(volE)) vE = volE(b)%v(i,j,k)
+          res = res * vE
         else
-          res(nu:nw) = IGLOO%source(b)%sourceMom(:,i,j,k)
-          res(np)    = IGLOO%source(b)%sourceEn(i,j,k)
+          res(nu:nw) = src(b)%sourceMom(:,i,j,k)
+          res(np)    = src(b)%sourceEn(i,j,k)
           if (productsIGLOO%active) then
-            call IGLOO_Mass_To_Gas ( IGLOO%source(b)%sourceMass(:,i,j,k), res, datum )
+            if (present(smk) .and. smokeIGOn) then
+              call IGLOO_Mass_To_Gas ( src(b)%sourceMass(:,i,j,k), res, datum, smk(b)%r(:,:,i,j,k) )
+            else
+              call IGLOO_Mass_To_Gas ( src(b)%sourceMass(:,i,j,k), res, datum )
+            endif
             call Floor_Guard ( res(1:nsc), MOSE_domain%blk(b)%P(1:nsc,i,j,k), MOSE_domain%blk(b)%vol(i,j,k), &
                                MOSE_domain%blk(b)%dtlocal(i,j,k) * obj_chemistry%strangcoeff )
           endif
@@ -755,14 +906,32 @@ contains
 
     enddo
 
-  end subroutine IGLOOxMOSE
+  end subroutine IGLOO_Residual
 
 
-  !> Inject ICE's reaction on the gas into MOSE's residual: what each family's source hands the gas (ICE_Cell) and the
-  !  removals ICE stores (Removal_Cell: a steady run, the rate of the store; a time-accurate one, this MOSE
-  !  iteration's share of it as a rate over its step, which each stage and both Strang halves integrate to
-  !  rate*dtlocal), under the consumed-species floor guard, times the cell volume.
+  !> Inject ICE's reaction on the gas into MOSE's residual: on MOSE's finest grid from ICE's own arrays and the
+  !  removals' channels, on a coarser level from those restricted to it.
   subroutine ICExMOSE ( MOSE_domain, ICE_domain )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    implicit none
+    type(MOSE_domain_type), intent(inout) :: MOSE_domain
+    type(ICE_domain_type),  intent(in)    :: ICE_domain
+
+    if (MOSE_domain%mg_level == 1) then
+      call ICE_Residual( MOSE_domain, ICE_domain, removed )
+    else
+      call ICE_Residual( MOSE_domain, coarse%ice, coarse%removed )
+    endif
+
+  end subroutine ICExMOSE
+
+
+  !> ICE's reaction on the gas into MOSE's residual, from the arrays given on the cells of MOSE_domain: what each
+  !  family's source in ICE_domain hands the gas (ICE_Cell) and the removals of the channels rem (Removal_Cell: a
+  !  steady run, the rate of the store; a time-accurate one, this MOSE iteration's share of it as a rate over its step,
+  !  which each stage and both Strang halves integrate to rate*dtlocal), under the consumed-species floor guard, times
+  !  the cell volume.
+  subroutine ICE_Residual ( MOSE_domain, ICE_domain, rem )
     use MOSE_Advanced_Types_m,  only: MOSE_domain_type
     use MOSE_Global_m,          only: nsc, nprim
     use MOSE_Config_Types_m,    only: obj_chemistry
@@ -772,6 +941,7 @@ contains
     implicit none
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
     type(ICE_domain_type),  intent(in)    :: ICE_domain
+    type(channel_t),        intent(in)    :: rem(:)
     integer  :: b, g, i, j, k, imat, nshare
     real(R8) :: r(nprim), dtIter, datum, gr(5)
     logical  :: mapped, consumes
@@ -795,15 +965,15 @@ contains
           call ICE_Cell ( imat, mapped, ICE_domain%blk(b)%cond_phase(g)%source(:,i,j,k), nbase(g)-1, &
                           ICE_domain%blk(b)%cond_phase(g)%birth(:,i,j,k), r, datum )
           if (mapped) then
-            if (removed(g)%asRate) then
-              if (allocated(removed(g)%blk(b)%r)) then
-                gr = removed(g)%blk(b)%r(:,i,j,k)
+            if (rem(g)%asRate) then
+              if (allocated(rem(g)%blk(b)%r)) then
+                gr = rem(g)%blk(b)%r(:,i,j,k)
                 call Removal_Cell ( imat, gr, r, datum )
               endif
-            elseif (removed(g)%share > 0._R8) then
+            elseif (rem(g)%share > 0._R8) then
               dtIter = MOSE_domain%blk(b)%dtlocal(i,j,k)
               if (dtIter > 0._R8) then
-                gr = removed(g)%blk(b)%a(:,i,j,k)*removed(g)%share/dtIter
+                gr = rem(g)%blk(b)%a(:,i,j,k)*rem(g)%share/dtIter
                 call Removal_Cell ( imat, gr, r, datum )
               endif
             endif
@@ -830,7 +1000,7 @@ contains
       if (Converts(imat)) Consumes_Gas = any(productsICE%nu(imat,1:nsc) < 0._R8)
     end function Consumes_Gas
 
-  end subroutine ICExMOSE
+  end subroutine ICE_Residual
 
 
   !> ICE material imat converts: it has a record in the products file, whose mass the gas receives.
@@ -847,16 +1017,18 @@ contains
 
   !> What IGLOO's mass source in one cell (col, IGLOO%source(b)%sourceMass(:,i,j,k)) hands the gas, added to r (the
   !  residual's layout) as absolute rates: each material through its row (a capped material through its three, with
-  !  Cap_Rates) with its datum offset, less the smoke born in ICE. datum: the offsets' part of what it adds to the
-  !  energy. Thread-safe.
-  subroutine IGLOO_Mass_To_Gas ( col, r, datum )
+  !  Cap_Rates) with its datum offset, less the smoke born in ICE: the rates of each smoke channel smk(:, channel) when
+  !  given (a coarse cell's, summed over its sub-cells), else Smoke_Packet's of col. datum: the offsets' part of what
+  !  it adds to the energy. Thread-safe.
+  subroutine IGLOO_Mass_To_Gas ( col, r, datum, smk )
     use MOSE_Global_m,          only: nsc, nu, nw, np
     use IGLOO_variables,        only: nm
     use hydraMI2_Stoichiometry, only: productsIGLOO, Cap_Rates
     implicit none
-    real(R8), intent(in)    :: col(:)
-    real(R8), intent(inout) :: r(:)
-    real(R8), intent(out)   :: datum
+    real(R8),           intent(in)    :: col(:)
+    real(R8),           intent(inout) :: r(:)
+    real(R8),           intent(out)   :: datum
+    real(R8), optional, intent(in)    :: smk(:,:)
     integer  :: imat, isp, c
     real(R8) :: dm, cr(4), sr(6)
 
@@ -886,7 +1058,11 @@ contains
     ! the smoke of a material that makes one is born in its ICE family: the gas receives IGLOO's books less it
     if (.not. smokeIGOn) return
     do c = 1, size(smoke)
-      call Smoke_Packet( smoke(c), col, sr )
+      if (present(smk)) then
+        sr = smk(:,c)
+      else
+        call Smoke_Packet( smoke(c), col, sr )
+      endif
       r(nu:nw) = r(nu:nw) - sr(2:4)
       r(np)    = r(np) - sr(5) - smoke(c)%dh*sr(1)
       datum    = datum - smoke(c)%dh*sr(1)
@@ -1522,9 +1698,9 @@ contains
   end subroutine Smoke_Packet
 
 
-  !> After a MOSE iteration: each smoke channel's rate times the iteration's dtlocal, added cell by cell to its store
-  !  (the gas received the same rates less, over the same step). A cell where a material's smoke had no parcel's state
-  !  counts once. Outside any parallel region.
+  !> After a MOSE iteration on the level it stepped: each smoke channel's rate times the iteration's dtlocal, added cell
+  !  by cell to its store (the gas received the same rates less, over the same step). A cell where a material's smoke
+  !  had no parcel's state counts once. Outside any parallel region.
   subroutine IGLOO_Smoke_Accumulate ( MOSE_domain, IGLOO )
     use MOSE_Advanced_Types_m, only: MOSE_domain_type
     use IGLOO_module,          only: obj_IGLOO
@@ -1534,6 +1710,11 @@ contains
     integer  :: b, i, j, k, c, mNoState
     real(R8) :: sr(6), dt
     logical  :: nostate
+
+    if (MOSE_domain%mg_level > 1) then
+      call Smoke_Accumulate_Coarse( MOSE_domain )
+      return
+    endif
 
     do b = 1, size(MOSE_domain%blk)
       if (.not. allocated(IGLOO%source(b)%sourceMass)) cycle
@@ -1556,6 +1737,33 @@ contains
     enddo
 
   end subroutine IGLOO_Smoke_Accumulate
+
+
+  !> IGLOO_Smoke_Accumulate on a coarse level, from the smoke's rates restricted to it (each sub-cell's, summed); a
+  !  coarse cell's amounts go to the store of its first sub-cell (only totals are read in a steady run).
+  subroutine Smoke_Accumulate_Coarse ( MOSE_domain )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    implicit none
+    type(MOSE_domain_type), intent(in) :: MOSE_domain
+    integer  :: b, i, j, k, c, f(3)
+    real(R8) :: dt
+
+    do b = 1, size(MOSE_domain%blk)
+      if (.not. allocated(coarse%smk(b)%r)) cycle
+      do k = 1, MOSE_domain%blk(b)%dim(3)
+      do j = 1, MOSE_domain%blk(b)%dim(2)
+      do i = 1, MOSE_domain%blk(b)%dim(1)
+        f  = ([i, j, k] - 1)*coarse%ratio(:,b) + 1
+        dt = MOSE_domain%blk(b)%dtlocal(i,j,k)
+        nSmokeNoState = nSmokeNoState + coarse%smk(b)%nostate(i,j,k)
+        do c = 1, size(smoke)
+          if (coarse%smk(b)%r(1,c,i,j,k) == 0._R8) cycle
+          smoke(c)%blk(b)%a(:,f(1),f(2),f(3)) = smoke(c)%blk(b)%a(:,f(1),f(2),f(3)) + coarse%smk(b)%r(:,c,i,j,k)*dt
+        enddo
+      enddo; enddo; enddo
+    enddo
+
+  end subroutine Smoke_Accumulate_Coarse
 
 
   !> After a MOSE block: the smoke its iterations made (IGLOO_Smoke_Accumulate), which the gas did not get, handed to
@@ -1649,5 +1857,391 @@ contains
     enddo
 
   end subroutine IGLOO_Smoke_Deliver
+
+
+  ! ---------------------------------------------------------------------------------------------
+  ! MOSE's coarse levels: the condensed sources restricted from the finest grid to the level MOSE steps. Outside any
+  ! parallel region.
+  ! ---------------------------------------------------------------------------------------------
+
+  !> Before a MOSE iteration: on a coarser level than the finest grid, the condensed sources in force (IGLOO_src,
+  !  ICE_src) restricted to it when that level or those sources changed since the last restriction (rebuilt); the
+  !  finest grid then lags the level until Fill_Finest_Grid.
+  subroutine Before_MOSE_Iteration ( MOSE_simulation, IGLOO, ICE_simulation, IGLOO_src, ICE_src, rebuilt )
+    use MOSE_Advanced_Types_m, only: MOSE_simulation_type
+    use MOSE_Config_Types_m,   only: MOSE_multigrid => obj_multigrid
+    use ICE_Advanced_Types_m,  only: ICE_simulation_type
+    use IGLOO_module,          only: obj_IGLOO
+    implicit none
+    type(MOSE_simulation_type), intent(in)  :: MOSE_simulation
+    type(obj_IGLOO),            intent(in)  :: IGLOO
+    type(ICE_simulation_type),  intent(in)  :: ICE_simulation
+    type(source_state_t),       intent(in)  :: IGLOO_src, ICE_src
+    logical,                    intent(out) :: rebuilt
+    integer :: lev
+
+    lev       = MOSE_multigrid%MG_level
+    rebuilt   = .false.
+    fineStale = lev > 1
+    ! an iteration on the finest grid evaluates its gas
+    if ( lev == 1 ) gasEvaluated = .true.
+    if ( lev == 1 ) return
+    if ( lev == coarse%held .and. Same_State(IGLOO_src, coarse%iglooAt) .and. Same_State(ICE_src, coarse%iceAt) ) return
+
+    nTotals = 0
+    if ( IGLOO_src%ready ) call Restrict_IGLOO_Sources( MOSE_simulation%domain(1), MOSE_simulation%domain(lev), IGLOO )
+    if ( ICE_src%ready ) call Restrict_ICE_Sources( MOSE_simulation%domain(1), MOSE_simulation%domain(lev), &
+                                                    ICE_simulation%domain(1) )
+    coarse%held    = lev
+    coarse%iglooAt = IGLOO_src
+    coarse%iceAt   = ICE_src
+    rebuilt        = .true.
+
+  contains
+
+    !> The same sources in force: produced by the same solve.
+    logical function Same_State ( a, b )
+      type(source_state_t), intent(in) :: a, b
+      Same_State = (a%ready .eqv. b%ready) .and. (a%eulerian .eqv. b%eulerian) .and. a%cycle == b%cycle .and. &
+                   a%step == b%step
+    end function Same_State
+
+  end subroutine Before_MOSE_Iteration
+
+
+  !> The totals of the last restriction (Before_MOSE_Iteration), for the report.
+  function Restricted_Totals () result( t )
+    implicit none
+    type(restricted_t), allocatable :: t(:)
+
+    allocate(t(nTotals))
+    if (nTotals > 0) t = totals(1:nTotals)
+
+  end function Restricted_Totals
+
+
+  !> One total of a restriction recorded: who, what, block b, the finest grid's f, the coarse level's c, magnitude a.
+  subroutine Add_Total ( who, what, b, f, c, a )
+    implicit none
+    character(len=*), intent(in) :: who, what
+    integer,          intent(in) :: b
+    real(R8),         intent(in) :: f, c, a
+    type(restricted_t), allocatable :: more(:)
+
+    if (.not. allocated(totals)) allocate(totals(64))
+    if (nTotals == size(totals)) then
+      allocate(more(2*size(totals)))
+      more(1:nTotals) = totals
+      call move_alloc(more, totals)
+    endif
+    nTotals = nTotals + 1
+    totals(nTotals) = restricted_t( who=who, what=what, b=b, onFine=f, onCoarse=c, magnitude=a )
+
+  end subroutine Add_Total
+
+
+  !> The coarse level crs set up: per block the sub-cells per coarse cell (finest-grid cells over coarse cells) and
+  !  their volume. Stops on a level whose cells do not hold a whole number of the finest grid's.
+  subroutine Coarse_Level_Setup ( fine, crs )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    implicit none
+    type(MOSE_domain_type), intent(in) :: fine, crs
+    integer :: b, n(3), r(3), lo(3), hi(3), ci, cj, ck
+
+    if (coarse%level == crs%mg_level) return
+    if (allocated(coarse%ratio)) deallocate(coarse%ratio)
+    if (allocated(coarse%vol))   deallocate(coarse%vol)
+    allocate(coarse%ratio(3, size(crs%blk)), coarse%vol(size(crs%blk)))
+    do b = 1, size(crs%blk)
+      n = crs%blk(b)%dim
+      if (any(mod(fine%blk(b)%dim, n) /= 0)) then
+        write(*,'(A,I0,A,I0,A,3(1X,I0),A,3(1X,I0),A)') E_//'block ', b, ' of MOSE''s grid level ', crs%mg_level, &
+          ' has', n, ' cells against', fine%blk(b)%dim, ' on the finest grid: not a whole number of sub-cells per cell'
+        error stop 1
+      endif
+      r = fine%blk(b)%dim / n
+      coarse%ratio(:,b) = r
+      allocate(coarse%vol(b)%v(n(1), n(2), n(3)))
+      do ck = 1, n(3)
+      do cj = 1, n(2)
+      do ci = 1, n(1)
+        lo = ([ci, cj, ck] - 1)*r + 1
+        hi = [ci, cj, ck]*r
+        coarse%vol(b)%v(ci,cj,ck) = sum(fine%blk(b)%vol(lo(1):hi(1), lo(2):hi(2), lo(3):hi(3)))
+      enddo; enddo; enddo
+    enddo
+    coarse%level = crs%mg_level
+
+  end subroutine Coarse_Level_Setup
+
+
+  !> Stop when an array of a solver does not hold the cells of block b of MOSE's finest grid (fine): ext, its extents.
+  subroutine Check_Cells ( what, ext, fine, b )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    implicit none
+    character(len=*),       intent(in) :: what
+    integer,                intent(in) :: ext(3), b
+    type(MOSE_domain_type), intent(in) :: fine
+
+    if (all(ext == fine%blk(b)%dim)) return
+    write(*,'(A,I0,A,3(1X,I0),A,3(1X,I0))') E_//what//' of block ', b, ' has', ext, ' cells, MOSE''s finest grid', &
+      fine%blk(b)%dim
+    error stop 1
+
+  end subroutine Check_Cells
+
+
+  !> IGLOO's sources restricted to the coarse level crs: rates summed over the sub-cells (the smoke's too, each
+  !  sub-cell's: they are not linear in IGLOO's columns), Eulerian fields weighted as IGLOO's normalizeEUL defines them
+  !  (density, number by volume; velocity, temperature by mass).
+  subroutine Restrict_IGLOO_Sources ( fine, crs, IGLOO )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    use IGLOO_module,          only: obj_IGLOO
+    use IGLOO_variables,       only: toll
+    implicit none
+    type(MOSE_domain_type), intent(in) :: fine, crs
+    type(obj_IGLOO),        intent(in) :: IGLOO
+    character(len=6), parameter :: EUL_NAME(6) = [character(len=6) :: 'mass', 'number', 'rhou', 'rhov', 'rhow', 'rhoT']
+    integer  :: b, m, c, n(3), r(3), i, j, k, ci, cj, ck, mNoState
+    real(R8) :: v, sv, sm, sn, smu(3), smT, ft(6), ct(6), at(6), sr(6)
+    logical  :: nostate
+    character(len=32) :: nm
+
+    call Coarse_Level_Setup( fine, crs )
+    if (allocated(coarse%src)) deallocate(coarse%src)
+    if (allocated(coarse%smk)) deallocate(coarse%smk)
+    if (allocated(coarse%eul)) deallocate(coarse%eul)
+    allocate(coarse%src(size(crs%blk)), coarse%smk(size(crs%blk)))
+    if (allocated(IGLOO%euler)) allocate(coarse%eul(size(crs%blk), size(IGLOO%euler, 2)))
+    do b = 1, size(crs%blk)
+      n = crs%blk(b)%dim
+      r = coarse%ratio(:,b)
+      ! the source mode's rates: sums
+      if (allocated(IGLOO%source(b)%sourceMass)) then
+        call Check_Cells( 'IGLOO''s sourceMass', shape3(IGLOO%source(b)%sourceMass), fine, b )
+        allocate(coarse%src(b)%sourceMass(size(IGLOO%source(b)%sourceMass, 1), n(1), n(2), n(3)))
+        call Sum_Sub_Cells( IGLOO%source(b)%sourceMass, coarse%src(b)%sourceMass )
+        do c = 1, size(IGLOO%source(b)%sourceMass, 1)
+          write(nm,'(A,I0,A)') 'igloo-sourceMass(', c, ')'
+          call Add_Total( 'IGLOO', nm, b, sum(IGLOO%source(b)%sourceMass(c,:,:,:)), &
+                          sum(coarse%src(b)%sourceMass(c,:,:,:)), sum(abs(IGLOO%source(b)%sourceMass(c,:,:,:))) )
+        enddo
+        ! the smoke's rates: each sub-cell's, summed; a sub-cell without a parcel's state counted once per material
+        if (smokeIGOn) then
+          allocate(coarse%smk(b)%r(6, size(smoke), n(1), n(2), n(3)), source=0._R8)
+          allocate(coarse%smk(b)%nostate(n(1), n(2), n(3)), source=0)
+          do ck = 1, n(3)
+          do cj = 1, n(2)
+          do ci = 1, n(1)
+            do k = (ck-1)*r(3)+1, ck*r(3)
+            do j = (cj-1)*r(2)+1, cj*r(2)
+            do i = (ci-1)*r(1)+1, ci*r(1)
+              mNoState = 0
+              do c = 1, size(smoke)
+                call Smoke_Packet( smoke(c), IGLOO%source(b)%sourceMass(:,i,j,k), sr, nostate )
+                coarse%smk(b)%r(:,c,ci,cj,ck) = coarse%smk(b)%r(:,c,ci,cj,ck) + sr
+                if (nostate .and. smoke(c)%from /= mNoState) then
+                  coarse%smk(b)%nostate(ci,cj,ck) = coarse%smk(b)%nostate(ci,cj,ck) + 1
+                  mNoState = smoke(c)%from
+                endif
+              enddo
+            enddo; enddo; enddo
+          enddo; enddo; enddo
+        endif
+      endif
+      if (allocated(IGLOO%source(b)%sourceMom)) then
+        call Check_Cells( 'IGLOO''s sourceMom', shape3(IGLOO%source(b)%sourceMom), fine, b )
+        allocate(coarse%src(b)%sourceMom(3, n(1), n(2), n(3)))
+        call Sum_Sub_Cells( IGLOO%source(b)%sourceMom, coarse%src(b)%sourceMom )
+        do c = 1, 3
+          write(nm,'(A,I0,A)') 'igloo-sourceMom(', c, ')'
+          call Add_Total( 'IGLOO', nm, b, sum(IGLOO%source(b)%sourceMom(c,:,:,:)), &
+                          sum(coarse%src(b)%sourceMom(c,:,:,:)), sum(abs(IGLOO%source(b)%sourceMom(c,:,:,:))) )
+        enddo
+      endif
+      if (allocated(IGLOO%source(b)%sourceEn)) then
+        call Check_Cells( 'IGLOO''s sourceEn', shape(IGLOO%source(b)%sourceEn), fine, b )
+        allocate(coarse%src(b)%sourceEn(n(1), n(2), n(3)))
+        do ck = 1, n(3)
+        do cj = 1, n(2)
+        do ci = 1, n(1)
+          coarse%src(b)%sourceEn(ci,cj,ck) = sum(IGLOO%source(b)%sourceEn((ci-1)*r(1)+1:ci*r(1), &
+                                                 (cj-1)*r(2)+1:cj*r(2), (ck-1)*r(3)+1:ck*r(3)))
+        enddo; enddo; enddo
+        call Add_Total( 'IGLOO', 'igloo-sourceEn', b, sum(IGLOO%source(b)%sourceEn), sum(coarse%src(b)%sourceEn), &
+                        sum(abs(IGLOO%source(b)%sourceEn)) )
+      endif
+      ! the Eulerian fields: density and number by volume, velocity and temperature by mass
+      if (.not. allocated(coarse%eul)) cycle
+      do m = 1, size(coarse%eul, 2)
+        if (.not. allocated(IGLOO%euler(b,m)%density)) cycle
+        associate (fe => IGLOO%euler(b,m))
+        call Check_Cells( 'IGLOO''s Eulerian density', shape(fe%density), fine, b )
+        allocate(coarse%eul(b,m)%density(n(1), n(2), n(3)), coarse%eul(b,m)%np(n(1), n(2), n(3)), &
+                 coarse%eul(b,m)%velocity(3, n(1), n(2), n(3)), coarse%eul(b,m)%temperature(n(1), n(2), n(3)))
+        ! the totals of the finest grid, cell by cell
+        ft = 0._R8; ct = 0._R8; at = 0._R8
+        do k = 1, fine%blk(b)%dim(3)
+        do j = 1, fine%blk(b)%dim(2)
+        do i = 1, fine%blk(b)%dim(1)
+          v  = fine%blk(b)%vol(i,j,k)
+          ft = ft + [fe%density(i,j,k), fe%np(i,j,k), fe%density(i,j,k)*fe%velocity(:,i,j,k), &
+                     fe%density(i,j,k)*fe%temperature(i,j,k)]*v
+          at = at + abs([fe%density(i,j,k), fe%np(i,j,k), fe%density(i,j,k)*fe%velocity(:,i,j,k), &
+                         fe%density(i,j,k)*fe%temperature(i,j,k)])*v
+        enddo; enddo; enddo
+        do ck = 1, n(3)
+        do cj = 1, n(2)
+        do ci = 1, n(1)
+          sm = 0._R8; sn = 0._R8; smu = 0._R8; smT = 0._R8
+          do k = (ck-1)*r(3)+1, ck*r(3)
+          do j = (cj-1)*r(2)+1, cj*r(2)
+          do i = (ci-1)*r(1)+1, ci*r(1)
+            v   = fine%blk(b)%vol(i,j,k)
+            sm  = sm  + fe%density(i,j,k)*v
+            sn  = sn  + fe%np(i,j,k)*v
+            smu = smu + fe%density(i,j,k)*fe%velocity(:,i,j,k)*v
+            smT = smT + fe%density(i,j,k)*fe%temperature(i,j,k)*v
+          enddo; enddo; enddo
+          sv = coarse%vol(b)%v(ci,cj,ck)
+          coarse%eul(b,m)%density(ci,cj,ck) = sm/sv
+          coarse%eul(b,m)%np(ci,cj,ck)      = sn/sv
+          if (coarse%eul(b,m)%density(ci,cj,ck) > toll) then
+            coarse%eul(b,m)%velocity(:,ci,cj,ck)  = smu/sm
+            coarse%eul(b,m)%temperature(ci,cj,ck) = smT/sm
+          else
+            coarse%eul(b,m)%velocity(:,ci,cj,ck)  = 0._R8
+            coarse%eul(b,m)%temperature(ci,cj,ck) = 0._R8
+          endif
+          ct = ct + [coarse%eul(b,m)%density(ci,cj,ck), coarse%eul(b,m)%np(ci,cj,ck), &
+                     coarse%eul(b,m)%density(ci,cj,ck)*coarse%eul(b,m)%velocity(:,ci,cj,ck), &
+                     coarse%eul(b,m)%density(ci,cj,ck)*coarse%eul(b,m)%temperature(ci,cj,ck)]*sv
+        enddo; enddo; enddo
+        end associate
+        do c = 1, 6
+          write(nm,'(A,I0,2A)') 'igloo-euler(', m, ')-', trim(EUL_NAME(c))
+          call Add_Total( 'IGLOO', nm, b, ft(c), ct(c), at(c) )
+        enddo
+      enddo
+    enddo
+
+  contains
+
+    !> y, the sum over the sub-cells of each coarse cell of block b of x (component first)
+    subroutine Sum_Sub_Cells ( x, y )
+      real(R8), intent(in)  :: x(:,:,:,:)
+      real(R8), intent(out) :: y(:,:,:,:)
+      y = 0._R8
+      do ck = 1, n(3)
+      do cj = 1, n(2)
+      do ci = 1, n(1)
+        do k = (ck-1)*r(3)+1, ck*r(3)
+        do j = (cj-1)*r(2)+1, cj*r(2)
+        do i = (ci-1)*r(1)+1, ci*r(1)
+          y(:,ci,cj,ck) = y(:,ci,cj,ck) + x(:,i,j,k)
+        enddo; enddo; enddo
+      enddo; enddo; enddo
+    end subroutine Sum_Sub_Cells
+
+  end subroutine Restrict_IGLOO_Sources
+
+
+  !> ICE's per-volume rates restricted to the coarse level crs, and the removals' rates in force: per coarse cell the
+  !  sub-cells' rate times volume summed, over the coarse cell's own volume, which ICE_Residual multiplies back (on a
+  !  curved mesh it is not the sub-cells' sum). A start on the coarse grids steps MOSE in pseudo-time, so the removals'
+  !  channels go as rates (handRates): their rates alone are restricted.
+  subroutine Restrict_ICE_Sources ( fine, crs, ICE_domain )
+    use MOSE_Advanced_Types_m, only: MOSE_domain_type
+    use ICE_Global_m,          only: ngroups
+    implicit none
+    type(MOSE_domain_type), intent(in) :: fine, crs
+    type(ICE_domain_type),  intent(in) :: ICE_domain
+    integer :: b, g, n(3), r(3), i, j, k, ci, cj, ck
+
+    call Coarse_Level_Setup( fine, crs )
+    if (allocated(coarse%ice%blk)) deallocate(coarse%ice%blk)
+    allocate(coarse%ice%blk(size(crs%blk)))
+    if (allocated(coarse%removed)) deallocate(coarse%removed)
+    allocate(coarse%removed(size(removed)))
+    do g = 1, size(removed)
+      coarse%removed(g)%name   = removed(g)%name
+      coarse%removed(g)%from   = removed(g)%from
+      coarse%removed(g)%asRate = removed(g)%asRate
+      allocate(coarse%removed(g)%blk(size(crs%blk)))
+    enddo
+    do b = 1, size(crs%blk)
+      n = crs%blk(b)%dim
+      r = coarse%ratio(:,b)
+      allocate(coarse%ice%blk(b)%cond_phase(ngroups))
+      do g = 1, ngroups
+        associate (fc => ICE_domain%blk(b)%cond_phase(g))
+        if (allocated(fc%source)) then
+          call Check_Cells( 'ICE''s source', shape3(fc%source), fine, b )
+          allocate(coarse%ice%blk(b)%cond_phase(g)%source(size(fc%source, 1), n(1), n(2), n(3)))
+          call Per_Coarse_Volume( fc%source, coarse%ice%blk(b)%cond_phase(g)%source, 'ice-source' )
+        endif
+        if (allocated(fc%birth)) then
+          call Check_Cells( 'ICE''s birth', shape3(fc%birth), fine, b )
+          allocate(coarse%ice%blk(b)%cond_phase(g)%birth(size(fc%birth, 1), n(1), n(2), n(3)))
+          call Per_Coarse_Volume( fc%birth, coarse%ice%blk(b)%cond_phase(g)%birth, 'ice-birth' )
+        endif
+        end associate
+        if (allocated(removed(g)%blk(b)%r)) then
+          call Check_Cells( 'the rate of ICE''s removals', shape3(removed(g)%blk(b)%r), fine, b )
+          allocate(coarse%removed(g)%blk(b)%r(size(removed(g)%blk(b)%r, 1), n(1), n(2), n(3)))
+          call Per_Coarse_Volume( removed(g)%blk(b)%r, coarse%removed(g)%blk(b)%r, 'ice-removed-rate' )
+        endif
+      enddo
+    enddo
+
+  contains
+
+    !> y, per coarse cell of block b, the sum over its sub-cells of x times their volume, over the coarse cell's
+    !  volume; one total per component
+    subroutine Per_Coarse_Volume ( x, y, what )
+      real(R8),         intent(in)  :: x(:,:,:,:)
+      real(R8),         intent(out) :: y(:,:,:,:)
+      character(len=*), intent(in)  :: what
+      real(R8) :: ft(size(x,1)), ct(size(x,1)), at(size(x,1))
+      integer  :: c
+      character(len=32) :: nm
+      ! the totals of the finest grid, cell by cell
+      ft = 0._R8; ct = 0._R8; at = 0._R8
+      do k = 1, fine%blk(b)%dim(3)
+      do j = 1, fine%blk(b)%dim(2)
+      do i = 1, fine%blk(b)%dim(1)
+        ft = ft + x(:,i,j,k)*fine%blk(b)%vol(i,j,k)
+        at = at + abs(x(:,i,j,k))*fine%blk(b)%vol(i,j,k)
+      enddo; enddo; enddo
+      do ck = 1, n(3)
+      do cj = 1, n(2)
+      do ci = 1, n(1)
+        y(:,ci,cj,ck) = 0._R8
+        do k = (ck-1)*r(3)+1, ck*r(3)
+        do j = (cj-1)*r(2)+1, cj*r(2)
+        do i = (ci-1)*r(1)+1, ci*r(1)
+          y(:,ci,cj,ck) = y(:,ci,cj,ck) + x(:,i,j,k)*fine%blk(b)%vol(i,j,k)
+        enddo; enddo; enddo
+        y(:,ci,cj,ck) = y(:,ci,cj,ck)/crs%blk(b)%vol(ci,cj,ck)
+        ct = ct + y(:,ci,cj,ck)*crs%blk(b)%vol(ci,cj,ck)
+      enddo; enddo; enddo
+      do c = 1, size(x,1)
+        write(nm,'(A,I0,A,I0,A)') what//'(', g, ',', c, ')'
+        call Add_Total( 'ICE', nm, b, ft(c), ct(c), at(c) )
+      enddo
+    end subroutine Per_Coarse_Volume
+
+  end subroutine Restrict_ICE_Sources
+
+
+  !> The last three extents of a rank-4 array: its cells.
+  pure function shape3 ( x ) result( e )
+    implicit none
+    real(R8), intent(in) :: x(:,:,:,:)
+    integer :: e(3)
+
+    e = [size(x,2), size(x,3), size(x,4)]
+
+  end function shape3
 
 end module hydraMI2_Mod_Coupling

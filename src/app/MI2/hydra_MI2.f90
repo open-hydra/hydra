@@ -8,6 +8,7 @@
 !>   IGLOO : one sweep on the new gas state   (IGLOO-iter: 0 none, 1 source mode, 2 Eulerian mode)
 !>   ICE   : ICE-iter iterations on the new gas state
 !> A solver that does not run in a cycle leaves its last sources in force: MOSE keeps reading them.
+!> When MOSE starts on its coarse grids, IGLOO and ICE see the finest grid filled from the level MOSE steps.
 !>
 !> This file is the schedule. The input and its refusals are in hydraMI2_Read_Ini; the exchange, and what lands
 !> between solver steps (ICE's removals, IGLOO's smoke), in hydraMI2_Mod_Coupling; the restart rules and ICE's
@@ -22,20 +23,21 @@ program hydra_MI2_program
   use hydraMI2_Config_Types_m, only: hydra_MI2_obj
   use hydraMI2_Build_Stamp,    only: Print_Build_Stamp
   use hydraMI2_Read_Ini,       only: Read_Inifile_MI2, Read_Inifile_MI2_Runtime, Check_MOSE_Grid_Levels,    &
-                                     Check_ICE_Grid_Levels, Check_Coupled_Inputs
+                                     Check_ICE_Grid_Levels, Check_Coupled_Inputs, Check_MOSE_Level1_Iter
   use hydraMI2_Mod_Import,     only: Assign_Phases
   use hydraMI2_Mod_Coupling,   only: source_state_t, removals_t, smoke_t, handRates, smokeIGOn, mdotHanded, nHanded, &
                                      Setup_ICE_Coupling, Setup_IGLOO_Coupling, Set_IGLOO_Switches, Gas_Field_For_IGLOO, &
                                      MOSExIGLOO, MOSExICE, IGLOOxMOSE, ICExMOSE, Check_IGLOO_Sources, Check_ICE_Sources, &
                                      Open_Removals, Close_Removals, After_ICE_Step, ICE_Block_Mean,                   &
-                                     IGLOO_Smoke_Accumulate, IGLOO_Smoke_Deliver
+                                     IGLOO_Smoke_Accumulate, IGLOO_Smoke_Deliver, Before_MOSE_Iteration, Fill_Finest_Grid, &
+                                     Evaluate_Gas_Once
   use hydraMI2_Restart,        only: Setup_Restart, Remove_Stale_Handoff, Note_Outputs, Save_Handoff_If_Fields_Current, &
                                      Write_ICE_Exchange, Made_No_Iteration
   use hydraMI2_Report,         only: Report_Start, Report_Frozen_Sources, Report_Values, Report_Inlet,                &
-                                     Report_Block_Start, Report_Block_End, Report_End
+                                     Report_Block_Start, Report_Block_End, Report_End, Report_Coarse_Sources
 
   use MOSE_Advanced_Types_m, only: MOSE_simulation_type, MOSE_domain_type
-  use MOSE_Config_Types_m,   only: MOSE_obj_sim_param => obj_sim_param
+  use MOSE_Config_Types_m,   only: MOSE_obj_sim_param => obj_sim_param, MOSE_obj_multigrid => obj_multigrid
   use MOSE_Procedures_m,     only: MOSE_type
 
   use ICE_Advanced_Types_m,  only: ICE_simulation_type
@@ -167,8 +169,8 @@ contains
     implicit none
     type(removals_t) :: removals
     type(smoke_t)    :: smoke
-    integer :: nIter, nRun, itermaxKept
-    logical :: lastIter
+    integer :: nIter, nRun, itermaxKept, level
+    logical :: lastIter, rebuilt
 
     nIter = hydra_obj_sim_param%MOSE_iter(n_cycle)
     call Report_Frozen_Sources( IGLOO_src, ICE_src, n_cycle, n_couple )
@@ -187,21 +189,36 @@ contains
       ! the run's last MOSE iteration ends on MOSE's own iteration limit (TODO = 3), as a run of MOSE alone: its
       ! postprocess is the end-of-run output
       lastIter = Last_Of_Run( hydra_obj_sim_param%MOSE_iter, i_MOSE )
-      if ( lastIter ) then
+      ! the level this iteration steps: the finest grid, or a coarser one while MOSE starts on its coarse grids
+      level = MOSE_obj_multigrid%MG_level
+      if ( lastIter .and. level == 1 ) then
         itermaxKept = MOSE_simulation%domain(1)%itermax
         MOSE_simulation%domain(1)%itermax = MOSE_obj_sim_param%iter_from_call + 1
       endif
+      ! on a coarse level, the condensed sources in force restricted to it when they or the level changed
+      call Before_MOSE_Iteration( MOSE_simulation, IGLOO, ICE_simulation, IGLOO_src, ICE_src, rebuilt )
+      if ( rebuilt ) call Report_Coarse_Sources( MOSE_simulation, level, IGLOO, ICE_simulation, IGLOO_src, ICE_src )
       call MOSE%solve( MOSE_simulation, MOSE_external_routine )
       if ( lastIter ) then
-        MOSE_simulation%domain(1)%itermax = itermaxKept
+        if ( level == 1 ) then
+          MOSE_simulation%domain(1)%itermax = itermaxKept
+        else
+          ! MOSE ends a run on its finest grid only (a coarse level's limit switches levels): the coupler ends it
+          MOSE_obj_sim_param%TODO = 3
+        endif
         MOSE_ended = .true.
       endif
       nRun = nRun + 1
       if ( smokeIGOn .and. IGLOO_src%ready .and. .not. IGLOO_src%eulerian ) &
-        call IGLOO_Smoke_Accumulate( MOSE_simulation%domain(1), IGLOO )
+        call IGLOO_Smoke_Accumulate( MOSE_simulation%domain(level), IGLOO )
       if ( MOSE_obj_sim_param%TODO <= 2 ) call MOSE%postprocess( MOSE_simulation )
+      ! MOSE's postprocess reads input.ini again at its own interval
+      call Check_MOSE_Level1_Iter()
       call Note_Outputs()
     enddo
+
+    ! the gas the coupler reads from here on is the finest grid's
+    call Fill_Finest_Grid( MOSE_simulation )
 
     if ( hydra_MI2_obj%run_ICE ) call Close_Removals( MOSE_simulation%domain(1), nRun, removals )
 
@@ -216,13 +233,14 @@ contains
 
 
   !> Source-term injection point, called by MOSE once per Runge-Kutta stage with the current domain, inside its
-  !  parallel region (orphaned !$OMP DO only): the sources in force of each condensed solver go into MOSE's residual.
-  !  A coarse level of MOSE's multigrid cycle receives them in the residual MOSE restricts from the finest grid.
+  !  parallel region (orphaned !$OMP DO only): the sources in force of each condensed solver go into MOSE's residual,
+  !  on the level MOSE steps. A level below it, a coarse level of MOSE's multigrid cycle, receives them in the residual
+  !  MOSE restricts to it.
   subroutine MOSE_external_routine(MOSE_domain)
     implicit none
     type(MOSE_domain_type), intent(inout) :: MOSE_domain
 
-    if ( MOSE_domain%mg_level /= 1 ) return
+    if ( MOSE_domain%mg_level /= MOSE_obj_multigrid%MG_level ) return
 
     if ( IGLOO_src%ready ) then
       call IGLOOxMOSE( MOSE_domain, IGLOO, IGLOO_src%eulerian, i_MOSE, hydra_obj_sim_param%MOSE_iter(n_cycle), &
@@ -249,6 +267,9 @@ contains
     ! IGLOO%setup prepared
     if ( IGLOO_src%ready ) call IGLOO%reset_state()
 
+    ! the gas state in, then the solve; before MOSE's first iteration of the run its boundary records (the inflow mass
+    ! flow) are not computed yet
+    call Evaluate_Gas_Once( MOSE_simulation%domain(1) )
     call MOSExIGLOO( MOSE_simulation%domain(1), IGLOO )
     call Report_Inlet( mdotHanded, nHanded )
     call IGLOO%solve()
@@ -317,6 +338,8 @@ contains
 
     write(*,*)
     write(*,'(A)') ' HYDRA-MI2: FINAL POSTPROCESS'
+    ! a run that ends on a coarse level writes the finest grid filled from it
+    call Fill_Finest_Grid( MOSE_simulation )
     ! a restarted solver that made no iteration: its end-of-run output is the one it restarted from, not written again
     MOSE_obj_sim_param%TODO = 3
     if ( Made_No_Iteration('MOSE') ) then

@@ -22,6 +22,8 @@ module hydraMI2_Config_Types_m
     logical :: run_ICE   = .false.   ! true when ICE-iter   is present in input.ini
     logical :: run_IGLOO = .false.   ! true when IGLOO-iter is present in input.ini
     integer :: n_relax_given = 0     ! how many relaxation-coeff values the file actually carried
+    ! DERIVED after MOSE's set-up (Check_MOSE_Grid_Levels)
+    logical :: coarse_start = .false.   ! MOSE starts on its coarse grids: a [MOSE-Multigrid] level<m>-iter > 0, m > 1
   end type hydra_MI2_parameters_t
   !! ------------------------------------------------------
 

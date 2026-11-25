@@ -16,6 +16,10 @@
 #             second MOSE block (no final write, no euler file) still yields a number;
 #  ctrl401  : the case as shipped -> n = 40, MOSE's positive computed inflow within [0.5, 2] x g * SUM(area), and
 #             the same 1.7 % flow check.
+#  first401 : the case as shipped with IGLOO's solve before any gas iteration (N-coupling 1, MOSE-iter 0): the
+#             inflow is MOSE's evaluation of the initial field; the final gas field is the initial one, so the flow
+#             check judges IGLOO's injection against k x the initial field's rho*u; checks as ctrl401. Without the
+#             evaluation the handed mass flow is 0 and the parcels carry no mass.
 # Every run: GAME OVER, none of the failure signatures, exit 0, parcels injected in every sweep. A ten-field 401
 # record must carry krho/(1 - krho_tot) of input.ini as field 1. No leg carries a fixed mass flux G > 0 in field 10
 # (G = 0 on every JPL record): IGLOO's G term is not exercised here.
@@ -84,5 +88,18 @@ hygiene one403 "$d/run.log" $rc 1; check one403 "$d" 403
 d=$(mk ctrl401 2)
 "$RUN" "$d" "$d/run" 1 "$d/run.log" "$EXE" > /dev/null 2>&1; rc=$?
 hygiene ctrl401 "$d/run.log" $rc 2; check ctrl401 "$d" 401
+
+# --- first401: as shipped, IGLOO's solve before any gas iteration ---
+d=$(mk first401 1); sed -i "s/^MOSE-iter *=.*/MOSE-iter     = 0/" "$d/input.ini"
+"$RUN" "$d" "$d/run" 1 "$d/run.log" "$EXE" > /dev/null 2>&1; rc=$?
+hygiene first401 "$d/run.log" $rc 1
+r=$(python3 -B -c "
+import sys; sys.path.insert(0, '$H/test/mi2-checks'); import numpy as np; from tec_cc import read_cc
+a = read_cc('$d/INPUT/gas-ic.tec'); b = read_cc('$d/run/OUTPUT/gas-field.tec')
+print('%.3e' % max(float(np.abs(a[i] - b[o]).max() / np.abs(a[i]).max()) for i, o in (('rho1', 'rho(1)'), ('u', 'u'), ('p', 'p'))))" 2>/dev/null)
+python3 -c "import sys; sys.exit(0 if float(sys.argv[1]) <= 1e-12 else 1)" "${r:-1}" \
+  && ok "first401: no gas iteration: the final gas field is the initial one (max |d|/max of rho, u, p: $r)" \
+  || ko "first401: the final gas field is not the initial one (max |d|/max of rho, u, p: ${r:-unread})"
+check first401 "$d" 401
 
 echo "== $pass passed, $fail failed"; [ $fail = 0 ]
