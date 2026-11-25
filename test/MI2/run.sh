@@ -24,8 +24,8 @@ mkdir -p "$scratch"; scratch=$(cd "$scratch" && pwd)
 case $scratch/ in "$(cd "$here/.." && pwd)"/*)
   echo "run.sh: the scratch directory $scratch is inside test/: its run directories would replace the cases"; exit 2;;
 esac
-# a private copy of the executable: a rebuild during the run does not touch it
-cp -p "$exe" "$scratch/hydra_MI2"; exe=$scratch/hydra_MI2
+# a private copy of the executable, one per invocation (ctest runs several at once): a rebuild does not touch it
+copy=$scratch/hydra_MI2.$$; cp -p "$exe" "$copy"; exe=$copy; trap 'rm -f "$copy"' EXIT
 
 failed=()
 for c in "${cases[@]}"; do

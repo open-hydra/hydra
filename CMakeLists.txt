@@ -161,3 +161,7 @@ ELSEIF(EXE_NAME STREQUAL "MI2")
 ELSE()
     message(FATAL_ERROR "EXE_NAME not set correctly. Choose from: MF, AF, MI2")
 ENDIF()
+
+# Test suite: ctest --test-dir <build> -L light|medium|heavy (see test/CMakeLists.txt)
+enable_testing()
+add_subdirectory(test)
