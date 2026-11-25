@@ -1,0 +1,9 @@
+# ATLAS GPB: condensed material -> gas species. Generated: edit the INI and run ATLAS GPB again.
+# particle-mechanism: none
+# record: material <name> <none|evaporation|combustion|carry|release> <terms> <none|latent|formation> <h298 [J/kg]>
+#         then <terms> lines: <gas species> <nu_mass [kg/kg material]> <nu_mole [mol/mol material]>
+#         a carry record ends with: <carried material> <kg of it per kg of material> <its h298 [J/kg]>
+gas gas- 2
+# A -> H2O
+material A evaporation 1 latent -1.5866000000e+07
+  H2O 1.0000000000e+00 1.0000000000e+00

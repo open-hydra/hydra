@@ -7,8 +7,8 @@ the test cases.
 
 Sources
 -------
-  MF-flatplate-Tw/reference/ks_kf_*_wall.tec      hydra-MF  (MOSE + FUSS)
-  AF-flatplate-Tw/reference/ks_kf_*_wall.tec      hydra-AF  (ARES + FUSS)
+  MF/flatplate-Tw/reference/ks_kf_*_wall.tec      hydra-MF  (MOSE + FUSS)
+  AF/flatplate-Tw/reference/ks_kf_*_wall.tec      hydra-AF  (ARES + FUSS)
 
 Both are `OUTPUT/hydra-wall.tec` files produced with `coupling-wall = true`.
 Each holds two zones: the solid-side interface (`plate-B1F4`, written first)
@@ -16,7 +16,7 @@ and the fluid-side interface (`gas-B1F3` / `fluid-B1F3`). The solid zone
 carries only Tw and qw; its y+/tau/pw columns are the placeholder 1.78625e-7.
 
 The reference is the Lindstedt & Karvinen conjugate flat-plate correlation,
-identical to the one in MF-flatplate-Tw/validate.py.
+identical to the one in MF/flatplate-Tw/validate.py.
 
 Theming
 -------
@@ -159,11 +159,11 @@ KS = {40: 10.2746, 400: 102.746, 4000: 1027.46}
 
 VARIANTS = {
     "MF": dict(
-        path=os.path.join(HERE, "MF-flatplate-Tw", "reference", "ks_kf_%d_wall.tec"),
+        path=os.path.join(HERE, "MF", "flatplate-Tw", "reference", "ks_kf_%d_wall.tec"),
         label="hydra-MF (MOSE + FUSS)", color=C_MF, marker="o",
     ),
     "AF": dict(
-        path=os.path.join(HERE, "AF-flatplate-Tw", "reference", "ks_kf_%d_wall.tec"),
+        path=os.path.join(HERE, "AF", "flatplate-Tw", "reference", "ks_kf_%d_wall.tec"),
         label="hydra-AF (ARES + FUSS)", color=C_AF, marker="x",
     ),
 }

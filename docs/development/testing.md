@@ -12,23 +12,21 @@ has two complementary scopes:
 
 ```text
 test/
-├── hydra-MF.sh                 # standalone helper script (pre-figaro)
-├── hydra-AF.sh                 # standalone helper script (pre-figaro)
 ├── make-vv-figures.py          # regenerates the figures in docs/vv/
-├── MF-flatplate-Tw/            # hydra-MF: MOSE + FUSS, ideal gas
+├── MF/flatplate-Tw/            # hydra-MF: MOSE + FUSS, ideal gas
 │   ├── common/                 #   gas and plate files shared by the cases (links from INPUT/)
 │   ├── validate.py             #   Lindstedt correlation + comparison plot
 │   ├── ks_kf_40/ 400/ 4000/    #   three solid conductivities
 │   └── reference/              #   frozen wall solutions
-├── AF-flatplate-Tw/            # hydra-AF: ARES + FUSS, real fluid
+├── AF/flatplate-Tw/            # hydra-AF: ARES + FUSS, real fluid
 │   ├── validate.py             #   three-panel comparison for the whole suite
 │   ├── ks_kf_40/ 400/ 4000/    #   three solid conductivities
 │   ├── common/                 #   real-fluid table and phase files, shared by the three cases
 │   └── reference/              #   frozen wall solutions
-├── evap-box*/ JPL-*/           # hydra-MI2 cases (see hydra-MI2 below)
-├── ice-*/ igloo-*/ steady-*/   #   ...
-├── vortex-cloud/               # ICE and IGLOO standalone against an exact solution
-└── mi2-checks/                 # hydra-MI2 gate scripts
+└── MI2/                        # hydra-MI2 (see test/MI2/README.md)
+    ├── run.sh                  #   runs and judges cases/
+    ├── cases/                  #   one closed box per exchange path, each with its check
+    └── validation/             #   JPL nozzles, evap-box reference, vortex-cloud
 ```
 
 Each `ks_kf_*` case is ready to run, in both suites:
@@ -68,8 +66,8 @@ figaro compile hydra-MF
 Both suites ship their `INPUT/`, so a case runs directly:
 
 ```bash
-(cd test/MF-flatplate-Tw/ks_kf_40 && figaro hydra-MF solve -p 8)   # hydra-MF
-(cd test/AF-flatplate-Tw/ks_kf_40 && figaro hydra-AF solve -p 8)   # hydra-AF
+(cd test/MF/flatplate-Tw/ks_kf_40 && figaro hydra-MF solve -p 8)   # hydra-MF
+(cd test/AF/flatplate-Tw/ks_kf_40 && figaro hydra-AF solve -p 8)   # hydra-AF
 ```
 
 Repeat for `ks_kf_400` and `ks_kf_4000` when validating full coverage. To
@@ -79,10 +77,10 @@ rebuild the real-fluid `INPUT/` with ATLAS, see the
 ### 4. Post-run analytical check
 
 ```bash
-python3 test/MF-flatplate-Tw/validate.py             # hydra-MF, from reference/
-python3 test/MF-flatplate-Tw/validate.py --runs      # hydra-MF, from the cases' own OUTPUT/
-python3 test/AF-flatplate-Tw/validate.py             # hydra-AF, from reference/
-python3 test/AF-flatplate-Tw/validate.py --runs      # hydra-AF, from the cases' own OUTPUT/
+python3 test/MF/flatplate-Tw/validate.py             # hydra-MF, from reference/
+python3 test/MF/flatplate-Tw/validate.py --runs      # hydra-MF, from the cases' own OUTPUT/
+python3 test/AF/flatplate-Tw/validate.py             # hydra-AF, from reference/
+python3 test/AF/flatplate-Tw/validate.py --runs      # hydra-AF, from the cases' own OUTPUT/
 ```
 
 These scripts compare the wall temperature against the Lindstedt correlation
@@ -113,7 +111,7 @@ When modifying hydra-level code (`src/app/common`, `src/app/MF`, or
 | CLI/scripts (`scripts/*`) | `figaro doctor`, build, one benchmark run |
 | Input/config (`src/app/common/config/*`) | parse/launch check + one benchmark run |
 | Coupling internals (`src/app/MF/*`) | all three `ks_kf_*` runs + `validate.py` |
-| Coupling internals (`src/app/AF/*`) | all three `AF-flatplate-Tw/ks_kf_*` runs + `validate.py` |
+| Coupling internals (`src/app/AF/*`) | all three `AF/flatplate-Tw/ks_kf_*` runs + `validate.py` |
 | Coupling internals (`src/app/MI2/*`) | the `test/mi2-checks/` gates of the changed path (routing, schedule, exchange, evaporation, combustion, smoke) |
 | Shared coupling code (`src/app/common/*`) | both suites, plus the cross-solver check |
 | Build/CMake changes | clean build + run benchmark |

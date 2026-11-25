@@ -98,7 +98,7 @@ Hydra scheme is `docs/stylesheets/hydra.css`, the same file in every code of the
 
 1. Modify `src/app/MF/*`.
 2. Run `figaro compile hydra-MF`.
-3. Re-run `test/MF-flatplate-Tw` benchmark cases.
+3. Re-run `test/MF/flatplate-Tw` benchmark cases.
 4. Include before/after behavior notes in PR.
 
 ### B. HYDRA-* input extension

@@ -248,10 +248,6 @@ contains
       allocate(hLaw%mass(nsc))
       call Laws_Handed( MOSE_domain, hLaw%mass, hLaw%mom, hLaw%energy, hLaw%datum )
       call Book( hLaw, dt )
-      if ( hydra_MI2_obj%report ) then
-        call Report_Values( 'channels-to-gas', [hLaw%mom, hLaw%energy, Mass_Of(hLaw)] )
-        call Report_Channels( MOSE_domain )
-      endif
     endif
 
     if ( .not. hydra_MI2_obj%report ) return
@@ -279,6 +275,10 @@ contains
       endif
     endif
     if ( iglooSrc ) call Report_Values( 'igloo-to-gas', [hIGLOO%mom, hIGLOO%energy, Mass_Of(hIGLOO)] )
+    if ( lawsOn ) then
+      call Report_Values( 'channels-to-gas', [hLaw%mom, hLaw%energy, Mass_Of(hLaw)] )
+      call Report_Channels( MOSE_domain )
+    endif
 
   end subroutine Report_Block_End
 

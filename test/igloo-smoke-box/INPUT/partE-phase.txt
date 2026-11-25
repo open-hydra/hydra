@@ -1,2 +1,0 @@
-condensed-dispersed modeling=eulerian
-AL2O3(a) 1

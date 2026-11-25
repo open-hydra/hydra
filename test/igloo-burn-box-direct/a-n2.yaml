@@ -1,5 +1,0 @@
-name: a-n2
-description: the material A becomes N2, the one species of the gas; its heat of reaction is the h0 of A less the enthalpy of N2 at 298.15 K
-reference: none (a test case; the rate is the solver's)
-reactions:
-- equation: A => N2

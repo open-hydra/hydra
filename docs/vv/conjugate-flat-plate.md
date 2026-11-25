@@ -1,6 +1,6 @@
 # Conjugate Flat Plate
 
-**Cases:** `test/MF-flatplate-Tw` (`hydra-MF`) and `test/AF-flatplate-Tw` (`hydra-AF`)
+**Cases:** `test/MF/flatplate-Tw` (`hydra-MF`) and `test/AF/flatplate-Tw` (`hydra-AF`)
 
 A laminar boundary layer develops over a conducting slab whose underside is held at a fixed temperature. Heat flows up through the solid, across the fluid–solid interface, and into the gas, so the interface temperature $T_w(x)$ is **not** prescribed — it is the outcome of the balance between conduction in the plate and convection in the boundary layer.
 
@@ -191,15 +191,15 @@ k   = 10.2746            ; 102.746 / 1027.46 in the other two cases
     The ideal-gas cases ship a complete `INPUT/` and `MESH/`, so no pre-processing is needed:
 
     ```bash
-    cd test/MF-flatplate-Tw/ks_kf_40
+    cd test/MF/flatplate-Tw/ks_kf_40
     figaro hydra-MF solve -p 8       # 8 OpenMP threads
     ```
 
     Repeat for `ks_kf_400` and `ks_kf_4000`, then compare:
 
     ```bash
-    python3 test/MF-flatplate-Tw/validate.py --runs   # the cases' own OUTPUT/, errors over x > 2 cm
-    python3 test/MF-flatplate-Tw/validate.py          # the frozen solutions in reference/
+    python3 test/MF/flatplate-Tw/validate.py --runs   # the cases' own OUTPUT/, errors over x > 2 cm
+    python3 test/MF/flatplate-Tw/validate.py          # the frozen solutions in reference/
     ```
 
 === "Real fluid (`hydra-AF`)"
@@ -207,14 +207,14 @@ k   = 10.2746            ; 102.746 / 1027.46 in the other two cases
     The real-fluid cases ship a complete `INPUT/` too. The real-fluid table, already flattened to the constant properties, is shared by the three cases through links into `common/`:
 
     ```bash
-    cd test/AF-flatplate-Tw/ks_kf_40
+    cd test/AF/flatplate-Tw/ks_kf_40
     figaro hydra-AF solve -p 8       # 8 OpenMP threads
     ```
 
     Repeat for `ks_kf_400` and `ks_kf_4000`, then compare:
 
     ```bash
-    cd test/AF-flatplate-Tw
+    cd test/AF/flatplate-Tw
     python3 validate.py --runs               # the cases' own OUTPUT/ (validate_runs.png)
     python3 validate.py                      # the frozen solutions in reference/ (validate.png)
     ```
@@ -222,7 +222,7 @@ k   = 10.2746            ; 102.746 / 1027.46 in the other two cases
     To rebuild `INPUT/` (after a change to ATLAS or to the deck), work in a copy of the suite and remove the links first, since ATLAS would otherwise write through them into `common/`:
 
     ```bash
-    cp -r test/AF-flatplate-Tw /tmp/AF-flatplate-Tw && cd /tmp/AF-flatplate-Tw/ks_kf_40
+    cp -r test/AF/flatplate-Tw /tmp/AF-flatplate-Tw && cd /tmp/AF-flatplate-Tw/ks_kf_40
     find INPUT -type l -delete
     figaro ATLAS GPB ICB BCB             # 1. real-fluid table, IC, BC from input.ini
     python3 ../set_constant_transport.py # 2. flatten the table
