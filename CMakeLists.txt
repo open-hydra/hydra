@@ -114,53 +114,38 @@ set (CMAKE_Fortran_MODULE_DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/modules")
 
 set(MASTER "hydra")
 
-# ORION, OSLO and FLINT by release range (cmake/SemVerDeps.cmake), checked out in lib/ORION, lib/OSLO and lib/FLINT.
-# hydra is the top of its build tree: these requirements select the releases, before any solver or library checks
-# its own. deps.lock (tracked) holds the releases a build takes; -DSEMVER_UPDATE=ALL selects the newest ones in the
-# ranges again, -DFETCHCONTENT_SOURCE_DIR_<NAME>=<path> builds a local checkout instead. FLINT sets FLINT_SRC, the
-# sources MOSE and ARES compile, in this directory
-include(${CMAKE_SOURCE_DIR}/cmake/SemVerDeps.cmake)
-# Without the submodules lib/sundials of OSLO and lib/cantera of FLINT, which they clone only when they build them
-semver_dependency(OSLO GIT_REPOSITORY https://github.com/MarcoGrossi92/OSLO.git VERSION 1.1 GIT_SUBMODULES ""
-                  SOURCE_DIR lib/OSLO)
-semver_dependency(ORION GIT_REPOSITORY https://github.com/MarcoGrossi92/ORION.git VERSION 2.2 SOURCE_DIR lib/ORION)
-semver_dependency(FLINT GIT_REPOSITORY https://github.com/MarcoGrossi92/FLINT.git VERSION 2.1 GIT_SUBMODULES ""
-                  SOURCE_DIR lib/FLINT)
-add_subdirectory(lib/third_party/FiNeR/)
-FetchContent_MakeAvailable(OSLO ORION FLINT)
-
-IF(EXE_NAME STREQUAL "MF")
-    add_subdirectory(src/lib/FUSS/)
-    add_subdirectory(src/lib/MOSE/)
-    add_subdirectory(src/app)
-ELSEIF(EXE_NAME STREQUAL "AF")
-    add_subdirectory(src/lib/FUSS/)
-    add_subdirectory(src/lib/ARES/)
-    add_subdirectory(src/app)
-ELSEIF(EXE_NAME STREQUAL "MI2")
+# The libraries ORION, OSLO and FLINT and the solvers of this application by release range (cmake/Releases.cmake),
+# each checked out in its folder (lib/<NAME>, src/lib/<NAME>, git-ignored) at the release of deps.lock (tracked), or
+# the newest in its range. hydra is the top of its build tree: these requirements select the releases, before any
+# solver checks its own. -DSEMVER_UPDATE=ALL selects the newest releases again; -DFETCHCONTENT_SOURCE_DIR_<NAME>=<path>
+# builds a checkout as it is. FLINT sets FLINT_SRC, the sources MOSE and ARES compile, in this directory
+IF(NOT EXE_NAME MATCHES "^(MF|AF|MI2)$")
+    message(FATAL_ERROR "EXE_NAME not set correctly. Choose from: MF, AF, MI2")
+ENDIF()
+IF(EXE_NAME STREQUAL "MI2" AND USE_MPI)
     # MOSE (Eulerian gas) + ICE (Eulerian condensed) + IGLOO (Lagrangian).
     #
     # MPI is refused at CONFIGURE time, deliberately and permanently -- not deferred work.
     # MOSE decomposes over blocks (is_local_block) while IGLOO requires the FULL gas field
-    # replicated identically on every rank (see src/lib/IGLOO/src/lib/obj_IGLOO.f90 setup_static),
+    # replicated identically on every rank (see IGLOO's src/lib/obj_IGLOO.f90 setup_static),
     # so a block-partitioned MOSExIGLOO would silently integrate particles through holes.
     # ICE partitions its own blocks under USE_MPI, but nothing makes its decomposition
     # match MOSE's, and IGLOO's requirement above stands regardless. Refusing to configure
     # beats linking a wrong binary.
-    IF(USE_MPI)
-        message(FATAL_ERROR
-            "hydra-MI2 does not support MPI. MOSE partitions over blocks but IGLOO requires the "
-            "full gas field on every rank. "
-            "Rebuild without --use-mpi.")
-    ENDIF()
-
-    add_subdirectory(src/lib/MOSE/)
-    add_subdirectory(src/lib/ICE/)
-    add_subdirectory(src/lib/IGLOO/)
-    add_subdirectory(src/app)
-ELSE()
-    message(FATAL_ERROR "EXE_NAME not set correctly. Choose from: MF, AF, MI2")
+    message(FATAL_ERROR
+        "hydra-MI2 does not support MPI. MOSE partitions over blocks but IGLOO requires the "
+        "full gas field on every rank. "
+        "Rebuild without --use-mpi.")
 ENDIF()
+include(${CMAKE_SOURCE_DIR}/cmake/Releases.cmake)
+hydra_releases(OSLO ORION FLINT ${HYDRA_COMPONENTS_${EXE_NAME}})
+add_subdirectory(lib/third_party/FiNeR/)
+FetchContent_MakeAvailable(OSLO ORION FLINT)
+# The solvers, in this order (each reads the ones before); a checkout out of the source tree gets its build folder
+foreach(_solver IN LISTS HYDRA_COMPONENTS_${EXE_NAME})
+    add_subdirectory(${HYDRA_${_solver}_DIR} ${CMAKE_BINARY_DIR}/src/lib/${_solver})
+endforeach()
+add_subdirectory(src/app)
 
 # Test suite: ctest --test-dir <build> -L light|medium|heavy (see test/CMakeLists.txt)
 enable_testing()

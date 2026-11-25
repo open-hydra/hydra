@@ -1,5 +1,12 @@
 # Releases of the dependencies, selected by cmake/SemVerDeps.cmake: <name> <tag>
 # cmake -DSEMVER_UPDATE=ALL (or =<name>) <build-dir> selects the newest ones again
+ARES v1.1.0
+ATLAS v0.2.0
 FLINT v2.1.0
+FUSS v1.0.0
+GROOT v1.0.0
+ICE v1.1.0
+IGLOO v1.1.0
+MOSE v0.2.0
 ORION v2.2.0
 OSLO v1.1.0

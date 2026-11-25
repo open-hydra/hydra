@@ -1,9 +1,16 @@
 # Building file
 CMakePresets.json
-# ORION, OSLO and FLINT, checked out by the configure at the releases of deps.lock (which is tracked)
+# The components of cmake/Releases.cmake, checked out by the configure at the releases of deps.lock (which is tracked)
 lib/ORION
 lib/OSLO
 lib/FLINT
+src/lib/MOSE
+src/lib/FUSS
+src/lib/ARES
+src/lib/ICE
+src/lib/IGLOO
+src/lib/GROOT
+utils/ATLAS
 scripts/setvars.sh
 build
 site

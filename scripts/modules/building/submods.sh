@@ -14,6 +14,10 @@ else
   where=lib
 fi
 
+# A component of cmake/Releases.cmake: checked out at its release (deps.lock), with ORION, which all of them read
+if grep -q "^ *\"$PROG " "$HYDRADIR/cmake/Releases.cmake"; then
+  source "$SCRIPT_DIR/modules/deps.sh" ORION "$PROG"
+fi
 cd $HYDRADIR/$where/$PROG || log_error "PROG $PROG not found."
 
 # The solvers are handed hydra's FiNeR: make sure its dependencies are there. ATLAS builds with its own

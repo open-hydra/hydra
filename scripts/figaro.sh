@@ -21,8 +21,8 @@ case $COMMAND in
   # Building management tasks
   build)          source "$SCRIPT_DIR/modules/building/dispatch.sh" "$@" ;;
 
-  # git submodules tasks
-  submodule)      source "$SCRIPT_DIR/modules/git.sh" "$@";;
+  # The components at their releases
+  deps)           source "$SCRIPT_DIR/modules/deps.sh" "$@";;
 
   # Simulations tasks
   clean)          source "$SCRIPT_DIR/modules/simulations/clean.sh" ;;

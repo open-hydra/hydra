@@ -6,7 +6,8 @@ This repository is a framework/integration layer, so contributions may
 land in either:
 
 - Hydra framework code (`src/app`, `scripts`, docs)
-- solver libraries (`src/lib/MOSE`, `src/lib/FUSS`, etc) --- submit to solver repos first, then update submodule reference here
+- solver libraries (`src/lib/MOSE`, `src/lib/FUSS`, etc) --- submit to solver repos first; once released, raise the
+  range in `cmake/Releases.cmake` if hydra needs the new release, and `deps.lock`
 
 Choose the repository according to ownership of the change.
 
@@ -20,7 +21,7 @@ Choose the repository according to ownership of the change.
 ## Local Setup
 
 ```bash
-git clone --recurse-submodules https://github.com/open-hydra/hydra.git
+git clone https://github.com/open-hydra/hydra.git
 cd hydra
 source ./bootstrap.sh
 ```
@@ -36,8 +37,7 @@ Useful maintenance commands:
 
 ```bash
 figaro doctor
-figaro submodule update
-figaro submodule update --remote MOSE
+figaro deps --update MOSE      # the newest MOSE release in hydra's range, into deps.lock
 ```
 
 ## Where to Place Changes
@@ -111,5 +111,6 @@ Hydra scheme is `docs/stylesheets/hydra.css`, the same file in every code of the
 ### C. Solver-level model change
 
 If the change is purely solver internals (for example MOSE numerics),
-prefer submitting it in the solver repository first, then update the
-submodule reference in hydra.
+prefer submitting it in the solver repository first. While it is unreleased, build hydra against your checkout with
+`-DFETCHCONTENT_SOURCE_DIR_<NAME>=<folder>`; once released, update `deps.lock` (`figaro deps --update <NAME>`) and,
+if hydra needs it, the lower limit in `cmake/Releases.cmake`.

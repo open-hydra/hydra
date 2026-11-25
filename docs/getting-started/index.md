@@ -65,7 +65,7 @@ Each solver in Hydra is designed for a specific class of equations and physical 
 | **IGLOO** | Lagrangian dispersed condensed phase (parcels) | `src/lib/IGLOO` | [IGLOO docs](https://open-hydra.github.io/IGLOO/) |
 
 !!! info "Hydra and solver repositories"
-    Solver libraries are versioned in their own repositories and included in Hydra as submodules. Hydra-level docs summarize how solvers fit together; solver-level docs provide full theory and user references.
+    Solver libraries are versioned in their own repositories; Hydra requires a range of releases of each and checks one out at build time. Hydra-level docs summarize how solvers fit together; solver-level docs provide full theory and user references.
 
 ---
 
