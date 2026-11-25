@@ -1,9 +1,0 @@
-3
-C
-N
-O
-
-composition
-1 0 2
-0 2 0
-0 0 2

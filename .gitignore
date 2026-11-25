@@ -32,8 +32,6 @@ test/**/input.ini.*
 test/**/*.log
 test/**/filelist.txt
 __pycache__/
-test/mi2-checks/orig-*/
-test/mi2-checks/patches/
 
 # per-case reference notes, kept locally
 REFERENCE-STATE.md

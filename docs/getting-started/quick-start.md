@@ -20,7 +20,7 @@ figaro compile hydra-MF
 Use one of the available test folders, for example:
 
 ```bash
-cd test/MF-flatplate-Tw/ks_kf_40
+cd test/MF/flatplate-Tw/ks_kf_40
 ```
 
 A typical case includes:

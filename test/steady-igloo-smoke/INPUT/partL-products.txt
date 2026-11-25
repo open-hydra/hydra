@@ -1,9 +1,0 @@
-# ATLAS GPB: condensed material -> gas species. Generated: edit the INI and run ATLAS GPB again.
-# particle-mechanism: a-smoke (./a-smoke.yaml)
-# record: material <name> <none|evaporation|combustion|cap|release> <terms> <none|latent|formation> <h298 [J/kg]>
-#         then <terms> lines: <gas species> <nu_mass [kg/kg material]> <nu_mole [mol/mol material]>
-#         a cap record ends with: <product material> <kg of it per kg of material> <its h298 [J/kg]>
-gas gas- 1
-# A => AL2O3(a) + 3.6396 N2
-material A combustion 1 formation -7.2000000000e+06 AL2O3(a) 5.0000079051e-01 -1.6434770400e+07 partE-
-  N2 4.9999920949e-01 3.6396000000e+00

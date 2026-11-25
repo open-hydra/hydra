@@ -1,2 +1,0 @@
-condensed-dispersed modeling=lagrangian
-AL(L) 1 combustion=direct

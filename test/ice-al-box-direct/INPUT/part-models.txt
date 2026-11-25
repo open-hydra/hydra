@@ -1,4 +1,0 @@
-# part-models.txt  written by ATLAS GPB: the constants of each material's models
-# <material> <kind> <model> key=value ...
-
-AL(L) combustion direct T-burn=2791 q-comb=9530000 d-stop=1e-05 d-smoke=3e-06

@@ -1,3 +1,0 @@
-condensed-dispersed modeling=eulerian
-A 1 combustion=Beckstead
-S 1

@@ -1,3 +1,0 @@
-condensed-dispersed modeling=lagrangian
-AL(L) 1 combustion=Beckstead cap=constant
-AL2O3(L) 0

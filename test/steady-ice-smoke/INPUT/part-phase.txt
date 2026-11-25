@@ -1,3 +1,0 @@
-condensed-dispersed modeling=eulerian
-AL(L) 1 combustion=Beckstead solidification=off T-melt=0 h-fus=0 T-nuc=0 cp-solid=0
-AL2O3(L) 1 combustion=none solidification=on T-melt=2327 h-fus=1092578 T-nuc=1861.6 cp-solid=1433.17
