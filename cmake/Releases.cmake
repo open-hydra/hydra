@@ -18,12 +18,12 @@ set(HYDRA_RELEASES
   "ORION  2.2    https://github.com/MarcoGrossi92/ORION.git  lib/ORION"
   "FLINT  2.1    https://github.com/MarcoGrossi92/FLINT.git  lib/FLINT       NOSUB"
   "MOSE   0.2.1  https://github.com/open-hydra/MOSE.git      src/lib/MOSE    NOSUB"
-  "FUSS   1.0    git@github.com:open-hydra/FUSS.git          src/lib/FUSS    NOSUB"
+  "FUSS   1.0    https://github.com/open-hydra/FUSS.git      src/lib/FUSS    NOSUB"
   "ARES   1.1    https://github.com/open-hydra/ARES.git      src/lib/ARES    NOSUB"
-  "ICE    1.1    git@github.com:open-hydra/ICE.git           src/lib/ICE     NOSUB"
+  "ICE    1.1    https://github.com/open-hydra/ICE.git       src/lib/ICE     NOSUB"
   "IGLOO  1.1.1  https://github.com/open-hydra/IGLOO.git     src/lib/IGLOO   NOSUB"
-  "GROOT  1.0    git@github.com:open-hydra/GROOT.git         src/lib/GROOT   NOSUB"
-  "ATLAS  0.2    git@github.com:open-hydra/ATLAS.git         utils/ATLAS     NOSUB")
+  "GROOT  1.0    https://github.com/open-hydra/GROOT.git     src/lib/GROOT   NOSUB"
+  "ATLAS  0.2    https://github.com/open-hydra/ATLAS.git     utils/ATLAS     NOSUB")
 # The components of each application, besides the libraries OSLO, ORION and FLINT
 set(HYDRA_COMPONENTS_MF  FUSS MOSE)
 set(HYDRA_COMPONENTS_AF  FUSS ARES)
